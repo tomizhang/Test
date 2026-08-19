@@ -1,0 +1,56 @@
+using Common;
+using Common.Models;
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using Test.Strategy;
+
+namespace Common.Services
+{
+    /// <summary>
+    /// 量化回测引擎核心服务接口 (支持 WinForms 依赖注入与事件绑定)
+    /// </summary>
+    public interface IBacktestEngineService
+    {
+        /// <summary>
+        /// 异步启动全流程量化回测执行
+        /// </summary>
+        /// <param name="request">回测请求参数</param>
+        /// <param name="progress">可选的进度报告器 (用于 WinForms 进度条响应)</param>
+        /// <param name="ct">异步取消令牌</param>
+        /// <returns>回测结果结构体</returns>
+        Task<BacktestResult> RunBacktestAsync(
+            BacktestRequest request,
+            IProgress<BacktestProgress>? progress = null,
+            CancellationToken ct = default);
+
+        #region WinForms / UI 实时事件订阅钩子
+
+        /// <summary>
+        /// 逐笔 Tick 推送事件 (可用于实时高频图表/盘口更新)
+        /// </summary>
+        event Action<RawTick>? OnTickReceived;
+
+        /// <summary>
+        /// K 线收盘切分事件 (推送收盘 K 线、全局索引与当前策略快照)
+        /// </summary>
+        event Action<RawKline, int, TrendLineStrategy>? OnKlineClosed;
+
+        /// <summary>
+        /// 趋势线被 Tick 实时穿透击穿事件
+        /// </summary>
+        event Action<TrendLine, RawTick, string>? OnTrendLinePenetrated;
+
+        /// <summary>
+        /// 日志与系统消息输出事件
+        /// </summary>
+        event Action<string>? OnLogMessage;
+
+        /// <summary>
+        /// 回测进度百分比与状态变更事件
+        /// </summary>
+        event Action<BacktestProgress>? OnProgressChanged;
+
+        #endregion
+    }
+}
