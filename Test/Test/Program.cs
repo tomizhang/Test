@@ -3,6 +3,7 @@ using Common;
 using System;
 using System.Diagnostics;
 using System.Threading.Tasks;
+using Test.Strategy;
 
 namespace Test
 {
@@ -24,8 +25,9 @@ namespace Test
             Console.WriteLine($"-> 目标日期  : {targetDate:yyyy-MM-dd}");
             Console.WriteLine($"-> K线周期   : {klineInterval.ToIntervalString()}");
 
-            // 2. 初始化读取器并加载指定日期的 K线 和 Tick 数据
+            // 2. 初始化读取器与趋势线策略实例
             using var dataReader = new ParquetDataReader();
+            var strategy = new TrendLineStrategy(coin, klineInterval, maxKlines: 2000, minTrendLines: 1000);
 
             Console.WriteLine("\n[1/2] 正在通过 DuckDB 原生文件下推读取数据中...");
             var sw = Stopwatch.StartNew();
@@ -36,8 +38,7 @@ namespace Test
             Console.WriteLine($"-> 加载完成，总耗时: {sw.ElapsedMilliseconds} ms");
             Console.WriteLine($"-> 内部统计指标: {dataReader.GetStatusSummary()}");
 
-            // 3. 模拟真实交易/回测时钟驱动输出
-            // 规则：Tick 在大周期内持续输出；当时间跨入下一个周期时，上一周期K线收盘并输出该周期K线汇总信息
+            // 3. 模拟真实交易/回测时钟驱动输出与策略推送
             Console.WriteLine("\n===============================================================================");
             Console.WriteLine($"[2/2] 开始模拟真实交易时序输出 (共 K线 {klineCount:N0} 根, Tick {tickCount:N0} 条) :");
             Console.WriteLine("-------------------------------------------------------------------------------");
@@ -55,13 +56,16 @@ namespace Test
 
             while (dataReader.TryDequeueTick(out RawTick tick))
             {
-                // 若当前 Tick 的时间戳已经超出当前 K 线的收盘时间，说明当前周期已走完，必须先触发 K 线收盘输出！
+                // 若当前 Tick 的时间戳已经超出当前 K 线的收盘时间，说明当前周期已走完，必须先触发 K 线收盘输出并推送策略！
                 while (currentKline.HasValue && tick.Time > currentKline.Value.CloseTime)
                 {
-                    // 输出已完结周期的 K 线信息
-                    PrintClosedKline(currentKline.Value, currentKlineIndex);
+                    // 1. 推送已完结周期的 K 线到策略 (触发滑动窗口更新与趋势线计算)
+                    strategy.OnKline(currentKline.Value);
 
-                    // 推进到下一个 K 线周期
+                    // 2. 输出已收盘 K 线信息
+                    PrintClosedKline(currentKline.Value, currentKlineIndex, strategy);
+
+                    // 3. 推进到下一个 K 线周期
                     if (dataReader.TryDequeueKline(out RawKline nextKline))
                     {
                         currentKline = nextKline;
@@ -73,15 +77,20 @@ namespace Test
                     }
                 }
 
+                // 推送逐笔 Tick 到策略
+                strategy.OnTick(tick);
+
                 // 在当前大周期内输出 Tick 逐笔价格与成交数据
                 currentTickIndex++;
                 PrintTick(tick, currentTickIndex);
             }
 
-            // 所有 Tick 消费完毕后，收盘输出剩余的 K 线周期
+            // 所有 Tick 消费完毕后，收盘输出剩余的 K 线周期并推送策略
             while (currentKline.HasValue)
             {
-                PrintClosedKline(currentKline.Value, currentKlineIndex);
+                strategy.OnKline(currentKline.Value);
+                PrintClosedKline(currentKline.Value, currentKlineIndex, strategy);
+
                 if (dataReader.TryDequeueKline(out RawKline nextKline))
                 {
                     currentKline = nextKline;
@@ -95,6 +104,7 @@ namespace Test
 
             Console.WriteLine("===============================================================================");
             Console.WriteLine($"[完成] 真实交易模拟输出完毕！已输出 Tick: {currentTickIndex:N0} 条，已收盘 K线: {currentKlineIndex:N0} 根。");
+            Console.WriteLine($"-> 策略最终状态: {strategy.GetStrategySummary()}");
             Console.WriteLine("===============================================================================");
         }
 
@@ -111,9 +121,9 @@ namespace Test
         }
 
         /// <summary>
-        /// 格式化高亮输出已收盘的周期 K 线汇总信息
+        /// 格式化高亮输出已收盘的周期 K 线汇总信息及策略计算概况
         /// </summary>
-        private static void PrintClosedKline(RawKline kline, int index)
+        private static void PrintClosedKline(RawKline kline, int index, TrendLineStrategy strategy)
         {
             DateTime openTime = DateTimeOffset.FromUnixTimeMilliseconds(kline.OpenTime).LocalDateTime;
             DateTime closeTime = DateTimeOffset.FromUnixTimeMilliseconds(kline.CloseTime).LocalDateTime;
@@ -121,7 +131,10 @@ namespace Test
             Console.ForegroundColor = ConsoleColor.Yellow;
             Console.WriteLine($"\n>>> 【K线周期收盘 #{index:D4}】 周期: {openTime:yyyy-MM-dd HH:mm:ss} ~ {closeTime:HH:mm:ss} | " +
                               $"开: {kline.Open,10:F2} | 高: {kline.High,10:F2} | 低: {kline.Low,10:F2} | 收: {kline.Close,10:F2} | " +
-                              $"成交量: {kline.Volume,10:F4} | 成交额: {kline.QuoteVolume,12:F2} | 笔数: {kline.TradeCount,6}\n");
+                              $"成交量: {kline.Volume,10:F4} | 成交额: {kline.QuoteVolume,12:F2} | 笔数: {kline.TradeCount,6}");
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine($"    └── 策略状态: 滑动窗口K线={strategy.KlineCount}根 | 波峰={strategy.CurrentPeaks.Count}个, 波谷={strategy.CurrentValleys.Count}个 | " +
+                              $"活跃阻力线={strategy.CurrentResistanceLines.Count}条, 活跃支撑线={strategy.CurrentSupportLines.Count}条 | 历史趋势线库累计={strategy.HistoricalTrendLinesCount}条\n");
             Console.ResetColor();
         }
     }

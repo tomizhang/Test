@@ -1,58 +1,60 @@
 using Binance.Net.Enums;
+using Common.Helper;
 using DuckDB.NET.Data;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data.Common;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace Common
 {
-    #region 原始零转换数据结构体 (Zero-Allocation Raw Data Structs)
+    #region 原始零转换数据结构体 (Zero-Allocation Raw Data Structs - Decimal 高精度版)
 
     /// <summary>
-    /// 币安原始 K 线数据（紧凑内存结构体，零装箱，高性能）
+    /// 币安原始 K 线数据（紧凑内存结构体，采用 decimal 杜绝浮点精度丢失）
     /// </summary>
     public readonly struct RawKline
     {
         public long OpenTime { get; init; }           // 开盘时间 (毫秒时间戳)
-        public double Open { get; init; }             // 开盘价
-        public double High { get; init; }             // 最高价
-        public double Low { get; init; }              // 最低价
-        public double Close { get; init; }            // 收盘价
-        public double Volume { get; init; }           // 基础币成交量 (Base Asset Volume)
+        public decimal Open { get; init; }            // 开盘价
+        public decimal High { get; init; }            // 最高价
+        public decimal Low { get; init; }             // 最低价
+        public decimal Close { get; init; }           // 收盘价
+        public decimal Volume { get; init; }          // 基础币成交量 (Base Asset Volume)
         public long CloseTime { get; init; }          // 收盘时间 (毫秒时间戳)
-        public double QuoteVolume { get; init; }      // 计价币成交额 (Quote Asset Volume)
+        public decimal QuoteVolume { get; init; }     // 计价币成交额 (Quote Asset Volume)
         public long TradeCount { get; init; }         // 这一根K线内的成交笔数
-        public double TakerBuyVolume { get; init; }   // 主动买入成交量 (Taker Buy Base Asset Volume)
-        public double TakerBuyQuoteVolume { get; init;}// 主动买入成交额 (Taker Buy Quote Asset Volume)
+        public decimal TakerBuyVolume { get; init; }  // 主动买入成交量 (Taker Buy Base Asset Volume)
+        public decimal TakerBuyQuoteVolume { get; init;}// 主动买入成交额 (Taker Buy Quote Asset Volume)
 
         public override string ToString()
         {
-            DateTime time = DateTimeOffset.FromUnixTimeMilliseconds(OpenTime).LocalDateTime;
+            DateTime time = TimeHelper.FromUnixTimeMilliseconds(OpenTime);
             return $"[Kline {time:yyyy-MM-dd HH:mm:ss}] O:{Open:F2} H:{High:F2} L:{Low:F2} C:{Close:F2} V:{Volume:F4} Trades:{TradeCount}";
         }
     }
 
     /// <summary>
-    /// 币安原始 Tick / Trade 数据（紧凑内存结构体，零装箱，高性能）
+    /// 币安原始 Tick / Trade 数据（紧凑内存结构体，采用 decimal 杜绝浮点精度丢失）
     /// </summary>
     public readonly struct RawTick
     {
         public long TradeId { get; init; }            // 逐笔成交 ID / AggTrade ID
-        public double Price { get; init; }            // 成交价格
-        public double Qty { get; init; }              // 成交数量
-        public double QuoteQty { get; init; }         // 成交金额 (Price * Qty)
+        public decimal Price { get; init; }           // 成交价格
+        public decimal Qty { get; init; }             // 成交数量
+        public decimal QuoteQty { get; init; }        // 成交金额 (Price * Qty)
         public long Time { get; init; }               // 成交时间 (毫秒时间戳)
         public bool IsBuyerMaker { get; init; }       // 是否为买方挂单 (true = 卖方主动吃单/主动卖出, false = 买方主动吃单/主动买入)
         public bool IsBestMatch { get; init; }        // 是否为最优撮合
 
         public override string ToString()
         {
-            DateTime time = DateTimeOffset.FromUnixTimeMilliseconds(Time).LocalDateTime;
+            DateTime time = TimeHelper.FromUnixTimeMilliseconds(Time);
             string side = IsBuyerMaker ? "SELL" : "BUY";
             return $"[Tick {time:yyyy-MM-dd HH:mm:ss.fff}] Id:{TradeId} Side:{side} Price:{Price:F2} Qty:{Qty:F4} Quote:{QuoteQty:F2}";
         }
@@ -90,12 +92,12 @@ namespace Common
     #endregion
 
     /// <summary>
-    /// 高性能币安 Parquet 数据读取帮助类 (DuckDB 向量化引擎 + 3 线程有序滑动窗口预取)
+    /// 高性能币安 Parquet 数据读取帮助类 (DuckDB 向量化引擎 + 3 线程有序滑动窗口预取 + 全 Decimal 精度支持)
     /// 核心特性：
     /// 1. 严格对接 Config.cs 路径结构直接下推 read_parquet 文件物理路径（不进行 SQL 行级日期二次过滤）
     /// 2. 双独立队列：A: K线队列 (KlineQueue)，B: Tick队列 (TickQueue)，两队列互不阻塞完全解耦
     /// 3. Tick 数据采用 3 线程有序滑动窗口（Ordered Prefetching Pipeline），多线程并行满速读取，内存暂存保序，100% 杜绝时间乱序
-    /// 4. 采用原生强类型读取直入 readonly struct，零装箱、零内存浪费
+    /// 4. 采用原生强类型读取直入 decimal readonly struct，杜绝浮点数计算精度丢失
     /// 5. 内部全方位原子计数与数据统计监控
     /// </summary>
     public class ParquetDataReader : IDisposable
@@ -424,9 +426,9 @@ namespace Common
                 while (await reader.ReadAsync(ct).ConfigureAwait(false))
                 {
                     long tradeId = idIdx >= 0 ? ReadInt64(reader, idIdx) : 0;
-                    double price = priceIdx >= 0 ? ReadDouble(reader, priceIdx) : 0.0;
-                    double qty = qtyIdx >= 0 ? ReadDouble(reader, qtyIdx) : 0.0;
-                    double quoteQty = quoteQtyIdx >= 0 ? ReadDouble(reader, quoteQtyIdx) : (price * qty);
+                    decimal price = priceIdx >= 0 ? ReadDecimal(reader, priceIdx) : 0m;
+                    decimal qty = qtyIdx >= 0 ? ReadDecimal(reader, qtyIdx) : 0m;
+                    decimal quoteQty = quoteQtyIdx >= 0 ? ReadDecimal(reader, quoteQtyIdx) : (price * qty);
                     long time = timeIdx >= 0 ? ReadInt64(reader, timeIdx) : 0;
                     bool isBuyerMaker = isBuyerMakerIdx >= 0 && ReadBoolean(reader, isBuyerMakerIdx);
                     bool isBestMatch = isBestMatchIdx >= 0 && ReadBoolean(reader, isBestMatchIdx);
@@ -492,16 +494,16 @@ namespace Common
                 while (await reader.ReadAsync(ct).ConfigureAwait(false))
                 {
                     long openTime = openTimeIdx >= 0 ? ReadInt64(reader, openTimeIdx) : 0;
-                    double open = openIdx >= 0 ? ReadDouble(reader, openIdx) : 0.0;
-                    double high = highIdx >= 0 ? ReadDouble(reader, highIdx) : 0.0;
-                    double low = lowIdx >= 0 ? ReadDouble(reader, lowIdx) : 0.0;
-                    double close = closeIdx >= 0 ? ReadDouble(reader, closeIdx) : 0.0;
-                    double volume = volumeIdx >= 0 ? ReadDouble(reader, volumeIdx) : 0.0;
+                    decimal open = openIdx >= 0 ? ReadDecimal(reader, openIdx) : 0m;
+                    decimal high = highIdx >= 0 ? ReadDecimal(reader, highIdx) : 0m;
+                    decimal low = lowIdx >= 0 ? ReadDecimal(reader, lowIdx) : 0m;
+                    decimal close = closeIdx >= 0 ? ReadDecimal(reader, closeIdx) : 0m;
+                    decimal volume = volumeIdx >= 0 ? ReadDecimal(reader, volumeIdx) : 0m;
                     long closeTime = closeTimeIdx >= 0 ? ReadInt64(reader, closeTimeIdx) : 0;
-                    double quoteVol = quoteVolIdx >= 0 ? ReadDouble(reader, quoteVolIdx) : 0.0;
+                    decimal quoteVol = quoteVolIdx >= 0 ? ReadDecimal(reader, quoteVolIdx) : 0m;
                     long count = countIdx >= 0 ? ReadInt64(reader, countIdx) : 0;
-                    double takerBuyVol = takerBuyVolIdx >= 0 ? ReadDouble(reader, takerBuyVolIdx) : 0.0;
-                    double takerBuyQuoteVol = takerBuyQuoteVolIdx >= 0 ? ReadDouble(reader, takerBuyQuoteVolIdx) : 0.0;
+                    decimal takerBuyVol = takerBuyVolIdx >= 0 ? ReadDecimal(reader, takerBuyVolIdx) : 0m;
+                    decimal takerBuyQuoteVol = takerBuyQuoteVolIdx >= 0 ? ReadDecimal(reader, takerBuyQuoteVolIdx) : 0m;
 
                     list.Add(new RawKline
                     {
@@ -557,15 +559,16 @@ namespace Common
             return Convert.ToInt64(val);
         }
 
-        private static double ReadDouble(DbDataReader reader, int ordinal)
+        private static decimal ReadDecimal(DbDataReader reader, int ordinal)
         {
             var val = reader.GetValue(ordinal);
-            if (val is double d) return d;
-            if (val is float f) return f;
-            if (val is decimal dec) return (double)dec;
+            if (val is decimal dec) return dec;
+            if (val is double d) return (decimal)d;
+            if (val is float f) return (decimal)f;
             if (val is long l) return l;
             if (val is int i) return i;
-            return Convert.ToDouble(val);
+            if (val is string s && decimal.TryParse(s, NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed)) return parsed;
+            return Convert.ToDecimal(val, CultureInfo.InvariantCulture);
         }
 
         private static bool ReadBoolean(DbDataReader reader, int ordinal)
