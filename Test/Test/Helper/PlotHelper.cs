@@ -152,14 +152,19 @@ namespace Common.Helper
                 }
             }
 
-            // 5. 绘制趋势线 (阻力趋势线: 橙红色, 支撑趋势线: 青色, 线宽 0.8f)
+            // 5. 绘制趋势线 (阻力趋势线: 橙红色, 支撑趋势线: 青色, 线宽 0.8f，优先绘制最新与活跃趋势线)
             int resistanceDrawn = 0;
             int supportDrawn = 0;
 
             if (trendLines != null && trendLines.Count > 0)
             {
-                foreach (var line in trendLines)
+                int maxLinesToDraw = 120;
+                int drawnTotal = 0;
+
+                for (int i = trendLines.Count - 1; i >= 0 && drawnTotal < maxLinesToDraw; i--)
                 {
+                    var line = trendLines[i];
+
                     // 确保趋势线在当前图表可见范围有交集
                     if (line.X2 < startGlobalIndex || line.X1 > endGlobalIndex)
                         continue;
@@ -185,6 +190,7 @@ namespace Common.Helper
                         linePlot.Color = Color.FromHex("#06b6d4"); // 青色支撑线
                         supportDrawn++;
                     }
+                    drawnTotal++;
                 }
             }
 

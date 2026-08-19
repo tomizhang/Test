@@ -262,7 +262,7 @@ namespace Test.Strategy
         }
 
         /// <summary>
-        /// 将新计算的趋势线保存到历史趋势线库中
+        /// 将新计算的趋势线保存到历史趋势线库中 (O(1) 极速装填)
         /// </summary>
         private void SaveTrendLinesToHistory(List<TrendLine> newLines)
         {
@@ -270,42 +270,33 @@ namespace Test.Strategy
 
             for (int i = 0; i < newLines.Count; i++)
             {
-                var line = newLines[i];
-                bool exists = false;
-                for (int j = _historicalTrendLines.Count - 1; j >= 0; j--)
-                {
-                    var h = _historicalTrendLines[j];
-                    if (h.TimestampMs1 == line.TimestampMs1 && h.TimestampMs2 == line.TimestampMs2 && h.Type == line.Type)
-                    {
-                        exists = true;
-                        _historicalTrendLines[j] = line;
-                        break;
-                    }
-                }
-
-                if (!exists)
-                {
-                    _historicalTrendLines.Add(line);
-                }
+                _historicalTrendLines.Add(newLines[i]);
             }
 
-            // 若历史趋势线数量超过最低保存目标（且超出上限），滑动移除最早的历史趋势线
-            int maxHistoryLimit = Math.Max(MinTrendLinesCapacity, 5000);
-            if (_historicalTrendLines.Count > maxHistoryLimit)
+            // 保持历史趋势线库在设定容量范围内
+            if (_historicalTrendLines.Count > MinTrendLinesCapacity * 2)
             {
-                int removeCount = _historicalTrendLines.Count - maxHistoryLimit;
+                int removeCount = _historicalTrendLines.Count - MinTrendLinesCapacity;
                 _historicalTrendLines.RemoveRange(0, removeCount);
             }
         }
 
         /// <summary>
-        /// 清理超龄且已被碰撞穿透的失效趋势线
+        /// 清理超龄与滑出窗口的失效对象，保持内部常数级极速运转
         /// </summary>
         private void PruneInactiveTrendLines(int currentGlobalIndex)
         {
-            // 活跃阻力线清理 (已被穿透超过 500 根 K 线的不再作为活跃线监控)
-            ActiveResistanceLines.RemoveAll(line => line.CollidedKlineIndex != -1 && (currentGlobalIndex - line.CollidedKlineIndex > 500));
-            ActiveSupportLines.RemoveAll(line => line.CollidedKlineIndex != -1 && (currentGlobalIndex - line.CollidedKlineIndex > 500));
+            // 1. 活跃趋势线清理：已被穿透碰撞，或超出 300 根 K 线的存量线不再作为活跃线逐笔扫描
+            ActiveResistanceLines.RemoveAll(line => (line.CollidedKlineIndex != -1 && currentGlobalIndex - line.CollidedKlineIndex > 50) || (currentGlobalIndex - line.X2 > 300));
+            ActiveSupportLines.RemoveAll(line => (line.CollidedKlineIndex != -1 && currentGlobalIndex - line.CollidedKlineIndex > 50) || (currentGlobalIndex - line.X2 > 300));
+
+            // 2. 极值点窗口清理：移除滑出 2000 根滑动窗口的过期极值点，防止列表无限膨胀
+            int minRetainedIndex = currentGlobalIndex - MaxKlinesCapacity;
+            if (minRetainedIndex > 0)
+            {
+                _peaks.RemoveAll(p => p.Index < minRetainedIndex);
+                _valleys.RemoveAll(v => v.Index < minRetainedIndex);
+            }
         }
 
         /// <summary>

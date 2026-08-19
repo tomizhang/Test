@@ -8,7 +8,7 @@ using Test.Strategy;
 namespace Common.Services
 {
     /// <summary>
-    /// 量化回测引擎核心服务接口 (支持 WinForms 依赖注入与事件绑定)
+    /// 量化回测引擎核心服务接口 (支持 WinForms 依赖注入、事件绑定与暂停/继续控制)
     /// </summary>
     public interface IBacktestEngineService
     {
@@ -23,6 +23,21 @@ namespace Common.Services
             BacktestRequest request,
             IProgress<BacktestProgress>? progress = null,
             CancellationToken ct = default);
+
+        /// <summary>
+        /// 当前回测是否处于暂停状态
+        /// </summary>
+        bool IsPaused { get; }
+
+        /// <summary>
+        /// 暂停回测推进
+        /// </summary>
+        void Pause();
+
+        /// <summary>
+        /// 继续恢复回测推进
+        /// </summary>
+        void Resume();
 
         #region WinForms / UI 实时事件订阅钩子
 

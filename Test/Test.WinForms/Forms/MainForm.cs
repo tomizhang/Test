@@ -20,9 +20,9 @@ namespace Test.WinForms.Forms
     /// <summary>
     /// 专业量化回测系统主窗体 (WinForms 主界面)
     /// 布局：
-    /// - 左边上部：交互式 ScottPlot 实时价格折线图、高低点标记与趋势线结构图表 (支持实时动态流式推流与 X/Y 轴自适应调节)
+    /// - 左边上部：交互式 ScottPlot 实时价格折线图、高低点标记与趋势线结构图表 (支持实时推流、暂停/继续与自适应 X/Y 轴)
     /// - 左边下部：实时回测日志与事件监控框
-    /// - 右边区域：交易对、K线周期、日期选择、策略参数与回测控制面板
+    /// - 右边区域：交易对、K线周期、日期选择、策略参数与回测控制面板 (含开始、暂停/继续、停止、复位轴等)
     /// </summary>
     public class MainForm : Form
     {
@@ -71,6 +71,7 @@ namespace Test.WinForms.Forms
 
         private GroupBox grpControl = null!;
         private Button btnStart = null!;
+        private Button btnPause = null!;
         private Button btnStop = null!;
         private Button btnResetAxes = null!;
         private Button btnExportChart = null!;
@@ -274,32 +275,47 @@ namespace Test.WinForms.Forms
             panelRight.Controls.Add(grpStrategy);
             top += grpStrategy.Height + 10;
 
-            // Group 3: 控制按钮与进度条
+            // Group 3: 控制按钮与进度条 (集成 开始 / 暂停·继续 / 停止)
             grpControl = CreateGroupBox("3. 执行控制与进度", top, 205);
             {
                 btnStart = new Button
                 {
-                    Text = "▶ 开始回测",
+                    Text = "▶ 开始",
                     Location = new Point(15, 25),
-                    Size = new Size(155, 36),
+                    Size = new Size(102, 36),
                     BackColor = Color.FromArgb(5, 150, 105), // Green 600
                     ForeColor = Color.White,
                     FlatStyle = FlatStyle.Flat,
-                    Font = new Font("Microsoft YaHei", 10F, FontStyle.Bold),
+                    Font = new Font("Microsoft YaHei", 9.5F, FontStyle.Bold),
                     Cursor = Cursors.Hand
                 };
                 btnStart.FlatAppearance.BorderSize = 0;
                 btnStart.Click += async (s, e) => await StartBacktestAsync();
 
+                btnPause = new Button
+                {
+                    Text = "⏸ 暂停",
+                    Location = new Point(124, 25),
+                    Size = new Size(102, 36),
+                    BackColor = Color.FromArgb(217, 119, 6), // Amber 600
+                    ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Microsoft YaHei", 9.5F, FontStyle.Bold),
+                    Enabled = false,
+                    Cursor = Cursors.Hand
+                };
+                btnPause.FlatAppearance.BorderSize = 0;
+                btnPause.Click += (s, e) => TogglePause();
+
                 btnStop = new Button
                 {
-                    Text = "⏹ 停止回测",
-                    Location = new Point(185, 25),
-                    Size = new Size(155, 36),
+                    Text = "⏹ 停止",
+                    Location = new Point(233, 25),
+                    Size = new Size(107, 36),
                     BackColor = Color.FromArgb(220, 38, 38), // Red 600
                     ForeColor = Color.White,
                     FlatStyle = FlatStyle.Flat,
-                    Font = new Font("Microsoft YaHei", 10F, FontStyle.Bold),
+                    Font = new Font("Microsoft YaHei", 9.5F, FontStyle.Bold),
                     Enabled = false,
                     Cursor = Cursors.Hand
                 };
@@ -361,13 +377,13 @@ namespace Test.WinForms.Forms
 
                 lblProgress = new Label
                 {
-                    Text = "系统就绪，点击【开始回测】启动",
+                    Text = "系统就绪，点击【▶ 开始】启动回测",
                     Location = new Point(15, 165),
                     Size = new Size(325, 30),
                     ForeColor = Color.FromArgb(148, 163, 184)
                 };
 
-                grpControl.Controls.AddRange(new Control[] { btnStart, btnStop, btnResetAxes, btnExportChart, btnClearLogs, progressBar, lblProgress });
+                grpControl.Controls.AddRange(new Control[] { btnStart, btnPause, btnStop, btnResetAxes, btnExportChart, btnClearLogs, progressBar, lblProgress });
             }
             panelRight.Controls.Add(grpControl);
             top += grpControl.Height + 10;
@@ -454,14 +470,22 @@ namespace Test.WinForms.Forms
                         _lastChartRenderTicks = now;
                         _isChartRendering = true;
 
-                        // 快速浅拷贝快照
+                        // 快速浅拷贝当前滑动窗口内的快照
                         var klinesSnapshot = strategy.Klines.ToArray();
                         var peaksSnapshot = strategy.Peaks.ToArray();
                         var valleysSnapshot = strategy.Valleys.ToArray();
 
-                        var linesSnapshot = new List<TrendLine>(strategy.HistoricalTrendLines);
+                        // 仅提取当前活跃线与最近的代表性历史线 (保持常数级图元量，彻底消除越跑越卡)
+                        var linesSnapshot = new List<TrendLine>(150);
                         if (strategy.ActiveResistanceLines.Count > 0) linesSnapshot.AddRange(strategy.ActiveResistanceLines);
                         if (strategy.ActiveSupportLines.Count > 0) linesSnapshot.AddRange(strategy.ActiveSupportLines);
+
+                        int histCount = strategy.HistoricalTrendLines.Count;
+                        int takeCount = Math.Min(100, histCount);
+                        for (int i = histCount - takeCount; i < histCount; i++)
+                        {
+                            linesSnapshot.Add(strategy.HistoricalTrendLines[i]);
+                        }
 
                         int startGlobal = Math.Max(0, strategy.GlobalBarIndex - strategy.KlineCount);
                         string coin = _currentRunningCoin;
@@ -540,7 +564,7 @@ namespace Test.WinForms.Forms
             formsPlot.Plot.Axes.Color(ScottPlot.Color.FromHex("#94a3b8"));
             formsPlot.Plot.Grid.MajorLineColor = ScottPlot.Color.FromHex("#334155");
 
-            formsPlot.Plot.Title("等待回测启动，点击【▶ 开始回测】加载实时折线图...", size: 16);
+            formsPlot.Plot.Title("等待回测启动，点击【▶ 开始】加载实时折线图...", size: 16);
             formsPlot.Plot.Axes.Title.Label.FontName = chineseFont;
             formsPlot.Plot.Axes.Title.Label.ForeColor = ScottPlot.Color.FromHex("#f8fafc");
 
@@ -567,9 +591,13 @@ namespace Test.WinForms.Forms
                 return;
             }
 
-            // 锁定按钮
+            // 锁定按钮状态
             btnStart.Enabled = false;
+            btnPause.Enabled = true;
+            btnPause.Text = "⏸ 暂停";
+            btnPause.BackColor = Color.FromArgb(217, 119, 6); // Amber 600
             btnStop.Enabled = true;
+
             _cts = new CancellationTokenSource();
             _lastChartRenderTicks = 0;
             _isChartRendering = false;
@@ -669,9 +697,30 @@ namespace Test.WinForms.Forms
             finally
             {
                 btnStart.Enabled = true;
+                btnPause.Enabled = false;
+                btnPause.Text = "⏸ 暂停";
+                btnPause.BackColor = Color.FromArgb(217, 119, 6);
                 btnStop.Enabled = false;
                 _cts = null;
                 _isChartRendering = false;
+            }
+        }
+
+        private void TogglePause()
+        {
+            if (_engineService.IsPaused)
+            {
+                _engineService.Resume();
+                btnPause.Text = "⏸ 暂停";
+                btnPause.BackColor = Color.FromArgb(217, 119, 6); // Amber 600
+                lblProgress.Text = "回测已恢复继续运行...";
+            }
+            else
+            {
+                _engineService.Pause();
+                btnPause.Text = "▶ 继续";
+                btnPause.BackColor = Color.FromArgb(16, 185, 129); // Emerald 500
+                lblProgress.Text = "回测已暂停，点击【▶ 继续】恢复推进";
             }
         }
 
@@ -679,6 +728,12 @@ namespace Test.WinForms.Forms
         {
             if (_cts != null && !_cts.IsCancellationRequested)
             {
+                // 如果处于暂停状态，先恢复以唤醒等待中的 Task 响应取消令牌
+                if (_engineService.IsPaused)
+                {
+                    _engineService.Resume();
+                }
+
                 _cts.Cancel();
                 AppendLogSafe("[用户操作] 已发送停止回测请求...", Color.FromArgb(251, 146, 60));
             }
@@ -726,10 +781,10 @@ namespace Test.WinForms.Forms
                 return;
             }
 
-            // 限制日志文本长度，防止内存过载
-            if (txtLogs.TextLength > 500000)
+            // 限制日志文本长度在 30,000 字符以内，防止 RichTextBox 内部排版和滚动卡顿
+            if (txtLogs.TextLength > 30000)
             {
-                txtLogs.Select(0, 100000);
+                txtLogs.Select(0, 10000);
                 txtLogs.SelectedText = "";
             }
 

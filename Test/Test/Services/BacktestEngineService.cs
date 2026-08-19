@@ -9,11 +9,7 @@ using Test.Strategy;
 namespace Common.Services
 {
     /// <summary>
-    /// 量化回测核心引擎服务实现类 (真·流式生产者-消费者流水线架构)
-    /// 核心升级：
-    /// 1. 生产者-消费者完全异步并发 (边读边测，无需等待 1 个月数据全量加载，0.3s 即刻启动)
-    /// 2. 内存恒定占用 (始终保持 2~3 天环形缓冲区，内存占用仅 100MB 级别，杜绝 20GB 内存暴涨)
-    /// 3. Tick 逐笔价格去重过滤，提升回测吞吐
+    /// 量化回测核心引擎服务实现类 (真·流式生产者-消费者流水线架构 + 暂停/继续支持)
     /// </summary>
     public class BacktestEngineService : IBacktestEngineService
     {
@@ -24,6 +20,35 @@ namespace Common.Services
         public event Action<TrendLine, RawTick, string>? OnTrendLinePenetrated;
         public event Action<string>? OnLogMessage;
         public event Action<BacktestProgress>? OnProgressChanged;
+
+        #endregion
+
+        #region 暂停/继续控制状态
+
+        private readonly ManualResetEventSlim _pauseEvent = new ManualResetEventSlim(true);
+        private volatile bool _isPaused = false;
+
+        public bool IsPaused => _isPaused;
+
+        public void Pause()
+        {
+            if (!_isPaused)
+            {
+                _isPaused = true;
+                _pauseEvent.Reset();
+                RaiseLog("[BacktestEngineService] ⏸ 回测已进入暂停状态。");
+            }
+        }
+
+        public void Resume()
+        {
+            if (_isPaused)
+            {
+                _isPaused = false;
+                _pauseEvent.Set();
+                RaiseLog("[BacktestEngineService] ▶ 回测已恢复继续运行。");
+            }
+        }
 
         #endregion
 
@@ -49,6 +74,10 @@ namespace Common.Services
             };
 
             var sw = Stopwatch.StartNew();
+
+            // 启动时确保处于非暂停运行状态
+            _isPaused = false;
+            _pauseEvent.Set();
 
             try
             {
@@ -121,8 +150,6 @@ namespace Common.Services
                     currentKlineIndex++;
                 }
 
-                int totalDays = Math.Max(1, (int)(request.EndDate.Date - request.StartDate.Date).TotalDays + 1);
-
                 while (true)
                 {
                     if (ct.IsCancellationRequested)
@@ -131,6 +158,22 @@ namespace Common.Services
                         result.Success = false;
                         result.ErrorMessage = "任务被用户取消";
                         return result;
+                    }
+
+                    // ⏸ 暂停检测与阻塞等待 (如果用户点击暂停，等待继续或取消)
+                    if (!_pauseEvent.IsSet)
+                    {
+                        try
+                        {
+                            _pauseEvent.Wait(ct);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            RaiseLog("[BacktestEngineService] 用户在暂停状态下取消了回测任务。");
+                            result.Success = false;
+                            result.ErrorMessage = "任务被用户取消";
+                            return result;
+                        }
                     }
 
                     // 从并发队列尝试取出 Tick
@@ -280,6 +323,11 @@ namespace Common.Services
                 result.ElapsedMilliseconds = sw.ElapsedMilliseconds;
                 RaiseLog($"[BacktestEngineService] 发生未处理异常: {ex}");
                 return result;
+            }
+            finally
+            {
+                _isPaused = false;
+                _pauseEvent.Set();
             }
         }
 
