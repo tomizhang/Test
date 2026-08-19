@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -19,7 +20,7 @@ namespace Test.WinForms.Forms
     /// <summary>
     /// 专业量化回测系统主窗体 (WinForms 主界面)
     /// 布局：
-    /// - 左边上部：交互式 ScottPlot 价格折线图、高低点标记与趋势线结构图表
+    /// - 左边上部：交互式 ScottPlot 实时价格折线图、高低点标记与趋势线结构图表 (支持实时动态流式推流与 X/Y 轴自适应调节)
     /// - 左边下部：实时回测日志与事件监控框
     /// - 右边区域：交易对、K线周期、日期选择、策略参数与回测控制面板
     /// </summary>
@@ -28,6 +29,17 @@ namespace Test.WinForms.Forms
         private readonly IBacktestEngineService _engineService;
         private CancellationTokenSource? _cts;
         private BacktestResult? _latestResult;
+
+        // 线程安全运行态缓存 (解决后台线程直接访问 UI 控件导致的跨线程 InvalidOperationException)
+        private volatile bool _isRealtimeChartEnabled = true;
+        private volatile bool _isAutoScaleEnabled = true;
+        private volatile string _currentRunningCoin = "BTCUSDT";
+        private volatile string _currentRunningInterval = "1m";
+
+        // 实时图表刷新控制 (150ms 节流，保证毫秒级超快回测吞吐的同时实现 6.6 FPS 丝滑实时图表推流)
+        private long _lastChartRenderTicks = 0;
+        private const int RenderThrottleMs = 150;
+        private volatile bool _isChartRendering = false;
 
         // UI 控件定义
         private SplitContainer splitMain = null!;
@@ -54,10 +66,13 @@ namespace Test.WinForms.Forms
         private NumericUpDown numRightLen = null!;
         private NumericUpDown numMaxSpan = null!;
         private CheckBox chkStrictEnvelope = null!;
+        private CheckBox chkRealtimeChart = null!;
+        private CheckBox chkAutoScale = null!;
 
         private GroupBox grpControl = null!;
         private Button btnStart = null!;
         private Button btnStop = null!;
+        private Button btnResetAxes = null!;
         private Button btnExportChart = null!;
         private Button btnClearLogs = null!;
         private ProgressBar progressBar = null!;
@@ -112,6 +127,13 @@ namespace Test.WinForms.Forms
             formsPlot = new FormsPlot
             {
                 Dock = DockStyle.Fill
+            };
+            // 双击图表自动复位自适应 X/Y 轴
+            formsPlot.DoubleClick += (s, e) =>
+            {
+                formsPlot.Plot.Axes.Margins(0.02, 0.08);
+                formsPlot.Plot.Axes.AutoScale();
+                formsPlot.Refresh();
             };
             splitLeft.Panel1.Controls.Add(formsPlot);
 
@@ -219,7 +241,7 @@ namespace Test.WinForms.Forms
             top += grpData.Height + 10;
 
             // Group 2: 趋势线策略参数
-            grpStrategy = CreateGroupBox("2. 趋势线策略参数", top, 240);
+            grpStrategy = CreateGroupBox("2. 趋势线策略与推流参数", top, 290);
             {
                 var lblMaxK = CreateLabel("K线滑动窗口:", 15, 25);
                 numMaxKlines = new NumericUpDown { Location = new Point(130, 22), Width = 210, Minimum = 100, Maximum = 100000, Value = 2000 };
@@ -241,13 +263,19 @@ namespace Test.WinForms.Forms
 
                 chkStrictEnvelope = new CheckBox { Text = "严格外包络 (禁止内部穿透)", Location = new Point(15, 205), Width = 320, Checked = true };
 
-                grpStrategy.Controls.AddRange(new Control[] { lblMaxK, numMaxKlines, lblMinT, numMinTrendLines, lblMaxD, numMaxDeleted, lblLeft, numLeftLen, lblRight, numRightLen, lblSpan, numMaxSpan, chkStrictEnvelope });
+                chkRealtimeChart = new CheckBox { Text = "实时推送图表走势 (150ms 节流刷新)", Location = new Point(15, 230), Width = 320, Checked = true };
+                chkRealtimeChart.CheckedChanged += (s, e) => _isRealtimeChartEnabled = chkRealtimeChart.Checked;
+
+                chkAutoScale = new CheckBox { Text = "回放时自动调节 X/Y 轴 (Auto-Scale)", Location = new Point(15, 255), Width = 320, Checked = true };
+                chkAutoScale.CheckedChanged += (s, e) => _isAutoScaleEnabled = chkAutoScale.Checked;
+
+                grpStrategy.Controls.AddRange(new Control[] { lblMaxK, numMaxKlines, lblMinT, numMinTrendLines, lblMaxD, numMaxDeleted, lblLeft, numLeftLen, lblRight, numRightLen, lblSpan, numMaxSpan, chkStrictEnvelope, chkRealtimeChart, chkAutoScale });
             }
             panelRight.Controls.Add(grpStrategy);
             top += grpStrategy.Height + 10;
 
             // Group 3: 控制按钮与进度条
-            grpControl = CreateGroupBox("3. 执行控制与进度", top, 175);
+            grpControl = CreateGroupBox("3. 执行控制与进度", top, 205);
             {
                 btnStart = new Button
                 {
@@ -278,10 +306,28 @@ namespace Test.WinForms.Forms
                 btnStop.FlatAppearance.BorderSize = 0;
                 btnStop.Click += (s, e) => StopBacktest();
 
+                btnResetAxes = new Button
+                {
+                    Text = "🔍 复位/自适应轴",
+                    Location = new Point(15, 70),
+                    Size = new Size(155, 30),
+                    BackColor = Color.FromArgb(14, 116, 144), // Cyan 700
+                    ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Cursor = Cursors.Hand
+                };
+                btnResetAxes.FlatAppearance.BorderSize = 0;
+                btnResetAxes.Click += (s, e) =>
+                {
+                    formsPlot.Plot.Axes.Margins(0.02, 0.08);
+                    formsPlot.Plot.Axes.AutoScale();
+                    formsPlot.Refresh();
+                };
+
                 btnExportChart = new Button
                 {
                     Text = "🖼 导出/打开图表",
-                    Location = new Point(15, 70),
+                    Location = new Point(185, 70),
                     Size = new Size(155, 30),
                     BackColor = Color.FromArgb(37, 99, 235), // Blue 600
                     ForeColor = Color.White,
@@ -294,8 +340,8 @@ namespace Test.WinForms.Forms
                 btnClearLogs = new Button
                 {
                     Text = "🗑 清空日志",
-                    Location = new Point(185, 70),
-                    Size = new Size(155, 30),
+                    Location = new Point(15, 105),
+                    Size = new Size(325, 28),
                     BackColor = Color.FromArgb(71, 85, 105), // Slate 600
                     ForeColor = Color.White,
                     FlatStyle = FlatStyle.Flat,
@@ -306,7 +352,7 @@ namespace Test.WinForms.Forms
 
                 progressBar = new ProgressBar
                 {
-                    Location = new Point(15, 110),
+                    Location = new Point(15, 140),
                     Size = new Size(325, 18),
                     Minimum = 0,
                     Maximum = 100,
@@ -316,12 +362,12 @@ namespace Test.WinForms.Forms
                 lblProgress = new Label
                 {
                     Text = "系统就绪，点击【开始回测】启动",
-                    Location = new Point(15, 135),
+                    Location = new Point(15, 165),
                     Size = new Size(325, 30),
                     ForeColor = Color.FromArgb(148, 163, 184)
                 };
 
-                grpControl.Controls.AddRange(new Control[] { btnStart, btnStop, btnExportChart, btnClearLogs, progressBar, lblProgress });
+                grpControl.Controls.AddRange(new Control[] { btnStart, btnStop, btnResetAxes, btnExportChart, btnClearLogs, progressBar, lblProgress });
             }
             panelRight.Controls.Add(grpControl);
             top += grpControl.Height + 10;
@@ -391,11 +437,70 @@ namespace Test.WinForms.Forms
 
             _engineService.OnKlineClosed += (kline, index, strategy) =>
             {
+                // 日志输出 (每10根或有活跃阻力线时)
                 if (index % 10 == 0 || strategy.ActiveResistanceLines.Count > 0)
                 {
                     DateTime time = TimeHelper.FromUnixTimeMilliseconds(kline.OpenTime);
                     string msg = $"[K线收盘 #{index:D4}] {time:yyyy-MM-dd HH:mm:ss} | 开:{kline.Open:F2} 高:{kline.High:F2} 低:{kline.Low:F2} 收:{kline.Close:F2} | 活跃阻力:{strategy.ActiveResistanceLines.Count} 支撑:{strategy.ActiveSupportLines.Count} 删除:{strategy.DeletedTrendLinesCount}";
                     AppendLogSafe(msg, Color.FromArgb(250, 204, 21)); // Yellow
+                }
+
+                // ⚡ 实时图表流式推送 (使用线程安全的运行态变量与自动缩放 X/Y 轴)
+                if (_isRealtimeChartEnabled && !_isChartRendering)
+                {
+                    long now = Environment.TickCount64;
+                    if (now - _lastChartRenderTicks >= RenderThrottleMs)
+                    {
+                        _lastChartRenderTicks = now;
+                        _isChartRendering = true;
+
+                        // 快速浅拷贝快照
+                        var klinesSnapshot = strategy.Klines.ToArray();
+                        var peaksSnapshot = strategy.Peaks.ToArray();
+                        var valleysSnapshot = strategy.Valleys.ToArray();
+
+                        var linesSnapshot = new List<TrendLine>(strategy.HistoricalTrendLines);
+                        if (strategy.ActiveResistanceLines.Count > 0) linesSnapshot.AddRange(strategy.ActiveResistanceLines);
+                        if (strategy.ActiveSupportLines.Count > 0) linesSnapshot.AddRange(strategy.ActiveSupportLines);
+
+                        int startGlobal = Math.Max(0, strategy.GlobalBarIndex - strategy.KlineCount);
+                        string coin = _currentRunningCoin;
+                        string intervalStr = _currentRunningInterval;
+                        bool autoScale = _isAutoScaleEnabled;
+
+                        string realtimeSummary = $"实时回测推进中: {coin} {intervalStr} | 当前 K 线: #{index:D4} (最新收: {kline.Close:F2})\n" +
+                                                 $"识别极值: 高点={peaksSnapshot.Length}, 低点={valleysSnapshot.Length} | 活跃阻力={strategy.ActiveResistanceLines.Count}, 支撑={strategy.ActiveSupportLines.Count} (已穿透删除={strategy.DeletedTrendLinesCount}条)";
+
+                        this.BeginInvoke(() =>
+                        {
+                            try
+                            {
+                                if (!formsPlot.IsDisposed && klinesSnapshot.Length > 0)
+                                {
+                                    PlotHelper.BuildPlot(
+                                        formsPlot.Plot,
+                                        klinesSnapshot,
+                                        peaksSnapshot,
+                                        valleysSnapshot,
+                                        linesSnapshot,
+                                        realtimeSummary,
+                                        title: $"{coin} {intervalStr} - 实时回测动态走势 (K线 #{index:D4})",
+                                        startGlobalIndex: startGlobal,
+                                        autoScaleAxes: autoScale);
+
+                                    formsPlot.Refresh();
+                                }
+                            }
+                            catch
+                            {
+                                // 忽略推流过程中的非致命异常
+                            }
+                            finally
+                            {
+                                _isChartRendering = false;
+                            }
+                        });
+                    }
                 }
             };
 
@@ -428,12 +533,25 @@ namespace Test.WinForms.Forms
 
         private void InitializeDefaultPlot()
         {
+            string chineseFont = PlotHelper.GetInstalledChineseFont();
             formsPlot.Plot.Clear();
             formsPlot.Plot.FigureBackground.Color = ScottPlot.Color.FromHex("#0f172a");
             formsPlot.Plot.DataBackground.Color = ScottPlot.Color.FromHex("#1e293b");
             formsPlot.Plot.Axes.Color(ScottPlot.Color.FromHex("#94a3b8"));
             formsPlot.Plot.Grid.MajorLineColor = ScottPlot.Color.FromHex("#334155");
-            formsPlot.Plot.Title("等待回测启动，点击【▶ 开始回测】加载图表...", size: 16);
+
+            formsPlot.Plot.Title("等待回测启动，点击【▶ 开始回测】加载实时折线图...", size: 16);
+            formsPlot.Plot.Axes.Title.Label.FontName = chineseFont;
+            formsPlot.Plot.Axes.Title.Label.ForeColor = ScottPlot.Color.FromHex("#f8fafc");
+
+            formsPlot.Plot.Axes.Bottom.Label.Text = "全局 K 线序列号 (Global Bar Index)";
+            formsPlot.Plot.Axes.Bottom.Label.FontName = chineseFont;
+            formsPlot.Plot.Axes.Bottom.Label.ForeColor = ScottPlot.Color.FromHex("#cbd5e1");
+
+            formsPlot.Plot.Axes.Left.Label.Text = "价格 (USDT)";
+            formsPlot.Plot.Axes.Left.Label.FontName = chineseFont;
+            formsPlot.Plot.Axes.Left.Label.ForeColor = ScottPlot.Color.FromHex("#cbd5e1");
+
             formsPlot.Refresh();
         }
 
@@ -453,6 +571,8 @@ namespace Test.WinForms.Forms
             btnStart.Enabled = false;
             btnStop.Enabled = true;
             _cts = new CancellationTokenSource();
+            _lastChartRenderTicks = 0;
+            _isChartRendering = false;
 
             // 解析 K 线周期
             string intervalStr = cboInterval.SelectedItem?.ToString() ?? "1m";
@@ -483,6 +603,12 @@ namespace Test.WinForms.Forms
                 GenerateChart = true
             };
 
+            // 缓存运行态变量供后台线程安全读取
+            _isRealtimeChartEnabled = chkRealtimeChart.Checked;
+            _isAutoScaleEnabled = chkAutoScale.Checked;
+            _currentRunningCoin = request.Coin;
+            _currentRunningInterval = interval.ToIntervalString();
+
             AppendLogSafe($"\n========================================================", Color.FromArgb(56, 189, 248));
             AppendLogSafe($"[启动回测] 目标: {request.Coin}, 周期: {interval.ToIntervalString()}, 时间窗口: {request.StartDate:yyyy-MM-dd} ~ {request.EndDate:yyyy-MM-dd}", Color.FromArgb(56, 189, 248));
             AppendLogSafe($"========================================================", Color.FromArgb(56, 189, 248));
@@ -494,13 +620,13 @@ namespace Test.WinForms.Forms
 
                 if (_latestResult.Success && _latestResult.Strategy != null)
                 {
-                    // 在 UI 线程上完整渲染折线图表
+                    // 回测完成后执行最终 100% 完整图表渲染与统计对齐
                     this.Invoke(() =>
                     {
                         var strat = _latestResult.Strategy;
                         int startGlobal = Math.Max(0, strat.GlobalBarIndex - strat.KlineCount);
 
-                        // 合并所有历史与活跃趋势线，确保所有生成的趋势线均可在折线图上呈现
+                        // 合并所有历史与活跃趋势线，确保所有生成的趋势线均可在折线图上完整呈现
                         var allLines = new List<TrendLine>(strat.HistoricalTrendLines);
                         if (strat.ActiveResistanceLines.Count > 0) allLines.AddRange(strat.ActiveResistanceLines);
                         if (strat.ActiveSupportLines.Count > 0) allLines.AddRange(strat.ActiveSupportLines);
@@ -515,8 +641,9 @@ namespace Test.WinForms.Forms
                             strat.Valleys,
                             allLines,
                             summary,
-                            title: $"{request.Coin} {interval.ToIntervalString()} 趋势线与极值结构折线图",
-                            startGlobalIndex: startGlobal);
+                            title: $"{request.Coin} {interval.ToIntervalString()} 趋势线与极值结构折线图 (回测完成)",
+                            startGlobalIndex: startGlobal,
+                            autoScaleAxes: true);
 
                         formsPlot.Refresh();
 
@@ -527,7 +654,7 @@ namespace Test.WinForms.Forms
                         lblStatActiveLines.Text = $"活跃趋势线: 阻力 {strat.ActiveResistanceLines.Count} | 支撑 {strat.ActiveSupportLines.Count}";
                         lblStatDeletedLines.Text = $"已击穿删除: {strat.DeletedTrendLinesCount} 条";
 
-                        AppendLogSafe($"\n[回测成功] 耗时: {_latestResult.ElapsedMilliseconds} ms, 价格折线图、高低点与趋势线已成功绘制！", Color.FromArgb(74, 222, 128));
+                        AppendLogSafe($"\n[回测成功] 耗时: {_latestResult.ElapsedMilliseconds} ms, 价格折线图、高低点与趋势线已全量绘制完成！", Color.FromArgb(74, 222, 128));
                     });
                 }
                 else
@@ -544,6 +671,7 @@ namespace Test.WinForms.Forms
                 btnStart.Enabled = true;
                 btnStop.Enabled = false;
                 _cts = null;
+                _isChartRendering = false;
             }
         }
 

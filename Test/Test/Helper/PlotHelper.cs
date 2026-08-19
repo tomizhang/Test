@@ -12,10 +12,32 @@ namespace Common.Helper
     /// 1. 价格走势折线图 (Close Price Line, 0.8f 蓝线)
     /// 2. 高低点极值精准标记 (波峰▲最高价 High, 波谷▼最低价 Low, 标记大小 4)
     /// 3. 阻力趋势线 (橙色, 0.8f) 与 支撑趋势线 (青色, 0.8f) 完整延伸
-    /// 4. 结构化中文描述摘要卡片与专业暗黑配色
+    /// 4. 自动调节 X/Y 轴与呼吸边距 (Auto-Scale Margins)
+    /// 5. 全面系统字体检测，彻底杜绝所有标题、图例、坐标轴与卡片中文乱码
     /// </summary>
     public static class PlotHelper
     {
+        /// <summary>
+        /// 自动检测并获取当前系统支持的最佳中文字体名称
+        /// </summary>
+        public static string GetInstalledChineseFont()
+        {
+            try
+            {
+                // ScottPlot 5: Fonts.Detect(string text) 自动探测并返回包含该文本字形的本地字体名称
+                string detected = Fonts.Detect("量化回测趋势线高低点走势价格");
+                if (!string.IsNullOrWhiteSpace(detected))
+                {
+                    return detected;
+                }
+            }
+            catch
+            {
+            }
+
+            return "Microsoft YaHei";
+        }
+
         /// <summary>
         /// 核心绘图管线：将 K 线价格折线、高低点标记、阻力/支撑趋势线及描述摘要渲染至指定 ScottPlot.Plot 画布
         /// </summary>
@@ -27,6 +49,7 @@ namespace Common.Helper
         /// <param name="summaryDescription">图表内嵌描述摘要信息</param>
         /// <param name="title">图表主标题</param>
         /// <param name="startGlobalIndex">首根 K 线的全局索引起点 (默认 0)</param>
+        /// <param name="autoScaleAxes">是否自动动态适配调节 X/Y 轴范围 (默认 true)</param>
         public static void BuildPlot(
             Plot plot,
             IReadOnlyList<RawKline> klines,
@@ -35,7 +58,8 @@ namespace Common.Helper
             IReadOnlyList<TrendLine> trendLines,
             string summaryDescription,
             string title = "量化回测 - 趋势线与高低点结构分析图",
-            int startGlobalIndex = 0)
+            int startGlobalIndex = 0,
+            bool autoScaleAxes = true)
         {
             if (plot == null || klines == null || klines.Count == 0)
             {
@@ -44,8 +68,8 @@ namespace Common.Helper
 
             plot.Clear();
 
-            // 1. 中文字体配置 (Windows 原生微软雅黑，彻底解决中文乱码)
-            string chineseFont = "Microsoft YaHei";
+            // 1. 全局与局部中文字体配置 (检测系统原生中文字体，全组件覆盖彻底根治方块乱码)
+            string chineseFont = GetInstalledChineseFont();
             Fonts.Default = chineseFont;
 
             // 2. 专业 TradingView 暗色系主题配色
@@ -71,7 +95,7 @@ namespace Common.Helper
             priceLine.LineWidth = 0.8f; // 线宽 0.8f
             priceLine.MarkerSize = 0;   // 纯平滑折线
             priceLine.Color = Color.FromHex("#38bdf8"); // 天空蓝 Sky 400
-            priceLine.LegendText = $"价格收盘折线 (共 {count:N0} 根)";
+            priceLine.LegendText = $"价格收盘折线 ({count:N0}根)";
 
             // 4. 绘制高低点极值标记 (波峰▲最高价 High, 波谷▼最低价 Low, 大小 4)
             int peaksCount = 0;
@@ -97,7 +121,7 @@ namespace Common.Helper
                     peakScatter.MarkerSize = 4; // 标记大小 4
                     peakScatter.Color = Color.FromHex("#ef4444"); // 红色高点
                     peakScatter.LineWidth = 0;
-                    peakScatter.LegendText = $"波峰高点 (Peaks: {peaksCount})";
+                    peakScatter.LegendText = $"波峰高点 ({peaksCount})";
                 }
             }
 
@@ -124,7 +148,7 @@ namespace Common.Helper
                     valleyScatter.MarkerSize = 4; // 标记大小 4
                     valleyScatter.Color = Color.FromHex("#22c55e"); // 绿色低点
                     valleyScatter.LineWidth = 0;
-                    valleyScatter.LegendText = $"波谷低点 (Valleys: {valleysCount})";
+                    valleyScatter.LegendText = $"波谷低点 ({valleysCount})";
                 }
             }
 
@@ -164,7 +188,7 @@ namespace Common.Helper
                 }
             }
 
-            // 6. 添加左上角结构化描述摘要卡片 (中文字体支持)
+            // 6. 添加左上角结构化描述摘要卡片 (强制中文字体)
             string timeRange = $"{TimeHelper.FromUnixTimeMilliseconds(klines[0].OpenTime):yyyy-MM-dd HH:mm} ~ {TimeHelper.FromUnixTimeMilliseconds(klines[count - 1].CloseTime):yyyy-MM-dd HH:mm}";
             string fullSummary = $"【量化结构指标摘要】\n" +
                                  $"• 时间跨度: {timeRange} (UTC+0)\n" +
@@ -182,7 +206,7 @@ namespace Common.Helper
             annotation.LabelStyle.BorderWidth = 1.5f;
             annotation.LabelStyle.ShadowColor = Colors.Transparent;
 
-            // 7. 设置标题、坐标轴标签与图例
+            // 7. 设置标题、坐标轴标签与图例 (全面绑定中文字体，解决图例与坐标轴乱码)
             plot.Title(title, size: 16);
             plot.Axes.Title.Label.FontName = chineseFont;
             plot.Axes.Title.Label.ForeColor = Color.FromHex("#f8fafc");
@@ -190,16 +214,24 @@ namespace Common.Helper
             plot.Axes.Bottom.Label.Text = "全局 K 线序列号 (Global Bar Index)";
             plot.Axes.Bottom.Label.FontName = chineseFont;
             plot.Axes.Bottom.Label.ForeColor = Color.FromHex("#cbd5e1");
+            plot.Axes.Bottom.TickLabelStyle.FontName = chineseFont;
 
             plot.Axes.Left.Label.Text = "价格 (USDT)";
             plot.Axes.Left.Label.FontName = chineseFont;
             plot.Axes.Left.Label.ForeColor = Color.FromHex("#cbd5e1");
+            plot.Axes.Left.TickLabelStyle.FontName = chineseFont;
 
             plot.ShowLegend(Alignment.UpperRight);
+            plot.Legend.FontName = chineseFont;
             plot.Legend.BackgroundColor = Color.FromHex("#0f172a").WithAlpha(0.85);
             plot.Legend.OutlineColor = Color.FromHex("#475569");
 
-            plot.Axes.AutoScale();
+            // 8. 自动调节 X/Y 轴坐标与留白呼吸边距 (Auto-Scale)
+            if (autoScaleAxes)
+            {
+                plot.Axes.Margins(horizontal: 0.02, vertical: 0.08); // X轴留白2%，Y轴上下留白8%
+                plot.Axes.AutoScale();
+            }
         }
 
         /// <summary>
@@ -214,7 +246,8 @@ namespace Common.Helper
             IReadOnlyList<TrendLine> supportLines,
             string summaryDescription,
             string title = "量化回测 - 趋势线与高低点结构分析图",
-            int startGlobalIndex = 0)
+            int startGlobalIndex = 0,
+            bool autoScaleAxes = true)
         {
             var allLines = new List<TrendLine>();
             if (resistanceLines != null) allLines.AddRange(resistanceLines);
@@ -228,7 +261,8 @@ namespace Common.Helper
                 allLines,
                 summaryDescription,
                 title,
-                startGlobalIndex);
+                startGlobalIndex,
+                autoScaleAxes);
         }
 
         /// <summary>
@@ -263,7 +297,8 @@ namespace Common.Helper
                 supportLines,
                 summaryDescription,
                 title,
-                startGlobalIndex);
+                startGlobalIndex,
+                autoScaleAxes: true);
 
             // 确保落盘目录并保存图片
             if (string.IsNullOrWhiteSpace(outputFilePath))
