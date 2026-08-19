@@ -92,13 +92,7 @@ namespace Common
     #endregion
 
     /// <summary>
-    /// 高性能币安 Parquet 数据读取帮助类 (DuckDB 向量化引擎 + 3 线程有序滑动窗口预取 + 全 Decimal 精度支持)
-    /// 核心特性：
-    /// 1. 严格对接 Config.cs 路径结构直接下推 read_parquet 文件物理路径（不进行 SQL 行级日期二次过滤）
-    /// 2. 双独立队列：A: K线队列 (KlineQueue)，B: Tick队列 (TickQueue)，两队列互不阻塞完全解耦
-    /// 3. Tick 数据采用 3 线程有序滑动窗口（Ordered Prefetching Pipeline），多线程并行满速读取，内存暂存保序，100% 杜绝时间乱序
-    /// 4. 采用原生强类型读取直入 decimal readonly struct，杜绝浮点数计算精度丢失
-    /// 5. 内部全方位原子计数与数据统计监控
+    /// 高性能币安 Parquet 数据读取帮助类 (DuckDB 向量化引擎 + 3 线程有序滑动窗口预取 + 生产者-消费者流式流水线)
     /// </summary>
     public class ParquetDataReader : IDisposable
     {
@@ -106,16 +100,16 @@ namespace Common
         public ConcurrentQueue<RawKline> KlineQueue { get; } = new ConcurrentQueue<RawKline>();
         public ConcurrentQueue<RawTick> TickQueue { get; } = new ConcurrentQueue<RawTick>();
 
-        // 内部原子统计计数器
+        // 内部原子统计计数器与状态
         private long _totalKlinesLoaded = 0;
         private long _totalTicksLoaded = 0;
         private int _loadedKlineDaysCount = 0;
         private int _loadedTickDaysCount = 0;
         private DateTime? _currentKlineDate = null;
         private DateTime? _currentTickDate = null;
+        private volatile bool _isTickStreamingCompleted = false;
 
         private readonly Stopwatch _stopwatch = new Stopwatch();
-        private readonly object _stateLock = new object();
         private bool _disposed = false;
 
         public ParquetDataReader()
@@ -126,49 +120,16 @@ namespace Common
 
         #region 实时统计属性 (Statistics Properties)
 
-        /// <summary>
-        /// 已加载的 K 线总条数
-        /// </summary>
         public long TotalKlinesLoaded => Interlocked.Read(ref _totalKlinesLoaded);
-
-        /// <summary>
-        /// 已加载的 Tick/Trade 总条数
-        /// </summary>
         public long TotalTicksLoaded => Interlocked.Read(ref _totalTicksLoaded);
-
-        /// <summary>
-        /// 已加载的 K 线天数
-        /// </summary>
         public int LoadedKlineDaysCount => Volatile.Read(ref _loadedKlineDaysCount);
-
-        /// <summary>
-        /// 已加载的 Tick 天数
-        /// </summary>
         public int LoadedTickDaysCount => Volatile.Read(ref _loadedTickDaysCount);
-
-        /// <summary>
-        /// 当前最后加载的 K 线日期
-        /// </summary>
         public DateTime? CurrentKlineDate => _currentKlineDate;
-
-        /// <summary>
-        /// 当前最后加载的 Tick 日期
-        /// </summary>
         public DateTime? CurrentTickDate => _currentTickDate;
-
-        /// <summary>
-        /// 当前 K 线队列积压量
-        /// </summary>
+        public bool IsTickStreamingCompleted => _isTickStreamingCompleted;
         public int KlineQueueCount => KlineQueue.Count;
-
-        /// <summary>
-        /// 当前 Tick 队列积压量
-        /// </summary>
         public int TickQueueCount => TickQueue.Count;
 
-        /// <summary>
-        /// 获取完整的统计快照
-        /// </summary>
         public ReaderStatistics GetStatistics()
         {
             return new ReaderStatistics
@@ -177,34 +138,20 @@ namespace Common
                 TotalTicksLoaded = TotalTicksLoaded,
                 LoadedKlineDaysCount = LoadedKlineDaysCount,
                 LoadedTickDaysCount = LoadedTickDaysCount,
-                CurrentKlineDate = CurrentKlineDate,
-                CurrentTickDate = CurrentTickDate,
-                KlineQueueCount = KlineQueueCount,
-                TickQueueCount = TickQueueCount,
+                CurrentKlineDate = _currentKlineDate,
+                CurrentTickDate = _currentTickDate,
+                KlineQueueCount = KlineQueue.Count,
+                TickQueueCount = TickQueue.Count,
                 ElapsedTime = _stopwatch.Elapsed
             };
         }
 
-        /// <summary>
-        /// 获取格式化统计摘要字符串
-        /// </summary>
-        public string GetStatusSummary()
-        {
-            return GetStatistics().ToString();
-        }
+        public string GetStatusSummary() => GetStatistics().ToString();
 
         #endregion
 
-        #region 单日主动加载接口 (Single Day Direct Loading)
+        #region 单日与多日加载入口方法
 
-        /// <summary>
-        /// 主动读取指定币种某一天的 K 线 Parquet 文件并直接入队
-        /// </summary>
-        /// <param name="coin">交易对 (如 BTCUSDT)</param>
-        /// <param name="date">日期</param>
-        /// <param name="interval">K线周期 (默认 1m)</param>
-        /// <param name="ct">取消令牌</param>
-        /// <returns>加载的 K 线条数</returns>
         public async Task<int> LoadKlineDayAsync(string coin, DateTime date, KlineInterval interval = KlineInterval.OneMinute, CancellationToken ct = default)
         {
             string filePath = Config.GetKlineFilePath(coin, interval, date, ".parquet");
@@ -218,19 +165,12 @@ namespace Common
                 }
                 Interlocked.Add(ref _totalKlinesLoaded, klines.Length);
                 Interlocked.Increment(ref _loadedKlineDaysCount);
-                _currentKlineDate = date.Date;
+                _currentKlineDate = date;
             }
 
             return klines.Length;
         }
 
-        /// <summary>
-        /// 主动读取指定币种某一天的 Tick/Trade Parquet 文件并直接入队
-        /// </summary>
-        /// <param name="coin">交易对 (如 BTCUSDT)</param>
-        /// <param name="date">日期</param>
-        /// <param name="ct">取消令牌</param>
-        /// <returns>加载的 Tick 条数</returns>
         public async Task<int> LoadTickDayAsync(string coin, DateTime date, CancellationToken ct = default)
         {
             string filePath = Config.GetTradeFilePath(coin, date, ".parquet");
@@ -244,33 +184,12 @@ namespace Common
                 }
                 Interlocked.Add(ref _totalTicksLoaded, ticks.Length);
                 Interlocked.Increment(ref _loadedTickDaysCount);
-                _currentTickDate = date.Date;
+                _currentTickDate = date;
             }
 
             return ticks.Length;
         }
 
-        /// <summary>
-        /// 主动同时读取指定币种某一天的 K 线与 Tick Parquet 文件并分别入双队列
-        /// </summary>
-        public async Task<(int klineCount, int tickCount)> LoadDayAsync(string coin, DateTime date, KlineInterval interval = KlineInterval.OneMinute, CancellationToken ct = default)
-        {
-            var klineTask = LoadKlineDayAsync(coin, date, interval, ct);
-            var tickTask = LoadTickDayAsync(coin, date, ct);
-
-            await Task.WhenAll(klineTask, tickTask).ConfigureAwait(false);
-            return (klineTask.Result, tickTask.Result);
-        }
-
-        /// <summary>
-        /// 主动同时加载指定时间窗口区间内（如 2025-01-01 到 2025-07-31）的所有 K 线与 Tick 数据
-        /// </summary>
-        /// <param name="coin">交易对 (如 BTCUSDT)</param>
-        /// <param name="startDate">起始日期 (包含)</param>
-        /// <param name="endDate">结束日期 (包含)</param>
-        /// <param name="interval">K线周期 (默认 1m)</param>
-        /// <param name="parallelDays">Tick 3线程并行滑动窗口天数 (默认 3)</param>
-        /// <param name="ct">取消令牌</param>
         public async Task<(int klineCount, int tickCount)> LoadDateRangeAsync(
             string coin,
             DateTime startDate,
@@ -280,15 +199,12 @@ namespace Common
             CancellationToken ct = default)
         {
             var klineTask = StartKlineStreamingAsync(coin, startDate, endDate, interval, ct);
-            var tickTask = StartTickStreamingAsync(coin, startDate, endDate, parallelDays, maxBufferedDays: 5, ct);
+            var tickTask = StartTickStreamingAsync(coin, startDate, endDate, parallelDays, maxBufferedDays: 3, ct);
 
             await Task.WhenAll(klineTask, tickTask).ConfigureAwait(false);
             return ((int)TotalKlinesLoaded, (int)TotalTicksLoaded);
         }
 
-        /// <summary>
-        /// 预加载指定日期区间内的全部 K 线数据
-        /// </summary>
         public async Task<int> LoadKlineRangeAsync(
             string coin,
             DateTime startDate,
@@ -305,16 +221,9 @@ namespace Common
         #region 3 线程有序滑动窗口并行流式预取 (Ordered Parallel Prefetching Stream)
 
         /// <summary>
-        /// 启动 Tick 数据的后台 3 线程有序滑动窗口流式预取
-        /// 默认开启 3 个工作线程并行读取连续 3 天的 Tick Parquet 文件并在内存暂存，
-        /// 严格按照 Day 1 -> Day 2 -> Day 3 的时间顺序依次 Enqueue 入队，绝对不乱序。
+        /// 启动 Tick 数据的后台 3 线程有序滑动窗口流式预取（生产者任务）
+        /// 并行读取连续天数的 Tick Parquet 文件并在内存暂存，按时间顺序依次 Enqueue 入队
         /// </summary>
-        /// <param name="coin">交易对 (如 BTCUSDT)</param>
-        /// <param name="startDate">起始日期 (包含)</param>
-        /// <param name="endDate">结束日期 (包含)</param>
-        /// <param name="parallelDays">并行预取天数窗口 (默认 3)</param>
-        /// <param name="maxBufferedDays">队列最大积压天数背压阈值 (默认 3 天，防止消费慢撑爆内存)</param>
-        /// <param name="ct">取消令牌</param>
         public async Task StartTickStreamingAsync(
             string coin,
             DateTime startDate,
@@ -323,7 +232,13 @@ namespace Common
             int maxBufferedDays = 3,
             CancellationToken ct = default)
         {
-            if (startDate > endDate) return;
+            _isTickStreamingCompleted = false;
+
+            if (startDate > endDate)
+            {
+                _isTickStreamingCompleted = true;
+                return;
+            }
 
             List<DateTime> allDates = new List<DateTime>();
             for (DateTime d = startDate.Date; d <= endDate.Date; d = d.AddDays(1))
@@ -333,62 +248,63 @@ namespace Common
 
             Logger.Log($"[ParquetDataReader] Starting Tick streaming for {coin} from {startDate:yyyy-MM-dd} to {endDate:yyyy-MM-dd} ({allDates.Count} days, ParallelWindow: {parallelDays}).");
 
-            // 滑动窗口队列: 存放 (日期, 正在异步执行的读取Task)
             var slidingWindow = new Queue<(DateTime Date, Task<RawTick[]> FetchTask)>();
             int nextScheduleIndex = 0;
 
-            // 1. 初始化滑动窗口：并发启动前 parallelDays 天的读取任务
-            while (slidingWindow.Count < parallelDays && nextScheduleIndex < allDates.Count)
+            try
             {
-                DateTime dateToFetch = allDates[nextScheduleIndex++];
-                string filePath = Config.GetTradeFilePath(coin, dateToFetch, ".parquet");
-                var fetchTask = Task.Run(() => ReadTickFileInternalAsync(filePath, ct), ct);
-                slidingWindow.Enqueue((dateToFetch, fetchTask));
-            }
-
-            // 2. 顺序提交循环 (Ordered Committer Loop)
-            while (slidingWindow.Count > 0 && !ct.IsCancellationRequested)
-            {
-                // 出队当前时间线上最靠前的一天 (Day N)
-                var (currDate, currTask) = slidingWindow.Dequeue();
-
-                // 调度下一天 (Day N + parallelDays) 填补滑动窗口，保持始终有 parallelDays 个任务在后台并行读取
-                if (nextScheduleIndex < allDates.Count && !ct.IsCancellationRequested)
+                // 1. 初始化滑动窗口：并发启动前 parallelDays 天的读取任务
+                while (slidingWindow.Count < parallelDays && nextScheduleIndex < allDates.Count)
                 {
-                    DateTime nextDate = allDates[nextScheduleIndex++];
-                    string nextFilePath = Config.GetTradeFilePath(coin, nextDate, ".parquet");
-                    var nextTask = Task.Run(() => ReadTickFileInternalAsync(nextFilePath, ct), ct);
-                    slidingWindow.Enqueue((nextDate, nextTask));
+                    DateTime dateToFetch = allDates[nextScheduleIndex++];
+                    string filePath = Config.GetTradeFilePath(coin, dateToFetch, ".parquet");
+                    var fetchTask = Task.Run(() => ReadTickFileInternalAsync(filePath, ct), ct);
+                    slidingWindow.Enqueue((dateToFetch, fetchTask));
                 }
 
-                // 等待当前 Day N 完成 (如果后续天已先读完会在内存 Task 中暂存，严格在此等待 Day N 先入队)
-                RawTick[] ticks = await currTask.ConfigureAwait(false);
-
-                // 背压控制：如果消费端积压过大（超过最大缓冲天数对应的数据量估计），适度等待消费端消化
-                while (TickQueue.Count > maxBufferedDays * 2_000_000 && !ct.IsCancellationRequested)
+                // 2. 顺序提交循环 (Ordered Committer Loop)
+                while (slidingWindow.Count > 0 && !ct.IsCancellationRequested)
                 {
-                    await Task.Delay(20, ct).ConfigureAwait(false);
-                }
+                    var (currDate, currTask) = slidingWindow.Dequeue();
 
-                // 将 Day N 的所有 Tick 按原始顺序严格推入 TickQueue
-                if (ticks.Length > 0)
-                {
-                    for (int i = 0; i < ticks.Length; i++)
+                    // 调度下一天填补滑动窗口
+                    if (nextScheduleIndex < allDates.Count && !ct.IsCancellationRequested)
                     {
-                        TickQueue.Enqueue(ticks[i]);
+                        DateTime nextDate = allDates[nextScheduleIndex++];
+                        string nextFilePath = Config.GetTradeFilePath(coin, nextDate, ".parquet");
+                        var nextTask = Task.Run(() => ReadTickFileInternalAsync(nextFilePath, ct), ct);
+                        slidingWindow.Enqueue((nextDate, nextTask));
                     }
-                    Interlocked.Add(ref _totalTicksLoaded, ticks.Length);
-                    Interlocked.Increment(ref _loadedTickDaysCount);
-                    _currentTickDate = currDate;
+
+                    // 等待当前 Day N 完成
+                    RawTick[] ticks = await currTask.ConfigureAwait(false);
+
+                    // 背压控制：当队列积压超过阈值时适度让步，防止撑爆内存
+                    while (TickQueue.Count > maxBufferedDays * 2_000_000 && !ct.IsCancellationRequested)
+                    {
+                        await Task.Delay(20, ct).ConfigureAwait(false);
+                    }
+
+                    // 将 Day N 的所有 Tick 按原始顺序推入 TickQueue
+                    if (ticks.Length > 0)
+                    {
+                        for (int i = 0; i < ticks.Length; i++)
+                        {
+                            TickQueue.Enqueue(ticks[i]);
+                        }
+                        Interlocked.Add(ref _totalTicksLoaded, ticks.Length);
+                        Interlocked.Increment(ref _loadedTickDaysCount);
+                        _currentTickDate = currDate;
+                    }
                 }
             }
-
-            Logger.Log($"[ParquetDataReader] Tick streaming completed for {coin}. Total Ticks: {TotalTicksLoaded:N0} across {LoadedTickDaysCount} days.");
+            finally
+            {
+                _isTickStreamingCompleted = true;
+                Logger.Log($"[ParquetDataReader] Tick streaming completed for {coin}. Total Ticks: {TotalTicksLoaded:N0} across {LoadedTickDaysCount} days.");
+            }
         }
 
-        /// <summary>
-        /// 启动 K 线数据的后台异步流式快速加载（完全独立于 Tick 流，满速推进）
-        /// </summary>
         public async Task StartKlineStreamingAsync(
             string coin,
             DateTime startDate,
@@ -424,12 +340,8 @@ namespace Common
 
         #endregion
 
-        #region DuckDB 核心原生文件下推解析逻辑 (Native DuckDB Pushdown Reader)
+        #region DuckDB 极速原生文件下推解析 (High-Speed Pushdown Parsing)
 
-        /// <summary>
-        /// 基于 DuckDB 原生向量化引擎直接读取 Tick/Trade Parquet 文件
-        /// 直接文件路径下推 read_parquet('path')，不进行 SQL 行级日期二次过滤，原生类型强读装填
-        /// </summary>
         private static async Task<RawTick[]> ReadTickFileInternalAsync(string filePath, CancellationToken ct)
         {
             if (!File.Exists(filePath))
@@ -440,7 +352,6 @@ namespace Common
 
             try
             {
-                // 使用内存 DuckDB 连接 (线程隔离，纳秒级开销，安全并行)
                 using var connection = new DuckDBConnection("DataSource=:memory:");
                 await connection.OpenAsync(ct).ConfigureAwait(false);
 
@@ -450,7 +361,6 @@ namespace Common
 
                 using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
 
-                // 智能解析列索引（自适应币安不同版本命名：trade_id, id, price, p, time, transact_time 等）
                 int idIdx = FindColumnOrdinal(reader, "trade_id", "id", "tradeId", "agg_trade_id", "aggregate_trade_id");
                 int priceIdx = FindColumnOrdinal(reader, "price", "p");
                 int qtyIdx = FindColumnOrdinal(reader, "qty", "quantity", "q");
@@ -459,9 +369,10 @@ namespace Common
                 int isBuyerMakerIdx = FindColumnOrdinal(reader, "is_buyer_maker", "isBuyerMaker", "buyer_maker", "m");
                 int isBestMatchIdx = FindColumnOrdinal(reader, "is_best_match", "isBestMatch", "M");
 
-                var list = new List<RawTick>(200000);
+                var list = new List<RawTick>(300000);
 
-                while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                // 极速同步行迭代，杜绝数百万次 await Task 状态机调度损耗
+                while (reader.Read())
                 {
                     long tradeId = idIdx >= 0 ? ReadInt64(reader, idIdx) : 0;
                     decimal price = priceIdx >= 0 ? ReadDecimal(reader, priceIdx) : 0m;
@@ -492,10 +403,6 @@ namespace Common
             }
         }
 
-        /// <summary>
-        /// 基于 DuckDB 原生向量化引擎直接读取 Kline Parquet 文件
-        /// 直接文件路径下推 read_parquet('path')，不进行 SQL 行级日期二次过滤
-        /// </summary>
         private static async Task<RawKline[]> ReadKlineFileInternalAsync(string filePath, CancellationToken ct)
         {
             if (!File.Exists(filePath))
@@ -520,16 +427,16 @@ namespace Common
                 int highIdx = FindColumnOrdinal(reader, "high", "h");
                 int lowIdx = FindColumnOrdinal(reader, "low", "l");
                 int closeIdx = FindColumnOrdinal(reader, "close", "c");
-                int volumeIdx = FindColumnOrdinal(reader, "volume", "v", "base_volume", "vol");
+                int volumeIdx = FindColumnOrdinal(reader, "volume", "v");
                 int closeTimeIdx = FindColumnOrdinal(reader, "close_time", "closeTime", "endTime", "end_time", "T");
-                int quoteVolIdx = FindColumnOrdinal(reader, "quote_volume", "quoteVolume", "quote_asset_volume", "q");
-                int countIdx = FindColumnOrdinal(reader, "count", "trades", "trade_count", "number_of_trades", "n");
-                int takerBuyVolIdx = FindColumnOrdinal(reader, "taker_buy_volume", "takerBuyVolume", "taker_buy_base_asset_volume", "V");
-                int takerBuyQuoteVolIdx = FindColumnOrdinal(reader, "taker_buy_quote_volume", "takerBuyQuoteVolume", "taker_buy_quote_asset_volume", "Q");
+                int quoteVolumeIdx = FindColumnOrdinal(reader, "quote_volume", "quoteVolume", "q");
+                int tradeCountIdx = FindColumnOrdinal(reader, "count", "trades", "tradeCount", "n");
+                int tbVolumeIdx = FindColumnOrdinal(reader, "taker_buy_volume", "takerBuyBaseAssetVolume", "V");
+                int tbQuoteVolumeIdx = FindColumnOrdinal(reader, "taker_buy_quote_volume", "takerBuyQuoteAssetVolume", "Q");
 
-                var list = new List<RawKline>(2000);
+                var list = new List<RawKline>(1500);
 
-                while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                while (reader.Read())
                 {
                     long openTime = openTimeIdx >= 0 ? ReadInt64(reader, openTimeIdx) : 0;
                     decimal open = openIdx >= 0 ? ReadDecimal(reader, openIdx) : 0m;
@@ -538,10 +445,10 @@ namespace Common
                     decimal close = closeIdx >= 0 ? ReadDecimal(reader, closeIdx) : 0m;
                     decimal volume = volumeIdx >= 0 ? ReadDecimal(reader, volumeIdx) : 0m;
                     long closeTime = closeTimeIdx >= 0 ? ReadInt64(reader, closeTimeIdx) : 0;
-                    decimal quoteVol = quoteVolIdx >= 0 ? ReadDecimal(reader, quoteVolIdx) : 0m;
-                    long count = countIdx >= 0 ? ReadInt64(reader, countIdx) : 0;
-                    decimal takerBuyVol = takerBuyVolIdx >= 0 ? ReadDecimal(reader, takerBuyVolIdx) : 0m;
-                    decimal takerBuyQuoteVol = takerBuyQuoteVolIdx >= 0 ? ReadDecimal(reader, takerBuyQuoteVolIdx) : 0m;
+                    decimal quoteVolume = quoteVolumeIdx >= 0 ? ReadDecimal(reader, quoteVolumeIdx) : 0m;
+                    long tradeCount = tradeCountIdx >= 0 ? ReadInt64(reader, tradeCountIdx) : 0;
+                    decimal tbVolume = tbVolumeIdx >= 0 ? ReadDecimal(reader, tbVolumeIdx) : 0m;
+                    decimal tbQuoteVolume = tbQuoteVolumeIdx >= 0 ? ReadDecimal(reader, tbQuoteVolumeIdx) : 0m;
 
                     list.Add(new RawKline
                     {
@@ -552,10 +459,10 @@ namespace Common
                         Close = close,
                         Volume = volume,
                         CloseTime = closeTime,
-                        QuoteVolume = quoteVol,
-                        TradeCount = count,
-                        TakerBuyVolume = takerBuyVol,
-                        TakerBuyQuoteVolume = takerBuyQuoteVol
+                        QuoteVolume = quoteVolume,
+                        TradeCount = tradeCount,
+                        TakerBuyVolume = tbVolume,
+                        TakerBuyQuoteVolume = tbQuoteVolume
                     });
                 }
 
@@ -567,10 +474,6 @@ namespace Common
                 return Array.Empty<RawKline>();
             }
         }
-
-        #endregion
-
-        #region 高性能列解析与零装箱读取辅助函数 (Fast Helpers)
 
         private static int FindColumnOrdinal(DbDataReader reader, params string[] candidateNames)
         {
@@ -615,104 +518,32 @@ namespace Common
             if (val is bool b) return b;
             if (val is int i) return i != 0;
             if (val is long l) return l != 0;
-            if (val is string s) return bool.TryParse(s, out var result) && result;
+            if (val is string s && bool.TryParse(s, out var result)) return result;
             return Convert.ToBoolean(val);
         }
 
         #endregion
 
-        #region 队列快速消费与清空方法 (Consumer Helpers)
+        #region 队列快速消费与清空方法
 
-        /// <summary>
-        /// 从 Tick 队列尝试取出一个 Tick
-        /// </summary>
         public bool TryDequeueTick(out RawTick tick) => TickQueue.TryDequeue(out tick);
-
-        /// <summary>
-        /// 从 K 线队列尝试取出一根 K 线
-        /// </summary>
         public bool TryDequeueKline(out RawKline kline) => KlineQueue.TryDequeue(out kline);
 
-        /// <summary>
-        /// 批量从 Tick 队列出队到数组缓冲区（极速批量消费）
-        /// </summary>
-        public int DequeueTickBatch(RawTick[] buffer)
-        {
-            if (buffer == null || buffer.Length == 0) return 0;
-            int count = 0;
-            while (count < buffer.Length && TickQueue.TryDequeue(out RawTick tick))
-            {
-                buffer[count++] = tick;
-            }
-            return count;
-        }
-
-        /// <summary>
-        /// 批量从 Tick 队列出队到 Span 内存缓冲区（极速批量消费）
-        /// </summary>
-        public int DequeueTickBatch(Span<RawTick> buffer)
-        {
-            int count = 0;
-            while (count < buffer.Length && TickQueue.TryDequeue(out RawTick tick))
-            {
-                buffer[count++] = tick;
-            }
-            return count;
-        }
-
-        /// <summary>
-        /// 批量从 K 线队列出队到数组缓冲区
-        /// </summary>
-        public int DequeueKlineBatch(RawKline[] buffer)
-        {
-            if (buffer == null || buffer.Length == 0) return 0;
-            int count = 0;
-            while (count < buffer.Length && KlineQueue.TryDequeue(out RawKline kline))
-            {
-                buffer[count++] = kline;
-            }
-            return count;
-        }
-
-        /// <summary>
-        /// 批量从 K 线队列出队到 Span 内存缓冲区
-        /// </summary>
-        public int DequeueKlineBatch(Span<RawKline> buffer)
-        {
-            int count = 0;
-            while (count < buffer.Length && KlineQueue.TryDequeue(out RawKline kline))
-            {
-                buffer[count++] = kline;
-            }
-            return count;
-        }
-
-        /// <summary>
-        /// 清空所有队列与统计状态
-        /// </summary>
         public void Clear()
         {
-            lock (_stateLock)
-            {
-                while (KlineQueue.TryDequeue(out _)) { }
-                while (TickQueue.TryDequeue(out _)) { }
-
-                Interlocked.Exchange(ref _totalKlinesLoaded, 0);
-                Interlocked.Exchange(ref _totalTicksLoaded, 0);
-                Volatile.Write(ref _loadedKlineDaysCount, 0);
-                Volatile.Write(ref _loadedTickDaysCount, 0);
-                _currentKlineDate = null;
-                _currentTickDate = null;
-                _stopwatch.Restart();
-            }
+            while (KlineQueue.TryDequeue(out _)) { }
+            while (TickQueue.TryDequeue(out _)) { }
         }
 
         public void Dispose()
         {
-            if (_disposed) return;
-            _disposed = true;
-            Clear();
-            _stopwatch.Stop();
+            if (!_disposed)
+            {
+                Clear();
+                _stopwatch.Stop();
+                _disposed = true;
+            }
+            GC.SuppressFinalize(this);
         }
 
         #endregion
