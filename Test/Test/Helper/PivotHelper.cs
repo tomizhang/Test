@@ -20,12 +20,12 @@ namespace Common.Helper
     }
 
     /// <summary>
-    /// 统一极值点 (波峰/波谷) 数据结构 (原生 decimal 强类型，包含 UTC+0 时间与 Unix 毫秒时间戳)
+    /// 统一极值点 (波峰/波谷) 数据结构 (原生 decimal 强类型，包含 UTC+0 时间与全局单调下标)
     /// </summary>
     public struct PivotPoint
     {
         /// <summary>
-        /// 在 K 线历史序列中的索引下标
+        /// 在全局 K 线历史序列中的全局单调下标 (Global Bar Index，不受滑动窗口移除影响)
         /// </summary>
         public int Index { get; set; }
 
@@ -84,23 +84,111 @@ namespace Common.Helper
 
     /// <summary>
     /// 高性能局部高低点 (波峰/波谷) 计算引擎
-    /// 适配项目标准 RawKline 与 Span 连续内存视图，全面采用 decimal 高精度
+    /// 支持全量扫描与 O(1) 毫秒级多层增量计算
     /// </summary>
     public static class PivotHelper
     {
-        #region 1. 适配 IReadOnlyList<RawKline> 策略接口的高层重载
+        #region 1. 核心: O(1) 单步增量极值判定 (Incremental Pivot Detection)
 
         /// <summary>
-        /// 经典双侧分形计算波峰与波谷 (直接接收 IReadOnlyList&lt;RawKline&gt;)
+        /// 增量极值判定：当新 K 线抵达时，仅对刚刚完成右侧确认窗口的那一根候选 K 线进行 O(1) 判定
+        /// 候选 K 线位置为：倒数第 (rightLen + 1) 根
         /// </summary>
-        /// <param name="klines">K线历史数据序列</param>
-        /// <param name="leftLen">左侧需低于/高于当前极值的 K 线根数</param>
-        /// <param name="rightLen">右侧需低于/高于当前极值的 K 线根数</param>
-        /// <returns>返回识别出的波峰和波谷点列表</returns>
+        /// <param name="klines">当前 K 线滑动窗口</param>
+        /// <param name="candidateGlobalIndex">候选 K 线的全局单调下标</param>
+        /// <param name="leftLen">左侧需低于/高于当前极值的 K 线根数 (默认 5)</param>
+        /// <param name="rightLen">右侧需低于/高于当前极值的 K 线根数 (默认 5)</param>
+        /// <param name="newPeak">若确认为新波峰，返回波峰结构体</param>
+        /// <param name="newValley">若确认为新波谷，返回波谷结构体</param>
+        /// <returns>是否有新极值点确认</returns>
+        public static (bool hasPeak, bool hasValley, PivotPoint peak, PivotPoint valley) TryDetectIncrementalPivot(
+            IReadOnlyList<RawKline> klines,
+            int candidateGlobalIndex,
+            int leftLen = 5,
+            int rightLen = 5)
+        {
+            PivotPoint peak = default;
+            PivotPoint valley = default;
+            bool hasPeak = false;
+            bool hasValley = false;
+
+            if (klines == null || klines.Count < leftLen + rightLen + 1)
+            {
+                return (false, false, peak, valley);
+            }
+
+            int candidateLocalIdx = klines.Count - 1 - rightLen;
+            if (candidateLocalIdx < leftLen)
+            {
+                return (false, false, peak, valley);
+            }
+
+            decimal candidateHigh = klines[candidateLocalIdx].High;
+            decimal candidateLow = klines[candidateLocalIdx].Low;
+
+            bool isPeak = true;
+            bool isValley = true;
+
+            int startIdx = candidateLocalIdx - leftLen;
+            int endIdx = candidateLocalIdx + rightLen;
+
+            for (int j = startIdx; j <= endIdx; j++)
+            {
+                if (j == candidateLocalIdx) continue;
+
+                if (isPeak && klines[j].High >= candidateHigh)
+                    isPeak = false;
+
+                if (isValley && klines[j].Low <= candidateLow)
+                    isValley = false;
+
+                if (!isPeak && !isValley)
+                    break;
+            }
+
+            if (isPeak)
+            {
+                hasPeak = true;
+                peak = new PivotPoint
+                {
+                    Index = candidateGlobalIndex,
+                    Time = TimeHelper.FromUnixTimeMilliseconds(klines[candidateLocalIdx].OpenTime),
+                    TimestampMs = klines[candidateLocalIdx].OpenTime,
+                    Price = candidateHigh,
+                    Type = PivotType.Peak,
+                    IsFractalConfirmed = true
+                };
+            }
+
+            if (isValley)
+            {
+                hasValley = true;
+                valley = new PivotPoint
+                {
+                    Index = candidateGlobalIndex,
+                    Time = TimeHelper.FromUnixTimeMilliseconds(klines[candidateLocalIdx].OpenTime),
+                    TimestampMs = klines[candidateLocalIdx].OpenTime,
+                    Price = candidateLow,
+                    Type = PivotType.Valley,
+                    IsFractalConfirmed = true
+                };
+            }
+
+            return (hasPeak, hasValley, peak, valley);
+        }
+
+        #endregion
+
+        #region 2. 批量全量扫描方法 (Batch Analysis Overloads)
+
+        /// <summary>
+        /// 经典双侧分形全量计算波峰与波谷 (用于历史全量初始化与基准对齐)
+        /// </summary>
         public static (List<PivotPoint> Peaks, List<PivotPoint> Valleys) CalculatePeaks(
             IReadOnlyList<RawKline> klines,
             int leftLen = 5,
-            int rightLen = 5)
+            int rightLen = 5,
+            int startGlobalIndex = 0)
         {
             var peaks = new List<PivotPoint>();
             var valleys = new List<PivotPoint>();
@@ -136,7 +224,7 @@ namespace Common.Helper
                 {
                     peaks.Add(new PivotPoint
                     {
-                        Index = i,
+                        Index = startGlobalIndex + i,
                         Time = TimeHelper.FromUnixTimeMilliseconds(klines[i].OpenTime),
                         TimestampMs = klines[i].OpenTime,
                         Price = currentHigh,
@@ -149,7 +237,7 @@ namespace Common.Helper
                 {
                     valleys.Add(new PivotPoint
                     {
-                        Index = i,
+                        Index = startGlobalIndex + i,
                         Time = TimeHelper.FromUnixTimeMilliseconds(klines[i].OpenTime),
                         TimestampMs = klines[i].OpenTime,
                         Price = currentLow,
@@ -162,191 +250,9 @@ namespace Common.Helper
             return (peaks, valleys);
         }
 
-        /// <summary>
-        /// 高性能状态机计算波峰与波谷 (直接接收 IReadOnlyList&lt;RawKline&gt;，支持复用外部缓冲区拒绝 GC 分配)
-        /// </summary>
-        /// <param name="klines">K线历史数据序列</param>
-        /// <param name="peaksBuffer">用于装载波峰结果的复用缓冲区</param>
-        /// <param name="valleysBuffer">用于装载波谷结果的复用缓冲区</param>
-        /// <param name="reversalBars">确认极值反转所需的右侧 K 线根数 (默认 3)</param>
-        public static void CalculatePeaksFastReversal(
-            IReadOnlyList<RawKline> klines,
-            List<PivotPoint> peaksBuffer,
-            List<PivotPoint> valleysBuffer,
-            int reversalBars = 3)
-        {
-            peaksBuffer.Clear();
-            valleysBuffer.Clear();
-
-            if (klines == null || klines.Count < reversalBars + 1)
-            {
-                return;
-            }
-
-            int length = klines.Count;
-            int state = 0; // 0: 寻找波峰中, 1: 寻找波谷中
-            int candidateIdx = 0;
-            decimal candidatePrice = klines[0].High;
-            int barsSinceExtreme = 0;
-
-            for (int i = 1; i < length; i++)
-            {
-                if (state == 0) // 寻找波峰
-                {
-                    decimal currentHigh = klines[i].High;
-                    if (currentHigh >= candidatePrice)
-                    {
-                        candidateIdx = i;
-                        candidatePrice = currentHigh;
-                        barsSinceExtreme = 0;
-                    }
-                    else
-                    {
-                        barsSinceExtreme++;
-                        if (barsSinceExtreme >= reversalBars)
-                        {
-                            peaksBuffer.Add(new PivotPoint
-                            {
-                                Index = candidateIdx,
-                                Time = TimeHelper.FromUnixTimeMilliseconds(klines[candidateIdx].OpenTime),
-                                TimestampMs = klines[candidateIdx].OpenTime,
-                                Price = candidatePrice,
-                                Type = PivotType.Peak,
-                                IsFractalConfirmed = true
-                            });
-
-                            state = 1;
-                            candidateIdx = i;
-                            candidatePrice = klines[i].Low;
-                            barsSinceExtreme = 0;
-                        }
-                    }
-                }
-                else // 寻找波谷
-                {
-                    decimal currentLow = klines[i].Low;
-                    if (currentLow <= candidatePrice)
-                    {
-                        candidateIdx = i;
-                        candidatePrice = currentLow;
-                        barsSinceExtreme = 0;
-                    }
-                    else
-                    {
-                        barsSinceExtreme++;
-                        if (barsSinceExtreme >= reversalBars)
-                        {
-                            valleysBuffer.Add(new PivotPoint
-                            {
-                                Index = candidateIdx,
-                                Time = TimeHelper.FromUnixTimeMilliseconds(klines[candidateIdx].OpenTime),
-                                TimestampMs = klines[candidateIdx].OpenTime,
-                                Price = candidatePrice,
-                                Type = PivotType.Valley,
-                                IsFractalConfirmed = true
-                            });
-
-                            state = 0;
-                            candidateIdx = i;
-                            candidatePrice = klines[i].High;
-                            barsSinceExtreme = 0;
-                        }
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// 结合零滞后状态机与分形二次校验的高性能极值计算 (适配 IReadOnlyList&lt;RawKline&gt;)
-        /// </summary>
-        public static void CalculatePeaksCombinedFast(
-            IReadOnlyList<RawKline> klines,
-            List<PivotPoint> peaksBuffer,
-            List<PivotPoint> valleysBuffer,
-            int reversalBars = 2,
-            int fractalArm = 2)
-        {
-            peaksBuffer.Clear();
-            valleysBuffer.Clear();
-
-            if (klines == null || klines.Count < reversalBars + fractalArm + 1) return;
-
-            int length = klines.Count;
-            int state = 0; // 0: 寻找波峰, 1: 寻找波谷
-            int candidateIdx = 0;
-            decimal candidatePrice = klines[0].High;
-            int barsSinceExtreme = 0;
-
-            for (int i = 1; i < length; i++)
-            {
-                if (state == 0) // 寻找波峰中
-                {
-                    if (klines[i].High >= candidatePrice)
-                    {
-                        candidateIdx = i;
-                        candidatePrice = klines[i].High;
-                        barsSinceExtreme = 0;
-                    }
-                    else
-                    {
-                        barsSinceExtreme++;
-                        if (barsSinceExtreme >= reversalBars)
-                        {
-                            bool isFractal = ValidateFractalHigh(klines, candidateIdx, fractalArm);
-                            peaksBuffer.Add(new PivotPoint
-                            {
-                                Index = candidateIdx,
-                                Time = TimeHelper.FromUnixTimeMilliseconds(klines[candidateIdx].OpenTime),
-                                TimestampMs = klines[candidateIdx].OpenTime,
-                                Price = candidatePrice,
-                                Type = PivotType.Peak,
-                                IsFractalConfirmed = isFractal
-                            });
-
-                            state = 1;
-                            candidateIdx = i;
-                            candidatePrice = klines[i].Low;
-                            barsSinceExtreme = 0;
-                        }
-                    }
-                }
-                else // 寻找波谷中
-                {
-                    if (klines[i].Low <= candidatePrice)
-                    {
-                        candidateIdx = i;
-                        candidatePrice = klines[i].Low;
-                        barsSinceExtreme = 0;
-                    }
-                    else
-                    {
-                        barsSinceExtreme++;
-                        if (barsSinceExtreme >= reversalBars)
-                        {
-                            bool isFractal = ValidateFractalLow(klines, candidateIdx, fractalArm);
-                            valleysBuffer.Add(new PivotPoint
-                            {
-                                Index = candidateIdx,
-                                Time = TimeHelper.FromUnixTimeMilliseconds(klines[candidateIdx].OpenTime),
-                                TimestampMs = klines[candidateIdx].OpenTime,
-                                Price = candidatePrice,
-                                Type = PivotType.Valley,
-                                IsFractalConfirmed = isFractal
-                            });
-
-                            state = 0;
-                            candidateIdx = i;
-                            candidatePrice = klines[i].High;
-                            barsSinceExtreme = 0;
-                        }
-                    }
-                }
-            }
-        }
-
         #endregion
 
-        #region 2. 连续内存 ReadOnlySpan<decimal> 极速底层重载
+        #region 3. 连续内存 ReadOnlySpan<decimal> 极速底层重载
 
         /// <summary>
         /// 极速版计算局部高低点 (零内存分配 + Span 连续内存访问，decimal 高精度)
@@ -395,111 +301,6 @@ namespace Common.Helper
                 if (isPeak) peaksBuffer.Add(i);
                 if (isValley) valleysBuffer.Add(i);
             }
-        }
-
-        /// <summary>
-        /// 基于 ReadOnlySpan 的状态机极值计算 (decimal 高精度)
-        /// </summary>
-        public static void CalculatePeaksFastReversal(
-            ReadOnlySpan<decimal> highs,
-            ReadOnlySpan<decimal> lows,
-            List<int> peaksBuffer,
-            List<int> valleysBuffer,
-            int reversalBars = 3)
-        {
-            peaksBuffer.Clear();
-            valleysBuffer.Clear();
-
-            int length = highs.Length;
-            if (length < reversalBars + 1 || lows.Length < length)
-            {
-                return;
-            }
-
-            int state = 0;
-            int currentCandidateIdx = 0;
-            decimal currentCandidatePrice = highs[0];
-            int barsSinceExtreme = 0;
-
-            for (int i = 1; i < length; i++)
-            {
-                if (state == 0)
-                {
-                    decimal currentHigh = highs[i];
-                    if (currentHigh >= currentCandidatePrice)
-                    {
-                        currentCandidateIdx = i;
-                        currentCandidatePrice = currentHigh;
-                        barsSinceExtreme = 0;
-                    }
-                    else
-                    {
-                        barsSinceExtreme++;
-                        if (barsSinceExtreme >= reversalBars)
-                        {
-                            peaksBuffer.Add(currentCandidateIdx);
-
-                            state = 1;
-                            currentCandidateIdx = i;
-                            currentCandidatePrice = lows[i];
-                            barsSinceExtreme = 0;
-                        }
-                    }
-                }
-                else
-                {
-                    decimal currentLow = lows[i];
-                    if (currentLow <= currentCandidatePrice)
-                    {
-                        currentCandidateIdx = i;
-                        currentCandidatePrice = currentLow;
-                        barsSinceExtreme = 0;
-                    }
-                    else
-                    {
-                        barsSinceExtreme++;
-                        if (barsSinceExtreme >= reversalBars)
-                        {
-                            valleysBuffer.Add(currentCandidateIdx);
-
-                            state = 0;
-                            currentCandidateIdx = i;
-                            currentCandidatePrice = highs[i];
-                            barsSinceExtreme = 0;
-                        }
-                    }
-                }
-            }
-        }
-
-        #endregion
-
-        #region 内部私有分形辅助校验
-
-        private static bool ValidateFractalHigh(IReadOnlyList<RawKline> klines, int centerIdx, int arm)
-        {
-            if (centerIdx - arm < 0 || centerIdx + arm >= klines.Count) return false;
-
-            decimal target = klines[centerIdx].High;
-            for (int j = centerIdx - arm; j <= centerIdx + arm; j++)
-            {
-                if (j == centerIdx) continue;
-                if (klines[j].High >= target) return false;
-            }
-            return true;
-        }
-
-        private static bool ValidateFractalLow(IReadOnlyList<RawKline> klines, int centerIdx, int arm)
-        {
-            if (centerIdx - arm < 0 || centerIdx + arm >= klines.Count) return false;
-
-            decimal target = klines[centerIdx].Low;
-            for (int j = centerIdx - arm; j <= centerIdx + arm; j++)
-            {
-                if (j == centerIdx) continue;
-                if (klines[j].Low <= target) return false;
-            }
-            return true;
         }
 
         #endregion

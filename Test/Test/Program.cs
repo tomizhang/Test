@@ -133,8 +133,8 @@ namespace Test
                               $"开: {kline.Open,10:F2} | 高: {kline.High,10:F2} | 低: {kline.Low,10:F2} | 收: {kline.Close,10:F2} | " +
                               $"成交量: {kline.Volume,10:F4} | 成交额: {kline.QuoteVolume,12:F2} | 笔数: {kline.TradeCount,6}");
             Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine($"    └── 策略状态: 滑动窗口K线={strategy.KlineCount}根 | 波峰={strategy.CurrentPeaks.Count}个, 波谷={strategy.CurrentValleys.Count}个 | " +
-                              $"活跃阻力线={strategy.CurrentResistanceLines.Count}条, 活跃支撑线={strategy.CurrentSupportLines.Count}条 | 历史趋势线库累计={strategy.HistoricalTrendLinesCount}条\n");
+            Console.WriteLine($"    └── 策略状态 (增量模式): 滑动窗口K线={strategy.KlineCount}根 | 累计波峰={strategy.Peaks.Count}个, 累计波谷={strategy.Valleys.Count}个 | " +
+                              $"活跃阻力线={strategy.ActiveResistanceLines.Count}条, 活跃支撑线={strategy.ActiveSupportLines.Count}条 | 历史趋势线库累计={strategy.HistoricalTrendLinesCount}条\n");
             Console.ResetColor();
         }
     }

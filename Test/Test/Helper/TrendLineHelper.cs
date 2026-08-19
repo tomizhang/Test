@@ -5,15 +5,120 @@ using System.Collections.Generic;
 namespace Common.Helper
 {
     /// <summary>
-    /// 高性能趋势线生成、延伸碰撞检测与突破判定辅助工具类
-    /// 深度集成 RawKline、PivotPoint 与 100 条滑动历史缓存
+    /// 高性能趋势线生成、增量延伸碰撞检测与突破判定辅助工具类
+    /// 支持全量拟合与 O(1)/O(M) 毫秒级多层增量事件驱动计算
     /// </summary>
     public static class TrendLineHelper
     {
+        #region 1. 核心增量方法 (Incremental TrendLine Methods)
+
         /// <summary>
-        /// 基于两个极值点 (PivotPoint) 与 K 线历史序列构造并推导完整的趋势线特征
+        /// 增量趋势线配对生成：当且仅当产生新极值点时，仅将该新极值点与历史活跃极值点在 MaxSpan 内配对
         /// </summary>
-        public static TrendLine CreateTrendLine(PivotPoint p1, PivotPoint p2, IReadOnlyList<RawKline> klines)
+        /// <param name="newPoint">新确认的极值点</param>
+        /// <param name="existingPoints">历史同类型极值点列表</param>
+        /// <param name="klines">当前 K 线滑动窗口</param>
+        /// <param name="currentGlobalIndex">当前最新一根 K 线的全局单调下标</param>
+        /// <param name="maxSpan">最大允许配对跨度 (默认 100)</param>
+        /// <param name="allowInternalPenetration">是否允许内部穿透 (默认 false)</param>
+        /// <returns>新增的趋势线列表</returns>
+        public static List<TrendLine> GenerateIncrementalTrendLines(
+            PivotPoint newPoint,
+            IReadOnlyList<PivotPoint> existingPoints,
+            IReadOnlyList<RawKline> klines,
+            int currentGlobalIndex,
+            int maxSpan = 100,
+            bool allowInternalPenetration = false)
+        {
+            var newLines = new List<TrendLine>();
+            if (existingPoints == null || existingPoints.Count == 0 || klines == null || klines.Count == 0)
+            {
+                return newLines;
+            }
+
+            // 从后向前寻找在 maxSpan 范围内的历史同类型极值点
+            for (int i = existingPoints.Count - 1; i >= 0; i--)
+            {
+                var pOld = existingPoints[i];
+                int span = newPoint.Index - pOld.Index;
+
+                if (span <= 0) continue;
+                if (span > maxSpan) break; // 极值点已按 Index 严格递增排序，超出直接 break
+
+                // 检查两点内部是否有 K 线穿透
+                if (!allowInternalPenetration && IsPenetratedInternally(pOld, newPoint, klines, currentGlobalIndex))
+                {
+                    continue;
+                }
+
+                // 构造新趋势线并计算延伸至当前最新 K 线的碰撞状态
+                var line = CreateTrendLine(pOld, newPoint, klines, currentGlobalIndex);
+                newLines.Add(line);
+            }
+
+            return newLines;
+        }
+
+        /// <summary>
+        /// 增量单步推进存量活跃趋势线：仅代入当前这一根最新 K 线，完成寿命自增与碰撞更新 (耗时 < 1 微秒)
+        /// </summary>
+        /// <param name="activeLines">存量活跃趋势线列表</param>
+        /// <param name="latestKline">当前收盘的最新一根 K 线</param>
+        /// <param name="currentGlobalIndex">当前最新一根 K 线的全局单调下标</param>
+        public static void UpdateActiveTrendLinesStep(
+            List<TrendLine> activeLines,
+            in RawKline latestKline,
+            int currentGlobalIndex)
+        {
+            if (activeLines == null || activeLines.Count == 0) return;
+
+            for (int i = 0; i < activeLines.Count; i++)
+            {
+                var line = activeLines[i];
+
+                // 只有当当前 K 线在终止点 x2 之后才延伸
+                if (currentGlobalIndex > line.X2)
+                {
+                    line.LineAge = currentGlobalIndex - line.X2;
+
+                    // 若该线此前尚未被碰撞击穿，检测当前这根 K 线是否造成首次碰撞
+                    if (line.CollidedKlineIndex == -1)
+                    {
+                        decimal expectedPrice = line.GetPriceAt(currentGlobalIndex);
+
+                        if (line.IsResistance && latestKline.High > expectedPrice)
+                        {
+                            line.CollidedKlineIndex = currentGlobalIndex;
+                            line.LineExtensionRange = currentGlobalIndex - line.X2;
+                        }
+                        else if (line.IsSupport && latestKline.Low < expectedPrice)
+                        {
+                            line.CollidedKlineIndex = currentGlobalIndex;
+                            line.LineExtensionRange = currentGlobalIndex - line.X2;
+                        }
+                        else
+                        {
+                            line.LineExtensionRange = currentGlobalIndex - line.X2;
+                        }
+                    }
+
+                    activeLines[i] = line;
+                }
+            }
+        }
+
+        #endregion
+
+        #region 2. 趋势线基础构造与全量方法
+
+        /// <summary>
+        /// 基于两个极值点构造推导完整的趋势线特征
+        /// </summary>
+        public static TrendLine CreateTrendLine(
+            PivotPoint p1,
+            PivotPoint p2,
+            IReadOnlyList<RawKline> klines,
+            int currentGlobalIndex = -1)
         {
             if (p2.Index <= p1.Index)
             {
@@ -23,7 +128,10 @@ namespace Common.Helper
             int dx = p2.Index - p1.Index;
             decimal dy = p2.Price - p1.Price;
             decimal rawK = dy / dx;
-            decimal normalizedK = p1.Price > 0 ? (dy / p1.Price) / dx * 100m : 0m;
+            decimal normalizedK = p1.Price > 0m ? (dy / p1.Price) / dx * 100m : 0m;
+
+            int latestIndex = currentGlobalIndex >= 0 ? currentGlobalIndex : (klines != null ? klines.Count - 1 : p2.Index);
+            int lineAge = Math.Max(0, latestIndex - p2.Index);
 
             var line = new TrendLine
             {
@@ -38,71 +146,48 @@ namespace Common.Helper
                 RawK = rawK,
                 K = normalizedK,
                 Type = p1.Type,
-                LineAge = klines != null && klines.Count > 0 ? Math.Max(0, (klines.Count - 1) - p2.Index) : 0,
+                LineAge = lineAge,
                 CollidedKlineIndex = -1,
-                LineExtensionRange = 0
+                LineExtensionRange = lineAge
             };
 
-            // 计算延伸碰撞
-            if (klines != null && klines.Count > 0)
+            // 从 p2 向后延伸检查首次碰撞
+            if (klines != null && klines.Count > 0 && latestIndex > p2.Index)
             {
-                CalculateLineCollision(ref line, klines);
+                for (int x = p2.Index + 1; x <= latestIndex; x++)
+                {
+                    int localIdx = MapGlobalToLocalIndex(x, latestIndex, klines.Count);
+                    if (localIdx < 0 || localIdx >= klines.Count) continue;
+
+                    decimal linePrice = line.GetPriceAt(x);
+                    if (line.IsResistance && klines[localIdx].High > linePrice)
+                    {
+                        line.CollidedKlineIndex = x;
+                        line.LineExtensionRange = x - p2.Index;
+                        break;
+                    }
+                    else if (line.IsSupport && klines[localIdx].Low < linePrice)
+                    {
+                        line.CollidedKlineIndex = x;
+                        line.LineExtensionRange = x - p2.Index;
+                        break;
+                    }
+                }
             }
 
             return line;
         }
 
         /// <summary>
-        /// 计算趋势线向后延伸首次被 K 线穿越/碰撞的位置与延伸距离
+        /// 全量生成所有阻力与支撑趋势线 (用于历史对齐)
         /// </summary>
-        public static void CalculateLineCollision(ref TrendLine line, IReadOnlyList<RawKline> klines)
-        {
-            int latestIndex = klines.Count - 1;
-            line.LineAge = Math.Max(0, latestIndex - line.X2);
-            line.CollidedKlineIndex = -1;
-            line.LineExtensionRange = Math.Max(0, latestIndex - line.X2);
-
-            for (int x = line.X2 + 1; x <= latestIndex; x++)
-            {
-                decimal linePrice = line.GetPriceAt(x);
-
-                if (line.IsResistance)
-                {
-                    // 阻力线向后延伸被向上穿透 (High 超过趋势线)
-                    if (klines[x].High > linePrice)
-                    {
-                        line.CollidedKlineIndex = x;
-                        line.LineExtensionRange = x - line.X2;
-                        break;
-                    }
-                }
-                else if (line.IsSupport)
-                {
-                    // 支撑线向后延伸被向下跌破 (Low 低于趋势线)
-                    if (klines[x].Low < linePrice)
-                    {
-                        line.CollidedKlineIndex = x;
-                        line.LineExtensionRange = x - line.X2;
-                        break;
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// 从极值点集合中自动拟合生成所有有效的支撑与阻力趋势线
-        /// </summary>
-        /// <param name="klines">K线历史数据</param>
-        /// <param name="peaks">识别出的波峰集合</param>
-        /// <param name="valleys">识别出的波谷集合</param>
-        /// <param name="maxSpan">两点之间最大 K 线跨度限制 (默认 100 根)</param>
-        /// <param name="allowInternalPenetration">是否允许内部 K 线穿透 (默认 false，即严格拟合外包络趋势线)</param>
         public static (List<TrendLine> ResistanceLines, List<TrendLine> SupportLines) GenerateTrendLines(
             IReadOnlyList<RawKline> klines,
             IReadOnlyList<PivotPoint> peaks,
             IReadOnlyList<PivotPoint> valleys,
             int maxSpan = 100,
-            bool allowInternalPenetration = false)
+            bool allowInternalPenetration = false,
+            int currentGlobalIndex = -1)
         {
             var resistanceLines = new List<TrendLine>();
             var supportLines = new List<TrendLine>();
@@ -112,7 +197,8 @@ namespace Common.Helper
                 return (resistanceLines, supportLines);
             }
 
-            // 1. 生成阻力趋势线 (波峰与波峰配对)
+            int latestIdx = currentGlobalIndex >= 0 ? currentGlobalIndex : klines.Count - 1;
+
             if (peaks != null && peaks.Count >= 2)
             {
                 for (int i = 0; i < peaks.Count - 1; i++)
@@ -122,21 +208,16 @@ namespace Common.Helper
                         var p1 = peaks[i];
                         var p2 = peaks[j];
                         int span = p2.Index - p1.Index;
-
                         if (span <= 0 || span > maxSpan) continue;
 
-                        if (!allowInternalPenetration && IsResistancePenetratedInternally(p1, p2, klines))
-                        {
+                        if (!allowInternalPenetration && IsPenetratedInternally(p1, p2, klines, latestIdx))
                             continue;
-                        }
 
-                        var line = CreateTrendLine(p1, p2, klines);
-                        resistanceLines.Add(line);
+                        resistanceLines.Add(CreateTrendLine(p1, p2, klines, latestIdx));
                     }
                 }
             }
 
-            // 2. 生成支撑趋势线 (波谷与波谷配对)
             if (valleys != null && valleys.Count >= 2)
             {
                 for (int i = 0; i < valleys.Count - 1; i++)
@@ -146,16 +227,12 @@ namespace Common.Helper
                         var p1 = valleys[i];
                         var p2 = valleys[j];
                         int span = p2.Index - p1.Index;
-
                         if (span <= 0 || span > maxSpan) continue;
 
-                        if (!allowInternalPenetration && IsSupportPenetratedInternally(p1, p2, klines))
-                        {
+                        if (!allowInternalPenetration && IsPenetratedInternally(p1, p2, klines, latestIdx))
                             continue;
-                        }
 
-                        var line = CreateTrendLine(p1, p2, klines);
-                        supportLines.Add(line);
+                        supportLines.Add(CreateTrendLine(p1, p2, klines, latestIdx));
                     }
                 }
             }
@@ -163,48 +240,21 @@ namespace Common.Helper
             return (resistanceLines, supportLines);
         }
 
-        /// <summary>
-        /// 一键计算当前 K 线历史中所有活跃趋势线 (自动完成极值点提取与趋势线拟合)
-        /// </summary>
-        public static (List<TrendLine> ResistanceLines, List<TrendLine> SupportLines) FindActiveTrendLines(
+        #endregion
+
+        #region 3. 内部索引映射与穿透校验辅助
+
+        private static int MapGlobalToLocalIndex(int globalIndex, int currentGlobalIndex, int klineWindowCount)
+        {
+            int offsetFromLatest = currentGlobalIndex - globalIndex;
+            return klineWindowCount - 1 - offsetFromLatest;
+        }
+
+        private static bool IsPenetratedInternally(
+            PivotPoint p1,
+            PivotPoint p2,
             IReadOnlyList<RawKline> klines,
-            int leftLen = 5,
-            int rightLen = 5,
-            int maxSpan = 100)
-        {
-            var (peaks, valleys) = PivotHelper.CalculatePeaks(klines, leftLen, rightLen);
-            return GenerateTrendLines(klines, peaks, valleys, maxSpan: maxSpan);
-        }
-
-        /// <summary>
-        /// 检查当前最新 K 线是否突破了指定趋势线
-        /// </summary>
-        /// <param name="line">待检测趋势线</param>
-        /// <param name="kline">当前最新 K 线</param>
-        /// <param name="currentIndex">当前 K 线在全局/窗口中的索引</param>
-        /// <returns>1: 向上突破阻力线, -1: 向下跌破支撑线, 0: 未突破</returns>
-        public static int CheckBreakout(TrendLine line, RawKline kline, int currentIndex)
-        {
-            if (currentIndex <= line.X2) return 0;
-
-            decimal expectedPrice = line.GetPriceAt(currentIndex);
-
-            if (line.IsResistance && kline.Close > expectedPrice)
-            {
-                return 1; // 向上有效突破阻力线
-            }
-
-            if (line.IsSupport && kline.Close < expectedPrice)
-            {
-                return -1; // 向下有效跌破支撑线
-            }
-
-            return 0;
-        }
-
-        #region 内部私有严格包络线校验 (确保两极值点之间没有 K 线穿越线段)
-
-        private static bool IsResistancePenetratedInternally(PivotPoint p1, PivotPoint p2, IReadOnlyList<RawKline> klines)
+            int currentGlobalIndex)
         {
             int dx = p2.Index - p1.Index;
             decimal dy = p2.Price - p1.Price;
@@ -212,27 +262,17 @@ namespace Common.Helper
 
             for (int x = p1.Index + 1; x < p2.Index; x++)
             {
+                int localIdx = MapGlobalToLocalIndex(x, currentGlobalIndex, klines.Count);
+                if (localIdx < 0 || localIdx >= klines.Count) continue;
+
                 decimal linePrice = p1.Price + rawK * (x - p1.Index);
-                if (klines[x].High > linePrice)
+                if (p1.IsPeak && klines[localIdx].High > linePrice)
                 {
-                    return true; // 中间有 K 线穿透了阻力线
+                    return true;
                 }
-            }
-            return false;
-        }
-
-        private static bool IsSupportPenetratedInternally(PivotPoint p1, PivotPoint p2, IReadOnlyList<RawKline> klines)
-        {
-            int dx = p2.Index - p1.Index;
-            decimal dy = p2.Price - p1.Price;
-            decimal rawK = dy / dx;
-
-            for (int x = p1.Index + 1; x < p2.Index; x++)
-            {
-                decimal linePrice = p1.Price + rawK * (x - p1.Index);
-                if (klines[x].Low < linePrice)
+                else if (p1.IsValley && klines[localIdx].Low < linePrice)
                 {
-                    return true; // 中间有 K 线跌破了支撑线
+                    return true;
                 }
             }
             return false;
