@@ -17,11 +17,48 @@ namespace Common.Helper
         /// </summary>
         /// <param name="newPoint">新确认的极值点</param>
         /// <param name="existingPoints">历史同类型极值点列表</param>
-        /// <param name="klines">当前 K 线滑动窗口</param>
-        /// <param name="currentGlobalIndex">当前最新一根 K 线的全局单调下标</param>
-        /// <param name="maxSpan">最大允许配对跨度 (默认 100)</param>
-        /// <param name="allowInternalPenetration">是否允许内部穿透 (默认 false)</param>
-        /// <returns>新增的趋势线列表</returns>
+        /// <summary>
+        /// 增量趋势线配对生成：零内存分配直装模式 (直接写入目标活跃列表与历史库)
+        /// </summary>
+        public static void GenerateIncrementalTrendLines(
+            PivotPoint newPoint,
+            IReadOnlyList<PivotPoint> existingPoints,
+            IReadOnlyList<RawKline> klines,
+            int currentGlobalIndex,
+            List<TrendLine> targetActiveLines,
+            List<TrendLine> targetHistoryLines,
+            int maxSpan = 100,
+            bool allowInternalPenetration = false)
+        {
+            if (existingPoints == null || existingPoints.Count == 0 || klines == null || klines.Count == 0)
+            {
+                return;
+            }
+
+            for (int i = existingPoints.Count - 1; i >= 0; i--)
+            {
+                var pOld = existingPoints[i];
+                int span = newPoint.Index - pOld.Index;
+
+                if (span <= 0) continue;
+                if (span > maxSpan) break; // 极值点已按 Index 严格递增排序，超出直接 break
+
+                // 检查两点内部是否有 K 线穿透 (严格逻辑剪枝)
+                if (!allowInternalPenetration && IsPenetratedInternally(pOld, newPoint, klines, currentGlobalIndex))
+                {
+                    continue;
+                }
+
+                // 构造新趋势线并计算延伸至当前最新 K 线的碰撞状态
+                var line = CreateTrendLine(pOld, newPoint, klines, currentGlobalIndex);
+                targetActiveLines.Add(line);
+                targetHistoryLines?.Add(line);
+            }
+        }
+
+        /// <summary>
+        /// 增量趋势线配对生成：当且仅当产生新极值点时，仅将该新极值点与历史活跃极值点在 MaxSpan 内配对
+        /// </summary>
         public static List<TrendLine> GenerateIncrementalTrendLines(
             PivotPoint newPoint,
             IReadOnlyList<PivotPoint> existingPoints,
@@ -31,31 +68,15 @@ namespace Common.Helper
             bool allowInternalPenetration = false)
         {
             var newLines = new List<TrendLine>();
-            if (existingPoints == null || existingPoints.Count == 0 || klines == null || klines.Count == 0)
-            {
-                return newLines;
-            }
-
-            // 从后向前寻找在 maxSpan 范围内的历史同类型极值点
-            for (int i = existingPoints.Count - 1; i >= 0; i--)
-            {
-                var pOld = existingPoints[i];
-                int span = newPoint.Index - pOld.Index;
-
-                if (span <= 0) continue;
-                if (span > maxSpan) break; // 极值点已按 Index 严格递增排序，超出直接 break
-
-                // 检查两点内部是否有 K 线穿透
-                if (!allowInternalPenetration && IsPenetratedInternally(pOld, newPoint, klines, currentGlobalIndex))
-                {
-                    continue;
-                }
-
-                // 构造新趋势线并计算延伸至当前最新 K 线的碰撞状态
-                var line = CreateTrendLine(pOld, newPoint, klines, currentGlobalIndex);
-                newLines.Add(line);
-            }
-
+            GenerateIncrementalTrendLines(
+                newPoint,
+                existingPoints,
+                klines,
+                currentGlobalIndex,
+                newLines,
+                null,
+                maxSpan,
+                allowInternalPenetration);
             return newLines;
         }
 

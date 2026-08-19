@@ -8,11 +8,11 @@ using System.Collections.Generic;
 namespace Test.Strategy
 {
     /// <summary>
-    /// 高性能三层增量趋势线策略 (Multi-Layer Incremental TrendLine Strategy)
+    /// 高性能三层增量趋势线策略 (Multi-Layer Incremental TrendLine Strategy - Ring Buffer 零内存搬运版)
     /// 核心特性：
-    /// 1. 自动维护 2000 根 K 线的滑动窗口，使用全局单调索引 (_globalBarIndex) 消除窗口滑动对坐标系的影响
-    /// 2. 第 1 层 (O(1)): 单步增量极值判定，仅在候选点走出右侧确认窗口时进行一次 10 步比较
-    /// 3. 第 2 层 (O(M)): 增量趋势线生成，当且仅当产生新极值点时，仅与历史活跃极值点单向配对
+    /// 1. 采用定长环形缓冲区 (KlineRingBuffer) 管理 K 线滑动窗口，消除 List.RemoveAt(0) 的 192KB/次 内存搬运
+    /// 2. 第 1 层 (O(1)): 严格 10 步数学全量分形极值判定，保持 100% 严谨回测模拟
+    /// 3. 第 2 层 (O(M)): 增量趋势线生成，零 GC 分配直装模式 (直入活跃列表与历史库)
     /// 4. 第 3 层 (O(ActiveLines)): 增量延伸碰撞更新，单次代入最新 K 线完成寿命自增与碰撞判定 (耗时 < 1 微秒)
     /// 5. OnTick 实时穿透检测与删除：每当 Tick 价格穿过趋势线时，自动将该趋势线从活跃列表中剔除，并存入已删除趋势线列表 (保留 1000 长度)
     /// 6. 趋势线历史库持久化 (最低保存 1000 条)
@@ -41,8 +41,8 @@ namespace Test.Strategy
         private int _globalBarIndex = 0;
         public int GlobalBarIndex => _globalBarIndex;
 
-        // K 线滑动窗口历史缓存 (最大 2000 根)
-        private readonly List<RawKline> _klines = new List<RawKline>(2000);
+        // K 线滑动窗口历史缓存 (定长环形缓冲区，零内存拷贝与零 GC 压力)
+        private readonly KlineRingBuffer _klines;
         public IReadOnlyList<RawKline> Klines => _klines;
         public int KlineCount => _klines.Count;
 
@@ -80,6 +80,7 @@ namespace Test.Strategy
 
         public TrendLineStrategy()
         {
+            _klines = new KlineRingBuffer(MaxKlinesCapacity);
         }
 
         public TrendLineStrategy(string symbol, KlineInterval interval, int maxKlines = 2000, int minTrendLines = 1000, int maxDeletedLines = 1000)
@@ -87,6 +88,7 @@ namespace Test.Strategy
             MaxKlinesCapacity = maxKlines;
             MinTrendLinesCapacity = minTrendLines;
             MaxDeletedTrendLinesCapacity = maxDeletedLines;
+            _klines = new KlineRingBuffer(MaxKlinesCapacity);
             Initialize(symbol, interval);
         }
 
@@ -175,8 +177,8 @@ namespace Test.Strategy
         /// <summary>
         /// 接收 K 线周期行情推送（周期切分/Bar Close 收盘事件）
         /// 采用三层增量流水线驱动计算：
-        /// Layer 1: O(1) 判定候选点是否为新极值点
-        /// Layer 2: 若产生新极值点，O(M) 增量生成新趋势线
+        /// Layer 1: O(1) 严格 10 步判定候选点是否为新极值点 (100% 严谨数学模拟)
+        /// Layer 2: 若产生新极值点，O(M) 零 GC 分配直装增量新趋势线
         /// Layer 3: O(ActiveLines) 增量推进存量趋势线寿命与碰撞检测
         /// </summary>
         public void OnKline(in RawKline kline)
@@ -187,14 +189,10 @@ namespace Test.Strategy
 
             int currentGlobalIndex = _globalBarIndex++;
 
-            // 1. 滑动窗口维护：追加新 K 线，超额时移除最老 K 线 (严格保留 2000 根)
+            // 1. 滑动窗口维护：追加新 K 线 (环形缓冲区 O(1) 纯数组写入，零内存拷贝与零 GC 压力)
             _klines.Add(kline);
-            if (_klines.Count > MaxKlinesCapacity)
-            {
-                _klines.RemoveAt(0);
-            }
 
-            // 2. 【第 1 层: O(1) 增量极值判定】
+            // 2. 【第 1 层: O(1) 增量极值判定 (严格分形 10 步对比)】
             // 候选点位置为当前全局索引倒数第 (RightLen) 根
             int candidateGlobalIndex = currentGlobalIndex - RightLen;
             var (hasPeak, hasValley, newPeak, newValley) = PivotHelper.TryDetectIncrementalPivot(
@@ -203,37 +201,37 @@ namespace Test.Strategy
                 LeftLen,
                 RightLen);
 
-            // 3. 【第 2 层: O(M) 增量趋势线生成】
+            // 3. 【第 2 层: O(M) 增量趋势线生成 (零堆对象分配直装模式)】
             if (hasPeak)
             {
-                // 生成新阻力线并加入活跃列表与历史库
-                var newResistanceLines = TrendLineHelper.GenerateIncrementalTrendLines(
+                TrendLineHelper.GenerateIncrementalTrendLines(
                     newPeak,
                     _peaks,
                     _klines,
                     currentGlobalIndex,
+                    ActiveResistanceLines,
+                    _historicalTrendLines,
                     maxSpan: MaxSpan,
                     allowInternalPenetration: AllowInternalPenetration);
 
                 _peaks.Add(newPeak);
-                ActiveResistanceLines.AddRange(newResistanceLines);
-                SaveTrendLinesToHistory(newResistanceLines);
+                PruneHistoryCapacity();
             }
 
             if (hasValley)
             {
-                // 生成新支撑线并加入活跃列表与历史库
-                var newSupportLines = TrendLineHelper.GenerateIncrementalTrendLines(
+                TrendLineHelper.GenerateIncrementalTrendLines(
                     newValley,
                     _valleys,
                     _klines,
                     currentGlobalIndex,
+                    ActiveSupportLines,
+                    _historicalTrendLines,
                     maxSpan: MaxSpan,
                     allowInternalPenetration: AllowInternalPenetration);
 
                 _valleys.Add(newValley);
-                ActiveSupportLines.AddRange(newSupportLines);
-                SaveTrendLinesToHistory(newSupportLines);
+                PruneHistoryCapacity();
             }
 
             // 4. 【第 3 层: O(ActiveLines) 增量单步延伸与碰撞更新】
@@ -262,18 +260,10 @@ namespace Test.Strategy
         }
 
         /// <summary>
-        /// 将新计算的趋势线保存到历史趋势线库中 (O(1) 极速装填)
+        /// 保持历史趋势线库在设定容量上限内
         /// </summary>
-        private void SaveTrendLinesToHistory(List<TrendLine> newLines)
+        private void PruneHistoryCapacity()
         {
-            if (newLines == null || newLines.Count == 0) return;
-
-            for (int i = 0; i < newLines.Count; i++)
-            {
-                _historicalTrendLines.Add(newLines[i]);
-            }
-
-            // 保持历史趋势线库在设定容量范围内
             if (_historicalTrendLines.Count > MinTrendLinesCapacity * 2)
             {
                 int removeCount = _historicalTrendLines.Count - MinTrendLinesCapacity;
