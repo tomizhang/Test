@@ -297,6 +297,33 @@ namespace Test.Strategy
         }
 
         /// <summary>
+        /// 一键将当前策略的 K线走势、高低点标记、活跃阻力/支撑趋势线与描述摘要渲染并保存为图片
+        /// </summary>
+        /// <param name="summaryDescription">描述摘要文本 (显示在图表左上角卡片)</param>
+        /// <param name="outputFilePath">保存输出路径 (默认保存至 data/charts/)</param>
+        /// <param name="width">图片宽度 (默认 1920)</param>
+        /// <param name="height">图片高度 (默认 1080)</param>
+        /// <returns>生成的 PNG 图片绝对路径</returns>
+        public string PlotChart(string summaryDescription, string outputFilePath = null, int width = 1920, int height = 1080)
+        {
+            int startGlobalIndex = Math.Max(0, _globalBarIndex - _klines.Count);
+            string title = $"{Symbol} {Interval.ToIntervalString()} 趋势线与极值结构分析图";
+
+            return PlotHelper.PlotTrendLineChart(
+                _klines,
+                _peaks,
+                _valleys,
+                ActiveResistanceLines,
+                ActiveSupportLines,
+                summaryDescription,
+                title: title,
+                startGlobalIndex: startGlobalIndex,
+                outputFilePath: outputFilePath,
+                width: width,
+                height: height);
+        }
+
+        /// <summary>
         /// 获取策略当前运行状态与趋势线统计摘要
         /// </summary>
         public string GetStrategySummary()

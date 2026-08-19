@@ -216,11 +216,18 @@ namespace Common
 
         #endregion
 
-        #region 日志路径管理
+        #region 日志与图表路径管理
 
         public static string GetLogsPath()
         {
             string path = Path.Combine(GetRootPath(), "logs");
+            if (!Directory.Exists(path)) Directory.CreateDirectory(path);
+            return path;
+        }
+
+        public static string GetChartsPath()
+        {
+            string path = Path.Combine(GetRootPath(), "charts");
             if (!Directory.Exists(path)) Directory.CreateDirectory(path);
             return path;
         }

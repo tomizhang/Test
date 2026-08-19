@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -11,6 +11,7 @@
   <ItemGroup>
     <PackageReference Include="DuckDB.NET.Data.Full" Version="1.1.2" />
     <PackageReference Include="Binance.Net" Version="10.8.0" />
+    <PackageReference Include="ScottPlot" Version="5.0.54" />
   </ItemGroup>
 
 </Project>

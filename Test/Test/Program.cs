@@ -15,24 +15,25 @@ namespace Test
             Console.WriteLine("    Binance ParquetDataReader - 真实交易模式时钟驱动输出 (Tick在周期内，跨周期K线收盘)   ");
             Console.WriteLine("===============================================================================");
 
-            // 1. 设置指定的目标币种与日期
+            // 1. 设置指定的目标币种与时间窗口 (支持任意自定义日期区间，如 2025-01-01 到 2025-07-31)
             string coin = "BTCUSDT";
-            DateTime targetDate = new DateTime(2025, 1, 1);
+            DateTime startDate = new DateTime(2025, 1, 1);
+            DateTime endDate = new DateTime(2025, 7, 31);
             KlineInterval klineInterval = KlineInterval.OneMinute;
 
             Console.WriteLine($"-> 数据根目录: {Config.GetRootPath()}");
             Console.WriteLine($"-> 目标交易对: {coin}");
-            Console.WriteLine($"-> 目标日期  : {targetDate:yyyy-MM-dd}");
+            Console.WriteLine($"-> 时间窗口  : {startDate:yyyy-MM-dd} ~ {endDate:yyyy-MM-dd}");
             Console.WriteLine($"-> K线周期   : {klineInterval.ToIntervalString()}");
 
             // 2. 初始化读取器与趋势线策略实例
             using var dataReader = new ParquetDataReader();
             var strategy = new TrendLineStrategy(coin, klineInterval, maxKlines: 2000, minTrendLines: 1000);
 
-            Console.WriteLine("\n[1/2] 正在通过 DuckDB 原生文件下推读取数据中...");
+            Console.WriteLine($"\n[1/3] 正在通过 DuckDB 原生文件下推与 3 线程有序滑动窗口并行加载数据 ({startDate:yyyy-MM-dd} ~ {endDate:yyyy-MM-dd})...");
             var sw = Stopwatch.StartNew();
 
-            var (klineCount, tickCount) = await dataReader.LoadDayAsync(coin, targetDate, klineInterval);
+            var (klineCount, tickCount) = await dataReader.LoadDateRangeAsync(coin, startDate, endDate, klineInterval, parallelDays: 3);
 
             sw.Stop();
             Console.WriteLine($"-> 加载完成，总耗时: {sw.ElapsedMilliseconds} ms");
@@ -40,7 +41,7 @@ namespace Test
 
             // 3. 模拟真实交易/回测时钟驱动输出与策略推送
             Console.WriteLine("\n===============================================================================");
-            Console.WriteLine($"[2/2] 开始模拟真实交易时序输出 (共 K线 {klineCount:N0} 根, Tick {tickCount:N0} 条) :");
+            Console.WriteLine($"[2/3] 开始模拟真实交易时序输出 (共 K线 {klineCount:N0} 根, Tick {tickCount:N0} 条) :");
             Console.WriteLine("-------------------------------------------------------------------------------");
 
             int currentKlineIndex = 0;
@@ -105,6 +106,15 @@ namespace Test
             Console.WriteLine("===============================================================================");
             Console.WriteLine($"[完成] 真实交易模拟输出完毕！已输出 Tick: {currentTickIndex:N0} 条，已收盘 K线: {currentKlineIndex:N0} 根。");
             Console.WriteLine($"-> 策略最终状态: {strategy.GetStrategySummary()}");
+
+            // 4. 使用 ScottPlot 绘制分析图表并落地保存
+            Console.WriteLine("\n[3/3] 正在使用 ScottPlot 渲染价格折线图、高低点与趋势线结构图...");
+            string desc = $"币种: {coin}, 周期: {klineInterval.ToIntervalString()}, 时间窗口: {startDate:yyyy-MM-dd} ~ {endDate:yyyy-MM-dd}\n" +
+                          $"策略模式: 三层增量计算流水线 + OnTick 实时穿透删除 (已删除: {strategy.DeletedTrendLinesCount}条)";
+            string chartPath = strategy.PlotChart(desc);
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine($"-> 【图表绘制完成】分析图片已落地保存至:\n   {chartPath}\n");
+            Console.ResetColor();
             Console.WriteLine("===============================================================================");
         }
 

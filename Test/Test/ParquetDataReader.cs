@@ -262,6 +262,44 @@ namespace Common
             return (klineTask.Result, tickTask.Result);
         }
 
+        /// <summary>
+        /// 主动同时加载指定时间窗口区间内（如 2025-01-01 到 2025-07-31）的所有 K 线与 Tick 数据
+        /// </summary>
+        /// <param name="coin">交易对 (如 BTCUSDT)</param>
+        /// <param name="startDate">起始日期 (包含)</param>
+        /// <param name="endDate">结束日期 (包含)</param>
+        /// <param name="interval">K线周期 (默认 1m)</param>
+        /// <param name="parallelDays">Tick 3线程并行滑动窗口天数 (默认 3)</param>
+        /// <param name="ct">取消令牌</param>
+        public async Task<(int klineCount, int tickCount)> LoadDateRangeAsync(
+            string coin,
+            DateTime startDate,
+            DateTime endDate,
+            KlineInterval interval = KlineInterval.OneMinute,
+            int parallelDays = 3,
+            CancellationToken ct = default)
+        {
+            var klineTask = StartKlineStreamingAsync(coin, startDate, endDate, interval, ct);
+            var tickTask = StartTickStreamingAsync(coin, startDate, endDate, parallelDays, maxBufferedDays: 5, ct);
+
+            await Task.WhenAll(klineTask, tickTask).ConfigureAwait(false);
+            return ((int)TotalKlinesLoaded, (int)TotalTicksLoaded);
+        }
+
+        /// <summary>
+        /// 预加载指定日期区间内的全部 K 线数据
+        /// </summary>
+        public async Task<int> LoadKlineRangeAsync(
+            string coin,
+            DateTime startDate,
+            DateTime endDate,
+            KlineInterval interval = KlineInterval.OneMinute,
+            CancellationToken ct = default)
+        {
+            await StartKlineStreamingAsync(coin, startDate, endDate, interval, ct).ConfigureAwait(false);
+            return (int)TotalKlinesLoaded;
+        }
+
         #endregion
 
         #region 3 线程有序滑动窗口并行流式预取 (Ordered Parallel Prefetching Stream)
