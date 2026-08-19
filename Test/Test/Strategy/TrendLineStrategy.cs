@@ -75,6 +75,9 @@ namespace Test.Strategy
         // 趋势线被 Tick 穿透触发事件 (可选外部订阅)
         public event Action<TrendLine, RawTick, string>? OnTrendLinePenetrated;
 
+        // 逐笔 Tick 处理状态与价格去重缓存
+        private decimal _lastProcessedTickPrice = decimal.MinValue;
+
         public TrendLineStrategy()
         {
         }
@@ -103,12 +106,20 @@ namespace Test.Strategy
         /// 1. 阻力线被向上穿透 (tick.Price > linePrice)：从活跃阻力线中删除，存入删除列表
         /// 2. 支撑线被向下穿透 (tick.Price < linePrice)：从活跃支撑线中删除，存入删除列表
         /// 3. 删除列表始终保持最大 1000 长度
+        /// 4. 优化：如果价格未变动则直接跳过穿透计算
         /// </summary>
         /// <param name="tick">当前 Tick 原始结构体 (零装箱)</param>
         public void OnTick(in RawTick tick)
         {
             LatestTick = tick;
             HasTickData = true;
+
+            // 价格去重优化：若 Tick 价格未变动，则无需重复计算穿透
+            if (tick.Price == _lastProcessedTickPrice)
+            {
+                return;
+            }
+            _lastProcessedTickPrice = tick.Price;
 
             int currentGlobalIndex = Math.Max(0, _globalBarIndex);
 
@@ -172,6 +183,7 @@ namespace Test.Strategy
         {
             LatestKline = kline;
             HasKlineData = true;
+            _lastProcessedTickPrice = decimal.MinValue;
 
             int currentGlobalIndex = _globalBarIndex++;
 
@@ -349,6 +361,7 @@ namespace Test.Strategy
             ActiveSupportLines.Clear();
             _deletedTrendLines.Clear();
             _historicalTrendLines.Clear();
+            _lastProcessedTickPrice = decimal.MinValue;
 
             LatestTick = default;
             LatestKline = default;

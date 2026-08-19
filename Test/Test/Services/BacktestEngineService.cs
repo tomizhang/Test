@@ -109,8 +109,9 @@ namespace Common.Services
                     currentKlineIndex++;
                 }
 
-                // 进度节流计数器
+                // 进度节流计数器与价格去重缓存
                 long progressInterval = Math.Max(10000, tickCount / 100);
+                decimal lastPushedTickPrice = decimal.MinValue;
 
                 while (dataReader.TryDequeueTick(out RawTick tick))
                 {
@@ -131,7 +132,10 @@ namespace Common.Services
                         // 2. 触发外部事件回调
                         OnKlineClosed?.Invoke(currentKline.Value, currentKlineIndex, strategy);
 
-                        // 3. 推进到下一个 K 线周期
+                        // 3. 跨周期收盘后重置价格过滤缓存，确保新周期的首个 Tick 会重新代入更新后的趋势线方程
+                        lastPushedTickPrice = decimal.MinValue;
+
+                        // 4. 推进到下一个 K 线周期
                         if (dataReader.TryDequeueKline(out RawKline nextKline))
                         {
                             currentKline = nextKline;
@@ -143,7 +147,15 @@ namespace Common.Services
                         }
                     }
 
-                    // 推送逐笔 Tick 到策略
+                    // ⚡ 价格去重优化：如果价格没有发生变动，则无需推送到策略与外部事件
+                    if (tick.Price == lastPushedTickPrice)
+                    {
+                        continue;
+                    }
+
+                    lastPushedTickPrice = tick.Price;
+
+                    // 推送价格变动的新 Tick 到策略
                     strategy.OnTick(tick);
                     currentTickIndex++;
 
