@@ -134,7 +134,7 @@ namespace Test
                               $"成交量: {kline.Volume,10:F4} | 成交额: {kline.QuoteVolume,12:F2} | 笔数: {kline.TradeCount,6}");
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine($"    └── 策略状态 (增量模式): 滑动窗口K线={strategy.KlineCount}根 | 累计波峰={strategy.Peaks.Count}个, 累计波谷={strategy.Valleys.Count}个 | " +
-                              $"活跃阻力线={strategy.ActiveResistanceLines.Count}条, 活跃支撑线={strategy.ActiveSupportLines.Count}条 | 历史趋势线库累计={strategy.HistoricalTrendLinesCount}条\n");
+                              $"活跃阻力线={strategy.ActiveResistanceLines.Count}条, 活跃支撑线={strategy.ActiveSupportLines.Count}条 | 已穿透删除={strategy.DeletedTrendLinesCount}条 | 历史库累计={strategy.HistoricalTrendLinesCount}条\n");
             Console.ResetColor();
         }
     }

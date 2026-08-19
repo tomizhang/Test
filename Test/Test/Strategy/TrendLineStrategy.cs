@@ -9,12 +9,13 @@ namespace Test.Strategy
 {
     /// <summary>
     /// 高性能三层增量趋势线策略 (Multi-Layer Incremental TrendLine Strategy)
-    /// 架构设计：
+    /// 核心特性：
     /// 1. 自动维护 2000 根 K 线的滑动窗口，使用全局单调索引 (_globalBarIndex) 消除窗口滑动对坐标系的影响
     /// 2. 第 1 层 (O(1)): 单步增量极值判定，仅在候选点走出右侧确认窗口时进行一次 10 步比较
     /// 3. 第 2 层 (O(M)): 增量趋势线生成，当且仅当产生新极值点时，仅与历史活跃极值点单向配对
     /// 4. 第 3 层 (O(ActiveLines)): 增量延伸碰撞更新，单次代入最新 K 线完成寿命自增与碰撞判定 (耗时 < 1 微秒)
-    /// 5. 趋势线历史库持久化 (最低保存 1000 条)
+    /// 5. OnTick 实时穿透检测与删除：每当 Tick 价格穿过趋势线时，自动将该趋势线从活跃列表中剔除，并存入已删除趋势线列表 (保留 1000 长度)
+    /// 6. 趋势线历史库持久化 (最低保存 1000 条)
     /// </summary>
     public class TrendLineStrategy
     {
@@ -27,7 +28,10 @@ namespace Test.Strategy
         // 2. 趋势线历史保存容量配置 (初定最低保存 1000 条)
         public int MinTrendLinesCapacity { get; set; } = 1000;
 
-        // 3. 极值与趋势线计算参数配置
+        // 3. 已删除（被穿透）趋势线列表容量配置 (保留 1000 长度)
+        public int MaxDeletedTrendLinesCapacity { get; set; } = 1000;
+
+        // 4. 极值与趋势线计算参数配置
         public int LeftLen { get; set; } = 5;               // 波峰波谷左侧对比根数
         public int RightLen { get; set; } = 5;              // 波峰波谷右侧对比根数
         public int MaxSpan { get; set; } = 100;             // 两点间最大 K 线跨度
@@ -48,9 +52,14 @@ namespace Test.Strategy
         public IReadOnlyList<PivotPoint> Peaks => _peaks;
         public IReadOnlyList<PivotPoint> Valleys => _valleys;
 
-        // 当前存量的活跃阻力线与支撑线
+        // 当前存量的活跃阻力线与支撑线 (未被穿透的有效趋势线)
         public List<TrendLine> ActiveResistanceLines { get; } = new List<TrendLine>(500);
         public List<TrendLine> ActiveSupportLines { get; } = new List<TrendLine>(500);
+
+        // 已删除（被 Tick 实时穿透）的趋势线列表 (固定保留 1000 长度)
+        private readonly List<TrendLine> _deletedTrendLines = new List<TrendLine>(1000);
+        public IReadOnlyList<TrendLine> DeletedTrendLines => _deletedTrendLines;
+        public int DeletedTrendLinesCount => _deletedTrendLines.Count;
 
         // 历史趋势线库 (累计保存所有计算出的有效趋势线，初定最低保存 1000 条)
         private readonly List<TrendLine> _historicalTrendLines = new List<TrendLine>(1000);
@@ -63,14 +72,18 @@ namespace Test.Strategy
         public bool HasTickData { get; private set; } = false;
         public bool HasKlineData { get; private set; } = false;
 
+        // 趋势线被 Tick 穿透触发事件 (可选外部订阅)
+        public event Action<TrendLine, RawTick, string>? OnTrendLinePenetrated;
+
         public TrendLineStrategy()
         {
         }
 
-        public TrendLineStrategy(string symbol, KlineInterval interval, int maxKlines = 2000, int minTrendLines = 1000)
+        public TrendLineStrategy(string symbol, KlineInterval interval, int maxKlines = 2000, int minTrendLines = 1000, int maxDeletedLines = 1000)
         {
             MaxKlinesCapacity = maxKlines;
             MinTrendLinesCapacity = minTrendLines;
+            MaxDeletedTrendLinesCapacity = maxDeletedLines;
             Initialize(symbol, interval);
         }
 
@@ -86,13 +99,66 @@ namespace Test.Strategy
 
         /// <summary>
         /// 接收 Tick 逐笔行情推送
+        /// 实时判断当前是否有活跃趋势线被当前 Tick 价格穿过：
+        /// 1. 阻力线被向上穿透 (tick.Price > linePrice)：从活跃阻力线中删除，存入删除列表
+        /// 2. 支撑线被向下穿透 (tick.Price < linePrice)：从活跃支撑线中删除，存入删除列表
+        /// 3. 删除列表始终保持最大 1000 长度
         /// </summary>
+        /// <param name="tick">当前 Tick 原始结构体 (零装箱)</param>
         public void OnTick(in RawTick tick)
         {
             LatestTick = tick;
             HasTickData = true;
 
-            // TODO: 在此处编写基于 Tick 价格的实时高频碰撞检测、动态止盈止损或微观信号逻辑
+            int currentGlobalIndex = Math.Max(0, _globalBarIndex);
+
+            // 1. 检查活跃阻力线是否被 Tick 价格向上穿透
+            for (int i = ActiveResistanceLines.Count - 1; i >= 0; i--)
+            {
+                var line = ActiveResistanceLines[i];
+                decimal linePrice = line.GetPriceAt(currentGlobalIndex);
+
+                if (tick.Price > linePrice)
+                {
+                    // 标记碰撞状态与延伸长度
+                    line.CollidedKlineIndex = currentGlobalIndex;
+                    line.LineExtensionRange = Math.Max(0, currentGlobalIndex - line.X2);
+
+                    // 从活跃阻力线列表中删除
+                    ActiveResistanceLines.RemoveAt(i);
+
+                    // 存入已删除趋势线列表 (保留 1000 长度)
+                    AddToDeletedTrendLines(line);
+
+                    // 触发事件通知
+                    OnTrendLinePenetrated?.Invoke(line, tick, "RESISTANCE_BROKEN_UP");
+                }
+            }
+
+            // 2. 检查活跃支撑线是否被 Tick 价格向下穿透
+            for (int i = ActiveSupportLines.Count - 1; i >= 0; i--)
+            {
+                var line = ActiveSupportLines[i];
+                decimal linePrice = line.GetPriceAt(currentGlobalIndex);
+
+                if (tick.Price < linePrice)
+                {
+                    // 标记碰撞状态与延伸长度
+                    line.CollidedKlineIndex = currentGlobalIndex;
+                    line.LineExtensionRange = Math.Max(0, currentGlobalIndex - line.X2);
+
+                    // 从活跃支撑线列表中删除
+                    ActiveSupportLines.RemoveAt(i);
+
+                    // 存入已删除趋势线列表 (保留 1000 长度)
+                    AddToDeletedTrendLines(line);
+
+                    // 触发事件通知
+                    OnTrendLinePenetrated?.Invoke(line, tick, "SUPPORT_BROKEN_DOWN");
+                }
+            }
+
+            // TODO: 在此处编写基于 Tick 穿透后的高频开平仓、动态追单或止损逻辑
         }
 
         /// <summary>
@@ -169,6 +235,21 @@ namespace Test.Strategy
         }
 
         /// <summary>
+        /// 将被穿透删除的趋势线存入已删除列表 (保持最大 1000 长度)
+        /// </summary>
+        private void AddToDeletedTrendLines(TrendLine line)
+        {
+            _deletedTrendLines.Add(line);
+
+            // 若删除列表超过设定长度 (默认 1000)，移除最早被删除的趋势线
+            if (_deletedTrendLines.Count > MaxDeletedTrendLinesCapacity)
+            {
+                int excess = _deletedTrendLines.Count - MaxDeletedTrendLinesCapacity;
+                _deletedTrendLines.RemoveRange(0, excess);
+            }
+        }
+
+        /// <summary>
         /// 将新计算的趋势线保存到历史趋势线库中
         /// </summary>
         private void SaveTrendLinesToHistory(List<TrendLine> newLines)
@@ -220,11 +301,12 @@ namespace Test.Strategy
         /// </summary>
         public string GetStrategySummary()
         {
-            return $"[TrendLineStrategy (Incremental) - {Symbol} {Interval.ToIntervalString()}] " +
+            return $"[TrendLineStrategy - {Symbol} {Interval.ToIntervalString()}] " +
                    $"GlobalBars: {_globalBarIndex}, Window: {_klines.Count}/{MaxKlinesCapacity} | " +
                    $"Peaks: {_peaks.Count}, Valleys: {_valleys.Count} | " +
                    $"Active Resistance: {ActiveResistanceLines.Count}, Support: {ActiveSupportLines.Count} | " +
-                   $"History TrendLines Saved: {_historicalTrendLines.Count}";
+                   $"Deleted (Penetrated): {_deletedTrendLines.Count}/{MaxDeletedTrendLinesCapacity} | " +
+                   $"History Saved: {_historicalTrendLines.Count}";
         }
 
         /// <summary>
@@ -238,6 +320,7 @@ namespace Test.Strategy
             _valleys.Clear();
             ActiveResistanceLines.Clear();
             ActiveSupportLines.Clear();
+            _deletedTrendLines.Clear();
             _historicalTrendLines.Clear();
 
             LatestTick = default;
