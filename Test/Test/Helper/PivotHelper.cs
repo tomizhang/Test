@@ -9,18 +9,21 @@ namespace Common.Helper
     public enum PivotType
     {
         /// <summary>
-        /// 波峰 / 局部高点 (Peak)
+        /// 波峰 / 局部高点 (Peak，取 K 线的 High 最高价)
         /// </summary>
         Peak = 1,
 
         /// <summary>
-        /// 波谷 / 局部低点 (Valley)
+        /// 波谷 / 局部低点 (Valley，取 K 线的 Low 最低价)
         /// </summary>
         Valley = 2
     }
 
     /// <summary>
     /// 统一极值点 (波峰/波谷) 数据结构 (原生 decimal 强类型，包含 UTC+0 时间与全局单调下标)
+    /// 规则：
+    /// - 若为波峰 (Peak / 高点)，Price 严格取自对应 K 线的 High (最高价)
+    /// - 若为波谷 (Valley / 低点)，Price 严格取自对应 K 线的 Low (最低价)
     /// </summary>
     public struct PivotPoint
     {
@@ -45,22 +48,32 @@ namespace Common.Helper
         public long TimestampSeconds => TimestampMs / 1000;
 
         /// <summary>
-        /// 极值价格 (采用 decimal 精度，波峰对应最高价 High，波谷对应最低价 Low)
+        /// 极值价格：如果是高点(Peak)严格取 K 线的 High，如果是低点(Valley)严格取 K 线的 Low
         /// </summary>
         public decimal Price { get; set; }
 
         /// <summary>
-        /// 极值类型
+        /// 极值价格别名 (若是高点则返回该高点的 High 价格)
+        /// </summary>
+        public decimal High => Price;
+
+        /// <summary>
+        /// 极值价格别名 (若是低点则返回该低点的 Low 价格)
+        /// </summary>
+        public decimal Low => Price;
+
+        /// <summary>
+        /// 极值类型 (Peak = 高点, Valley = 低点)
         /// </summary>
         public PivotType Type { get; set; }
 
         /// <summary>
-        /// 是否为波峰
+        /// 是否为波峰 (高点)
         /// </summary>
         public bool IsPeak => Type == PivotType.Peak;
 
         /// <summary>
-        /// 是否为波谷
+        /// 是否为波谷 (低点)
         /// </summary>
         public bool IsValley => Type == PivotType.Valley;
 
@@ -77,13 +90,14 @@ namespace Common.Helper
 
         public override string ToString()
         {
-            string symbol = IsPeak ? "▲波峰" : "▼波谷";
+            string symbol = IsPeak ? "▲高点(High)" : "▼低点(Low)";
             return $"[{FormattedTime} ({TimestampMs}ms)] {symbol} #{Index} 价格:{Price:F2} 分形确认:{IsFractalConfirmed}";
         }
     }
 
     /// <summary>
     /// 高性能局部高低点 (波峰/波谷) 计算引擎
+    /// 核心规则：高点判定与取值严格使用 K 线的 High；低点判定与取值严格使用 K 线的 Low
     /// 支持全量扫描与 O(1) 毫秒级多层增量计算
     /// </summary>
     public static class PivotHelper
@@ -92,14 +106,16 @@ namespace Common.Helper
 
         /// <summary>
         /// 增量极值判定：当新 K 线抵达时，仅对刚刚完成右侧确认窗口的那一根候选 K 线进行 O(1) 判定
-        /// 候选 K 线位置为：倒数第 (rightLen + 1) 根
+        /// 规则：
+        /// - 高点 (Peak)：取该候选 K 线的 High，与左右两翼 K 线的 High 进行对比判定
+        /// - 低点 (Valley)：取该候选 K 线的 Low，与左右两翼 K 线的 Low 进行对比判定
         /// </summary>
         /// <param name="klines">当前 K 线滑动窗口</param>
         /// <param name="candidateGlobalIndex">候选 K 线的全局单调下标</param>
         /// <param name="leftLen">左侧需低于/高于当前极值的 K 线根数 (默认 5)</param>
         /// <param name="rightLen">右侧需低于/高于当前极值的 K 线根数 (默认 5)</param>
-        /// <param name="newPeak">若确认为新波峰，返回波峰结构体</param>
-        /// <param name="newValley">若确认为新波谷，返回波谷结构体</param>
+        /// <param name="newPeak">若确认为新高点，返回 Price 为 High 的波峰结构体</param>
+        /// <param name="newValley">若确认为新低点，返回 Price 为 Low 的波谷结构体</param>
         /// <returns>是否有新极值点确认</returns>
         public static (bool hasPeak, bool hasValley, PivotPoint peak, PivotPoint valley) TryDetectIncrementalPivot(
             IReadOnlyList<RawKline> klines,
@@ -123,7 +139,10 @@ namespace Common.Helper
                 return (false, false, peak, valley);
             }
 
+            // 1. 高点判断：严格取候选 K 线的 High 最高价
             decimal candidateHigh = klines[candidateLocalIdx].High;
+
+            // 2. 低点判断：严格取候选 K 线的 Low 最低价
             decimal candidateLow = klines[candidateLocalIdx].Low;
 
             bool isPeak = true;
@@ -136,9 +155,11 @@ namespace Common.Helper
             {
                 if (j == candidateLocalIdx) continue;
 
+                // 高点对比：左/右两翼的 High 是否存在大于等于候选 High
                 if (isPeak && klines[j].High >= candidateHigh)
                     isPeak = false;
 
+                // 低点对比：左/右两翼的 Low 是否存在小于等于候选 Low
                 if (isValley && klines[j].Low <= candidateLow)
                     isValley = false;
 
@@ -146,6 +167,7 @@ namespace Common.Helper
                     break;
             }
 
+            // 若确认为高点，Price 严格存入 candidateHigh
             if (isPeak)
             {
                 hasPeak = true;
@@ -154,12 +176,13 @@ namespace Common.Helper
                     Index = candidateGlobalIndex,
                     Time = TimeHelper.FromUnixTimeMilliseconds(klines[candidateLocalIdx].OpenTime),
                     TimestampMs = klines[candidateLocalIdx].OpenTime,
-                    Price = candidateHigh,
+                    Price = candidateHigh, // 高点取 High
                     Type = PivotType.Peak,
                     IsFractalConfirmed = true
                 };
             }
 
+            // 若确认为低点，Price 严格存入 candidateLow
             if (isValley)
             {
                 hasValley = true;
@@ -168,7 +191,7 @@ namespace Common.Helper
                     Index = candidateGlobalIndex,
                     Time = TimeHelper.FromUnixTimeMilliseconds(klines[candidateLocalIdx].OpenTime),
                     TimestampMs = klines[candidateLocalIdx].OpenTime,
-                    Price = candidateLow,
+                    Price = candidateLow, // 低点取 Low
                     Type = PivotType.Valley,
                     IsFractalConfirmed = true
                 };
@@ -182,7 +205,7 @@ namespace Common.Helper
         #region 2. 批量全量扫描方法 (Batch Analysis Overloads)
 
         /// <summary>
-        /// 经典双侧分形全量计算波峰与波谷 (用于历史全量初始化与基准对齐)
+        /// 经典双侧分形全量计算波峰与波谷 (高点严格取 High，低点严格取 Low)
         /// </summary>
         public static (List<PivotPoint> Peaks, List<PivotPoint> Valleys) CalculatePeaks(
             IReadOnlyList<RawKline> klines,
@@ -210,9 +233,11 @@ namespace Common.Helper
                 {
                     if (j == i) continue;
 
+                    // 高点判断取 High
                     if (isPeak && klines[j].High >= currentHigh)
                         isPeak = false;
 
+                    // 低点判断取 Low
                     if (isValley && klines[j].Low <= currentLow)
                         isValley = false;
 
@@ -227,7 +252,7 @@ namespace Common.Helper
                         Index = startGlobalIndex + i,
                         Time = TimeHelper.FromUnixTimeMilliseconds(klines[i].OpenTime),
                         TimestampMs = klines[i].OpenTime,
-                        Price = currentHigh,
+                        Price = currentHigh, // 高点取 High
                         Type = PivotType.Peak,
                         IsFractalConfirmed = true
                     });
@@ -240,7 +265,7 @@ namespace Common.Helper
                         Index = startGlobalIndex + i,
                         Time = TimeHelper.FromUnixTimeMilliseconds(klines[i].OpenTime),
                         TimestampMs = klines[i].OpenTime,
-                        Price = currentLow,
+                        Price = currentLow, // 低点取 Low
                         Type = PivotType.Valley,
                         IsFractalConfirmed = true
                     });
@@ -255,7 +280,7 @@ namespace Common.Helper
         #region 3. 连续内存 ReadOnlySpan<decimal> 极速底层重载
 
         /// <summary>
-        /// 极速版计算局部高低点 (零内存分配 + Span 连续内存访问，decimal 高精度)
+        /// 极速版计算局部高低点 (零内存分配 + Span 连续内存访问，高点取 High，低点取 Low)
         /// </summary>
         public static void CalculatePeaksFast(
             ReadOnlySpan<decimal> highs,
@@ -288,9 +313,11 @@ namespace Common.Helper
                 {
                     if (j == i) continue;
 
+                    // 高点取 High
                     if (isPeak && highs[j] >= currentHigh)
                         isPeak = false;
 
+                    // 低点取 Low
                     if (isValley && lows[j] <= currentLow)
                         isValley = false;
 
