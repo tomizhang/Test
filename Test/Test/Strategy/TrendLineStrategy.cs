@@ -266,6 +266,18 @@ namespace Test.Strategy
             }
 
             // ====================================================================
+            // 步骤 0.5: 单持仓互斥检查 (如果已经存在持仓，则跳过开仓判定与触碰检测)
+            // ====================================================================
+            if (ActivePositions.Count > 0)
+            {
+                if (_activeTouchProbes.Count > 0)
+                {
+                    _activeTouchProbes.Clear();
+                }
+                return;
+            }
+
+            // ====================================================================
             // 步骤 1: 处理已有的触碰探针，检查 3 个 Tick 内是否发生回弹
             // ====================================================================
             for (int i = _activeTouchProbes.Count - 1; i >= 0; i--)
@@ -333,25 +345,14 @@ namespace Test.Strategy
                             ActivePositions.Add(pos);
                             OnPositionOpened?.Invoke(pos);
 
-                            _activeTouchProbes.RemoveAt(i);
-                            continue;
+                            _activeTouchProbes.Clear();
+                            return;
                         }
                     }
                     else
                     {
-                        // 超过 3 个 Tick 未回弹，探针失效移除
+                        // 超过 3 个 Tick 未回弹，探针失效移除 (趋势线删除统一在 OnKline 周期结束收盘时判定)
                         _activeTouchProbes.RemoveAt(i);
-
-                        // 若价格持续高于趋势线，视为真正击穿穿透，移入删除列表
-                        if (tick.Price > linePrice)
-                        {
-                            var brokenLine = probe.Line;
-                            brokenLine.CollidedKlineIndex = currentGlobalIndex;
-                            brokenLine.LineExtensionRange = Math.Max(0, currentGlobalIndex - brokenLine.X2);
-                            RemoveActiveResistanceLine(brokenLine);
-                            AddToDeletedTrendLines(brokenLine);
-                            OnTrendLinePenetrated?.Invoke(brokenLine, tick, "RESISTANCE_BROKEN_UP");
-                        }
                     }
                 }
                 else
@@ -412,25 +413,14 @@ namespace Test.Strategy
                             ActivePositions.Add(pos);
                             OnPositionOpened?.Invoke(pos);
 
-                            _activeTouchProbes.RemoveAt(i);
-                            continue;
+                            _activeTouchProbes.Clear();
+                            return;
                         }
                     }
                     else
                     {
-                        // 超过 3 个 Tick 未回弹，探针失效移除
+                        // 超过 3 个 Tick 未回弹，探针失效移除 (趋势线删除统一在 OnKline 周期结束收盘时判定)
                         _activeTouchProbes.RemoveAt(i);
-
-                        // 若价格持续低于趋势线，视为真正击穿穿透，移入删除列表
-                        if (tick.Price < linePrice)
-                        {
-                            var brokenLine = probe.Line;
-                            brokenLine.CollidedKlineIndex = currentGlobalIndex;
-                            brokenLine.LineExtensionRange = Math.Max(0, currentGlobalIndex - brokenLine.X2);
-                            RemoveActiveSupportLine(brokenLine);
-                            AddToDeletedTrendLines(brokenLine);
-                            OnTrendLinePenetrated?.Invoke(brokenLine, tick, "SUPPORT_BROKEN_DOWN");
-                        }
                     }
                 }
             }
@@ -463,15 +453,6 @@ namespace Test.Strategy
                                 });
                             }
                         }
-                        else
-                        {
-                            // 不满足策略条件的普通趋势线，直接按穿透剔除
-                            line.CollidedKlineIndex = currentGlobalIndex;
-                            line.LineExtensionRange = Math.Max(0, currentGlobalIndex - line.X2);
-                            ActiveResistanceLines.RemoveAt(i);
-                            AddToDeletedTrendLines(line);
-                            OnTrendLinePenetrated?.Invoke(line, tick, "RESISTANCE_BROKEN_UP");
-                        }
                     }
                 }
             }
@@ -503,15 +484,6 @@ namespace Test.Strategy
                                     TicksSinceTouch = 0
                                 });
                             }
-                        }
-                        else
-                        {
-                            // 不满足策略条件的普通趋势线，直接按穿透剔除
-                            line.CollidedKlineIndex = currentGlobalIndex;
-                            line.LineExtensionRange = Math.Max(0, currentGlobalIndex - line.X2);
-                            ActiveSupportLines.RemoveAt(i);
-                            AddToDeletedTrendLines(line);
-                            OnTrendLinePenetrated?.Invoke(line, tick, "SUPPORT_BROKEN_DOWN");
                         }
                     }
                 }
@@ -646,11 +618,60 @@ namespace Test.Strategy
                 PruneHistoryCapacity();
             }
 
-            // 4. 【第 3 层: O(ActiveLines) 增量单步延伸与碰撞更新】
-            TrendLineHelper.UpdateActiveTrendLinesStep(ActiveResistanceLines, kline, currentGlobalIndex);
-            TrendLineHelper.UpdateActiveTrendLinesStep(ActiveSupportLines, kline, currentGlobalIndex);
+            // 4. 【第 3 层: 当周期结束 K 线推送时，检测 K 线 close 穿过或者 high/low 穿过后删除趋势线】
+            for (int i = ActiveResistanceLines.Count - 1; i >= 0; i--)
+            {
+                var line = ActiveResistanceLines[i];
+                if (currentGlobalIndex > line.X2)
+                {
+                    line.LineAge = currentGlobalIndex - line.X2;
+                    decimal expectedPrice = line.GetPriceAt(currentGlobalIndex);
+                    line.CachedCurrentPrice = expectedPrice;
 
-            // 5. 适度清理长期已击穿且老化的非活跃趋势线 (保持活跃集合紧凑高效)
+                    // 阻力趋势线：当周期结束 K 线的 close 或 high 向上穿过趋势线时 -> 删除趋势线
+                    if (kline.Close > expectedPrice || kline.High > expectedPrice)
+                    {
+                        line.CollidedKlineIndex = currentGlobalIndex;
+                        line.LineExtensionRange = currentGlobalIndex - line.X2;
+                        ActiveResistanceLines.RemoveAt(i);
+                        AddToDeletedTrendLines(line);
+                        OnTrendLinePenetrated?.Invoke(line, LatestTick, "KLINE_RESISTANCE_PENETRATED");
+                    }
+                    else
+                    {
+                        line.LineExtensionRange = currentGlobalIndex - line.X2;
+                        ActiveResistanceLines[i] = line;
+                    }
+                }
+            }
+
+            for (int i = ActiveSupportLines.Count - 1; i >= 0; i--)
+            {
+                var line = ActiveSupportLines[i];
+                if (currentGlobalIndex > line.X2)
+                {
+                    line.LineAge = currentGlobalIndex - line.X2;
+                    decimal expectedPrice = line.GetPriceAt(currentGlobalIndex);
+                    line.CachedCurrentPrice = expectedPrice;
+
+                    // 支撑趋势线：当周期结束 K 线的 close 或 low 向下穿过趋势线时 -> 删除趋势线
+                    if (kline.Close < expectedPrice || kline.Low < expectedPrice)
+                    {
+                        line.CollidedKlineIndex = currentGlobalIndex;
+                        line.LineExtensionRange = currentGlobalIndex - line.X2;
+                        ActiveSupportLines.RemoveAt(i);
+                        AddToDeletedTrendLines(line);
+                        OnTrendLinePenetrated?.Invoke(line, LatestTick, "KLINE_SUPPORT_PENETRATED");
+                    }
+                    else
+                    {
+                        line.LineExtensionRange = currentGlobalIndex - line.X2;
+                        ActiveSupportLines[i] = line;
+                    }
+                }
+            }
+
+            // 5. 适度清理超龄的非活跃趋势线 (保持活跃集合紧凑高效)
             PruneInactiveTrendLines(currentGlobalIndex);
 
             // 6. ⚡ 极速短路边界更新：刷新阻力线最低价与支撑线最高价
@@ -756,10 +777,10 @@ namespace Test.Strategy
         /// </summary>
         private void PruneInactiveTrendLines(int currentGlobalIndex)
         {
-            // 活跃线控制在 MaxSpan * 1.5 范围内或已碰撞超过 20 根 K 线的线，大幅降低存量
+            // 活跃线控制在设定最大跨度寿命范围内，保持活跃集合紧凑高效
             int maxActiveAge = Math.Max(150, MaxSpan * 2);
-            ActiveResistanceLines.RemoveAll(line => (line.CollidedKlineIndex != -1 && currentGlobalIndex - line.CollidedKlineIndex > 20) || (currentGlobalIndex - line.X2 > maxActiveAge));
-            ActiveSupportLines.RemoveAll(line => (line.CollidedKlineIndex != -1 && currentGlobalIndex - line.CollidedKlineIndex > 20) || (currentGlobalIndex - line.X2 > maxActiveAge));
+            ActiveResistanceLines.RemoveAll(line => currentGlobalIndex - line.X2 > maxActiveAge);
+            ActiveSupportLines.RemoveAll(line => currentGlobalIndex - line.X2 > maxActiveAge);
 
             int minRetainedIndex = currentGlobalIndex - MaxKlinesCapacity;
             if (minRetainedIndex > 0)

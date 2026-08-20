@@ -51,7 +51,10 @@ namespace Common.Helper
 
                 // 构造新趋势线并计算延伸至当前最新 K 线的碰撞状态
                 var line = CreateTrendLine(pOld, newPoint, klines, currentGlobalIndex);
-                targetActiveLines.Add(line);
+                if (line.CollidedKlineIndex == -1)
+                {
+                    targetActiveLines.Add(line);
+                }
                 targetHistoryLines?.Add(line);
             }
         }
@@ -182,13 +185,13 @@ namespace Common.Helper
                     if (localIdx < 0 || localIdx >= klines.Count) continue;
 
                     decimal linePrice = line.GetPriceAt(x);
-                    if (line.IsResistance && klines[localIdx].High > linePrice)
+                    if (line.IsResistance && (klines[localIdx].Close > linePrice || klines[localIdx].High > linePrice))
                     {
                         line.CollidedKlineIndex = x;
                         line.LineExtensionRange = x - p2.Index;
                         break;
                     }
-                    else if (line.IsSupport && klines[localIdx].Low < linePrice)
+                    else if (line.IsSupport && (klines[localIdx].Close < linePrice || klines[localIdx].Low < linePrice))
                     {
                         line.CollidedKlineIndex = x;
                         line.LineExtensionRange = x - p2.Index;
@@ -288,11 +291,11 @@ namespace Common.Helper
                 if (localIdx < 0 || localIdx >= klines.Count) continue;
 
                 decimal linePrice = p1.Price + rawK * (x - p1.Index);
-                if (p1.IsPeak && klines[localIdx].High > linePrice)
+                if (p1.IsPeak && (klines[localIdx].High > linePrice || klines[localIdx].Close > linePrice))
                 {
                     return true;
                 }
-                else if (p1.IsValley && klines[localIdx].Low < linePrice)
+                else if (p1.IsValley && (klines[localIdx].Low < linePrice || klines[localIdx].Close < linePrice))
                 {
                     return true;
                 }
