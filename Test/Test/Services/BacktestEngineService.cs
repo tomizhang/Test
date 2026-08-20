@@ -9,7 +9,7 @@ using Test.Strategy;
 namespace Common.Services
 {
     /// <summary>
-    /// 量化回测核心引擎服务实现类 (真·流式生产者-消费者流水线架构 + 暂停/继续支持)
+    /// 量化回测核心引擎服务实现类 (真·流式生产者-消费者流水线架构 + 触碰回弹开仓交易支持)
     /// </summary>
     public class BacktestEngineService : IBacktestEngineService
     {
@@ -18,6 +18,7 @@ namespace Common.Services
         public event Action<RawTick>? OnTickReceived;
         public event Action<RawKline, int, TrendLineStrategy>? OnKlineClosed;
         public event Action<TrendLine, RawTick, string>? OnTrendLinePenetrated;
+        public event Action<TradeSignal>? OnTradeSignalGenerated;
         public event Action<string>? OnLogMessage;
         public event Action<BacktestProgress>? OnProgressChanged;
 
@@ -95,13 +96,21 @@ namespace Common.Services
                     LeftLen = request.LeftLen,
                     RightLen = request.RightLen,
                     MaxSpan = request.MaxSpan,
-                    AllowInternalPenetration = request.AllowInternalPenetration
+                    AllowInternalPenetration = request.AllowInternalPenetration,
+                    MinSignalLineX1X2 = request.MinSignalLineX1X2,
+                    MinSignalLineAge = request.MinSignalLineAge,
+                    SignalCooldownSeconds = request.SignalCooldownSeconds
                 };
 
-                // 转发策略内的穿透事件
+                // 转发策略内的穿透事件与开仓信号事件
                 strategy.OnTrendLinePenetrated += (line, tick, reason) =>
                 {
                     OnTrendLinePenetrated?.Invoke(line, tick, reason);
+                };
+
+                strategy.OnTradeSignalGenerated += signal =>
+                {
+                    OnTradeSignalGenerated?.Invoke(signal);
                 };
 
                 result.Strategy = strategy;
@@ -224,28 +233,30 @@ namespace Common.Services
 
                     lastPushedTickPrice = tick.Price;
 
-                    // 推送价格变动的新 Tick 到策略
+                    // 推送价格变动的新 Tick 到策略 (触发触碰检测与 3-Tick 回弹开仓判定)
                     strategy.OnTick(tick);
                     currentTickIndex++;
 
                     // 触发逐笔 Tick 外部回调
                     OnTickReceived?.Invoke(tick);
 
-                    // 进度周期汇报 (按已处理的天数与 K 线进度平滑计算)
+                    // 进度周期汇报
                     if (currentTickIndex % 50000 == 0)
                     {
                         double percent = klineCount > 0
                             ? 10.0 + ((double)currentKlineIndex / klineCount) * 80.0
                             : 50.0;
 
-                        ReportProgress(progress, percent, $"正在流式回测 ({currentKlineIndex:N0}/{klineCount:N0} 根K线, 已处理 {currentTickIndex:N0} Ticks)...",
+                        ReportProgress(progress, percent, $"正在流式回测 ({currentKlineIndex:N0}/{klineCount:N0} 根K线, 信号: 多{strategy.LongSignalsCount}|空{strategy.ShortSignalsCount})...",
                             processedKlines: currentKlineIndex,
                             totalKlines: klineCount,
                             processedTicks: currentTickIndex,
                             totalTicks: dataReader.TotalTicksLoaded,
                             activeR: strategy.ActiveResistanceLines.Count,
                             activeS: strategy.ActiveSupportLines.Count,
-                            deletedCount: strategy.DeletedTrendLinesCount);
+                            deletedCount: strategy.DeletedTrendLinesCount,
+                            longSignals: strategy.LongSignalsCount,
+                            shortSignals: strategy.ShortSignalsCount);
                     }
                 }
 
@@ -280,9 +291,12 @@ namespace Common.Services
                 result.ActiveSupportLinesCount = strategy.ActiveSupportLines.Count;
                 result.DeletedTrendLinesCount = strategy.DeletedTrendLinesCount;
                 result.HistoricalTrendLinesCount = strategy.HistoricalTrendLinesCount;
+                result.LongSignalsCount = strategy.LongSignalsCount;
+                result.ShortSignalsCount = strategy.ShortSignalsCount;
                 result.StrategySummary = strategy.GetStrategySummary();
 
                 RaiseLog($"[完成] 回测执行完毕！总耗时: {sw.ElapsedMilliseconds} ms, 实际吞吐: {result.TicksPerSecond:N0} ticks/s");
+                RaiseLog($"-> 开仓信号统计: 多单(Long)={result.LongSignalsCount} 笔 | 空单(Short)={result.ShortSignalsCount} 笔 (总计 {result.TotalSignalsCount} 笔)");
                 RaiseLog($"-> 策略最终状态: {result.StrategySummary}");
 
                 // 6. 渲染生成 ScottPlot 分析图表
@@ -293,7 +307,7 @@ namespace Common.Services
 
                     string summaryText = request.Description ??
                         $"币种: {request.Coin}, 周期: {request.Interval.ToIntervalString()}, 时间窗口: {request.StartDate:yyyy-MM-dd} ~ {request.EndDate:yyyy-MM-dd}\n" +
-                        $"策略模式: 三层增量计算流水线 + OnTick 实时穿透删除 (已删除: {strategy.DeletedTrendLinesCount}条)";
+                        $"策略模式: 趋势线触碰 3-Tick 回弹开仓 (LineX1X2>=40, LineAge>=4) | 信号: 多 {strategy.LongSignalsCount} | 空 {strategy.ShortSignalsCount}";
 
                     result.ChartPath = strategy.PlotChart(
                         summaryText,
@@ -311,7 +325,9 @@ namespace Common.Services
                     totalTicks: currentTickIndex,
                     activeR: strategy.ActiveResistanceLines.Count,
                     activeS: strategy.ActiveSupportLines.Count,
-                    deletedCount: strategy.DeletedTrendLinesCount);
+                    deletedCount: strategy.DeletedTrendLinesCount,
+                    longSignals: strategy.LongSignalsCount,
+                    shortSignals: strategy.ShortSignalsCount);
 
                 return result;
             }
@@ -349,7 +365,9 @@ namespace Common.Services
             long totalTicks = 0,
             int activeR = 0,
             int activeS = 0,
-            int deletedCount = 0)
+            int deletedCount = 0,
+            int longSignals = 0,
+            int shortSignals = 0)
         {
             var p = new BacktestProgress
             {
@@ -361,7 +379,9 @@ namespace Common.Services
                 TotalTicks = totalTicks,
                 ActiveResistanceCount = activeR,
                 ActiveSupportCount = activeS,
-                DeletedLinesCount = deletedCount
+                DeletedLinesCount = deletedCount,
+                LongSignalsCount = longSignals,
+                ShortSignalsCount = shortSignals
             };
 
             progress?.Report(p);

@@ -15,10 +15,6 @@ namespace Common.Services
         /// <summary>
         /// 异步启动全流程量化回测执行
         /// </summary>
-        /// <param name="request">回测请求参数</param>
-        /// <param name="progress">可选的进度报告器 (用于 WinForms 进度条响应)</param>
-        /// <param name="ct">异步取消令牌</param>
-        /// <returns>回测结果结构体</returns>
         Task<BacktestResult> RunBacktestAsync(
             BacktestRequest request,
             IProgress<BacktestProgress>? progress = null,
@@ -55,6 +51,11 @@ namespace Common.Services
         /// 趋势线被 Tick 实时穿透击穿事件
         /// </summary>
         event Action<TrendLine, RawTick, string>? OnTrendLinePenetrated;
+
+        /// <summary>
+        /// 趋势线触碰回弹触发的开仓交易信号事件
+        /// </summary>
+        event Action<TradeSignal>? OnTradeSignalGenerated;
 
         /// <summary>
         /// 日志与系统消息输出事件

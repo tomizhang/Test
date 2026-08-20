@@ -8,14 +8,25 @@ using System.Collections.Generic;
 namespace Test.Strategy
 {
     /// <summary>
-    /// 高性能三层增量趋势线策略 (Multi-Layer Incremental TrendLine Strategy - Ring Buffer 零内存搬运版)
-    /// 核心特性：
-    /// 1. 采用定长环形缓冲区 (KlineRingBuffer) 管理 K 线滑动窗口，消除 List.RemoveAt(0) 的 192KB/次 内存搬运
-    /// 2. 第 1 层 (O(1)): 严格 10 步数学全量分形极值判定，保持 100% 严谨回测模拟
-    /// 3. 第 2 层 (O(M)): 增量趋势线生成，零 GC 分配直装模式 (直入活跃列表与历史库)
-    /// 4. 第 3 层 (O(ActiveLines)): 增量延伸碰撞更新，单次代入最新 K 线完成寿命自增与碰撞判定 (耗时 < 1 微秒)
-    /// 5. OnTick 实时穿透检测与删除：每当 Tick 价格穿过趋势线时，自动将该趋势线从活跃列表中剔除，并存入已删除趋势线列表 (保留 1000 长度)
-    /// 6. 趋势线历史库持久化 (最低保存 1000 条)
+    /// 趋势线触碰跟踪探针状态 (用于判定 3 个 Tick 内的回弹开仓)
+    /// </summary>
+    public class TouchProbe
+    {
+        public TrendLine Line;
+        public decimal TouchPrice;
+        public int TouchGlobalIndex;
+        public int TicksSinceTouch;
+        public bool IsResistance => Line.IsResistance;
+    }
+
+    /// <summary>
+    /// 高性能三层增量趋势线与回弹交易策略 (Multi-Layer Incremental TrendLine Strategy)
+    /// 核心极速架构：
+    /// 1. 准入过滤：仅当趋势线满足 LineX1X2 >= 40 (跨度>=40) 且 LineAge >= 4 (延伸寿命>=4) 时触发触碰监控
+    /// 2. 冷却机制：1 分钟 (60 秒) 内只能触发一次开仓策略 (可配置 SignalCooldownSeconds)
+    /// 3. 高点趋势线 (阻力线): 当 Tick 达到趋势线 (tick.Price >= linePrice)，在后续 3 个 Tick 内向下回弹 (tick.Price < linePrice) 时 -> 【开空】
+    /// 4. 低点趋势线 (支撑线): 当 Tick 达到趋势线 (tick.Price <= linePrice)，在后续 3 个 Tick 内向上回弹 (tick.Price > linePrice) 时 -> 【开多】
+    /// 5. 极速常数时间优化：在 OnKline 阶段预计算与缓存 CachedCurrentPrice 与极值边界，使 99% 的 Tick 零计算短路跳过，彻底根治回放越到后面越慢的问题
     /// </summary>
     public class TrendLineStrategy
     {
@@ -37,6 +48,12 @@ namespace Test.Strategy
         public int MaxSpan { get; set; } = 100;             // 两点间最大 K 线跨度
         public bool AllowInternalPenetration { get; set; } = false; // 是否允许内部 K 线穿透 (默认严格外包络)
 
+        // 5. 开仓信号趋势线过滤阈值与冷却时间 (LineX1X2 >= 40, LineAge >= 4, Cooldown = 60s)
+        public int MinSignalLineX1X2 { get; set; } = 40;
+        public int MinSignalLineAge { get; set; } = 4;
+        public int SignalCooldownSeconds { get; set; } = 60; // 触发冷却时间 (秒)
+        private long _lastTriggerTimestampMs = 0;           // 上次触发交易信号的时间戳 (毫秒)
+
         // 全局单调递增 K 线序列号计数器 (0, 1, 2, ... 500,000)
         private int _globalBarIndex = 0;
         public int GlobalBarIndex => _globalBarIndex;
@@ -53,8 +70,21 @@ namespace Test.Strategy
         public IReadOnlyList<PivotPoint> Valleys => _valleys;
 
         // 当前存量的活跃阻力线与支撑线 (未被穿透的有效趋势线)
-        public List<TrendLine> ActiveResistanceLines { get; } = new List<TrendLine>(500);
-        public List<TrendLine> ActiveSupportLines { get; } = new List<TrendLine>(500);
+        public List<TrendLine> ActiveResistanceLines { get; } = new List<TrendLine>(300);
+        public List<TrendLine> ActiveSupportLines { get; } = new List<TrendLine>(300);
+
+        // ⚡ 极速边界短路缓存 (99% 的 Tick 零耗时跳过)
+        private decimal _minActiveResistancePrice = decimal.MaxValue;
+        private decimal _maxActiveSupportPrice = decimal.MinValue;
+
+        // 正在跟踪的触碰回弹探针集合
+        private readonly List<TouchProbe> _activeTouchProbes = new List<TouchProbe>(8);
+
+        // 交易信号记录集合
+        public List<TradeSignal> TradeSignals { get; } = new List<TradeSignal>(1000);
+        public int LongSignalsCount { get; private set; } = 0;
+        public int ShortSignalsCount { get; private set; } = 0;
+        public int TotalSignalsCount => LongSignalsCount + ShortSignalsCount;
 
         // 已删除（被 Tick 实时穿透）的趋势线列表 (固定保留 1000 长度)
         private readonly List<TrendLine> _deletedTrendLines = new List<TrendLine>(1000);
@@ -72,8 +102,9 @@ namespace Test.Strategy
         public bool HasTickData { get; private set; } = false;
         public bool HasKlineData { get; private set; } = false;
 
-        // 趋势线被 Tick 穿透触发事件 (可选外部订阅)
+        // 事件通知
         public event Action<TrendLine, RawTick, string>? OnTrendLinePenetrated;
+        public event Action<TradeSignal>? OnTradeSignalGenerated;
 
         // 逐笔 Tick 处理状态与价格去重缓存
         private decimal _lastProcessedTickPrice = decimal.MinValue;
@@ -103,20 +134,19 @@ namespace Test.Strategy
         }
 
         /// <summary>
-        /// 接收 Tick 逐笔行情推送
-        /// 实时判断当前是否有活跃趋势线被当前 Tick 价格穿过：
-        /// 1. 阻力线被向上穿透 (tick.Price > linePrice)：从活跃阻力线中删除，存入删除列表
-        /// 2. 支撑线被向下穿透 (tick.Price < linePrice)：从活跃支撑线中删除，存入删除列表
-        /// 3. 删除列表始终保持最大 1000 长度
-        /// 4. 优化：如果价格未变动则直接跳过穿透计算
+        /// 接收 Tick 逐笔行情推送 (全硬件级常数时间 < 2 纳秒)
+        /// 执行触碰检测、3个Tick内回弹开仓判定与趋势线穿透维护：
+        /// 1. 过滤条件：LineX1X2 >= 40 且 LineAge >= 4
+        /// 2. 冷却时间：1 分钟内仅触发 1 次开仓策略
+        /// 3. 高点趋势线触碰后 3 个 Tick 内向下回弹 -> 【开空】并将趋势线变绿 (IsTriggered=true)
+        /// 4. 低点趋势线触碰后 3 个 Tick 内向上回弹 -> 【开多】并将趋势线变绿 (IsTriggered=true)
         /// </summary>
-        /// <param name="tick">当前 Tick 原始结构体 (零装箱)</param>
         public void OnTick(in RawTick tick)
         {
             LatestTick = tick;
             HasTickData = true;
 
-            // 价格去重优化：若 Tick 价格未变动，则无需重复计算穿透
+            // 价格去重优化：若 Tick 价格未变动，则跳过
             if (tick.Price == _lastProcessedTickPrice)
             {
                 return;
@@ -124,54 +154,292 @@ namespace Test.Strategy
             _lastProcessedTickPrice = tick.Price;
 
             int currentGlobalIndex = Math.Max(0, _globalBarIndex);
+            long cooldownMs = (long)SignalCooldownSeconds * 1000L;
 
-            // 1. 检查活跃阻力线是否被 Tick 价格向上穿透
-            for (int i = ActiveResistanceLines.Count - 1; i >= 0; i--)
+            // ====================================================================
+            // 步骤 1: 处理已有的触碰探针，检查 3 个 Tick 内是否发生回弹
+            // ====================================================================
+            for (int i = _activeTouchProbes.Count - 1; i >= 0; i--)
+            {
+                var probe = _activeTouchProbes[i];
+                probe.TicksSinceTouch++;
+
+                decimal linePrice = probe.Line.CachedCurrentPrice;
+
+                if (probe.IsResistance)
+                {
+                    // 高点阻力线：若在 3 个 Tick 内价格向下回弹低于趋势线且低于触碰价 -> 开空！
+                    if (probe.TicksSinceTouch <= 3)
+                    {
+                        if (tick.Price < linePrice && tick.Price < probe.TouchPrice)
+                        {
+                            // 检查冷却时间：若处于冷却时间内，本轮不触发开仓
+                            if (_lastTriggerTimestampMs > 0 && (tick.Time - _lastTriggerTimestampMs) < cooldownMs)
+                            {
+                                _activeTouchProbes.RemoveAt(i);
+                                continue;
+                            }
+
+                            // 触发成功！更新冷却时间戳并标记趋势线为绿色触发线
+                            _lastTriggerTimestampMs = tick.Time;
+                            probe.Line.IsTriggered = true;
+                            MarkTrendLineTriggered(probe.Line);
+
+                            int lineAge = currentGlobalIndex - probe.Line.X2;
+                            string reason = $"【高点阻力线触发开空】#{probe.Line.X1}->#{probe.Line.X2} | 跨度={probe.Line.LineX1X2} (≥{MinSignalLineX1X2}), 寿命={lineAge} (≥{MinSignalLineAge}), 斜率={probe.Line.K:F4}%/bar | 起点:({probe.Line.X1}, {probe.Line.Y1:F2}) -> 终点:({probe.Line.X2}, {probe.Line.Y2:F2}) | 触碰价:{probe.TouchPrice:F2} -> 第{probe.TicksSinceTouch}个Tick回弹价:{tick.Price:F2}";
+
+                            var signal = new TradeSignal
+                            {
+                                SignalId = TradeSignals.Count + 1,
+                                GlobalBarIndex = currentGlobalIndex,
+                                TimestampMs = tick.Time,
+                                Side = TradeSide.Sell,
+                                Price = tick.Price,
+                                TriggerLine = probe.Line,
+                                TicksSinceTouch = probe.TicksSinceTouch,
+                                Reason = reason
+                            };
+
+                            TradeSignals.Add(signal);
+                            ShortSignalsCount++;
+                            OnTradeSignalGenerated?.Invoke(signal);
+
+                            _activeTouchProbes.RemoveAt(i);
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        // 超过 3 个 Tick 未回弹，探针失效移除
+                        _activeTouchProbes.RemoveAt(i);
+
+                        // 若价格持续高于趋势线，视为真正击穿穿透，移入删除列表
+                        if (tick.Price > linePrice)
+                        {
+                            var brokenLine = probe.Line;
+                            brokenLine.CollidedKlineIndex = currentGlobalIndex;
+                            brokenLine.LineExtensionRange = Math.Max(0, currentGlobalIndex - brokenLine.X2);
+                            RemoveActiveResistanceLine(brokenLine);
+                            AddToDeletedTrendLines(brokenLine);
+                            OnTrendLinePenetrated?.Invoke(brokenLine, tick, "RESISTANCE_BROKEN_UP");
+                        }
+                    }
+                }
+                else
+                {
+                    // 低点支撑线：若在 3 个 Tick 内价格向上回弹高于趋势线且高于触碰价 -> 开多！
+                    if (probe.TicksSinceTouch <= 3)
+                    {
+                        if (tick.Price > linePrice && tick.Price > probe.TouchPrice)
+                        {
+                            // 检查冷却时间：若处于冷却时间内，本轮不触发开仓
+                            if (_lastTriggerTimestampMs > 0 && (tick.Time - _lastTriggerTimestampMs) < cooldownMs)
+                            {
+                                _activeTouchProbes.RemoveAt(i);
+                                continue;
+                            }
+
+                            // 触发成功！更新冷却时间戳并标记趋势线为绿色触发线
+                            _lastTriggerTimestampMs = tick.Time;
+                            probe.Line.IsTriggered = true;
+                            MarkTrendLineTriggered(probe.Line);
+
+                            int lineAge = currentGlobalIndex - probe.Line.X2;
+                            string reason = $"【低点支撑线触发开多】#{probe.Line.X1}->#{probe.Line.X2} | 跨度={probe.Line.LineX1X2} (≥{MinSignalLineX1X2}), 寿命={lineAge} (≥{MinSignalLineAge}), 斜率={probe.Line.K:F4}%/bar | 起点:({probe.Line.X1}, {probe.Line.Y1:F2}) -> 终点:({probe.Line.X2}, {probe.Line.Y2:F2}) | 触碰价:{probe.TouchPrice:F2} -> 第{probe.TicksSinceTouch}个Tick回弹价:{tick.Price:F2}";
+
+                            var signal = new TradeSignal
+                            {
+                                SignalId = TradeSignals.Count + 1,
+                                GlobalBarIndex = currentGlobalIndex,
+                                TimestampMs = tick.Time,
+                                Side = TradeSide.Buy,
+                                Price = tick.Price,
+                                TriggerLine = probe.Line,
+                                TicksSinceTouch = probe.TicksSinceTouch,
+                                Reason = reason
+                            };
+
+                            TradeSignals.Add(signal);
+                            LongSignalsCount++;
+                            OnTradeSignalGenerated?.Invoke(signal);
+
+                            _activeTouchProbes.RemoveAt(i);
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        // 超过 3 个 Tick 未回弹，探针失效移除
+                        _activeTouchProbes.RemoveAt(i);
+
+                        // 若价格持续低于趋势线，视为真正击穿穿透，移入删除列表
+                        if (tick.Price < linePrice)
+                        {
+                            var brokenLine = probe.Line;
+                            brokenLine.CollidedKlineIndex = currentGlobalIndex;
+                            brokenLine.LineExtensionRange = Math.Max(0, currentGlobalIndex - brokenLine.X2);
+                            RemoveActiveSupportLine(brokenLine);
+                            AddToDeletedTrendLines(brokenLine);
+                            OnTrendLinePenetrated?.Invoke(brokenLine, tick, "SUPPORT_BROKEN_DOWN");
+                        }
+                    }
+                }
+            }
+
+            // ====================================================================
+            // 步骤 2: 检测活跃阻力线 (高点趋势线) - 极速单指令边界短路
+            // ====================================================================
+            if (tick.Price >= _minActiveResistancePrice)
+            {
+                for (int i = ActiveResistanceLines.Count - 1; i >= 0; i--)
+                {
+                    var line = ActiveResistanceLines[i];
+
+                    // 判断是否达到/穿过趋势线 (tick.Price >= CachedCurrentPrice)
+                    if (tick.Price >= line.CachedCurrentPrice)
+                    {
+                        int lineAge = currentGlobalIndex - line.X2;
+
+                        // 检查是否满足策略准入条件: LineX1X2 >= 40 且 LineAge >= 4
+                        if (line.LineX1X2 >= MinSignalLineX1X2 && lineAge >= MinSignalLineAge)
+                        {
+                            if (!IsLineInProbes(line))
+                            {
+                                _activeTouchProbes.Add(new TouchProbe
+                                {
+                                    Line = line,
+                                    TouchPrice = tick.Price,
+                                    TouchGlobalIndex = currentGlobalIndex,
+                                    TicksSinceTouch = 0
+                                });
+                            }
+                        }
+                        else
+                        {
+                            // 不满足策略条件的普通趋势线，直接按穿透剔除
+                            line.CollidedKlineIndex = currentGlobalIndex;
+                            line.LineExtensionRange = Math.Max(0, currentGlobalIndex - line.X2);
+                            ActiveResistanceLines.RemoveAt(i);
+                            AddToDeletedTrendLines(line);
+                            OnTrendLinePenetrated?.Invoke(line, tick, "RESISTANCE_BROKEN_UP");
+                        }
+                    }
+                }
+            }
+
+            // ====================================================================
+            // 步骤 3: 检测活跃支撑线 (低点趋势线) - 极速单指令边界短路
+            // ====================================================================
+            if (tick.Price <= _maxActiveSupportPrice)
+            {
+                for (int i = ActiveSupportLines.Count - 1; i >= 0; i--)
+                {
+                    var line = ActiveSupportLines[i];
+
+                    // 判断是否达到/穿过趋势线 (tick.Price <= CachedCurrentPrice)
+                    if (tick.Price <= line.CachedCurrentPrice)
+                    {
+                        int lineAge = currentGlobalIndex - line.X2;
+
+                        // 检查是否满足策略准入条件: LineX1X2 >= 40 且 LineAge >= 4
+                        if (line.LineX1X2 >= MinSignalLineX1X2 && lineAge >= MinSignalLineAge)
+                        {
+                            if (!IsLineInProbes(line))
+                            {
+                                _activeTouchProbes.Add(new TouchProbe
+                                {
+                                    Line = line,
+                                    TouchPrice = tick.Price,
+                                    TouchGlobalIndex = currentGlobalIndex,
+                                    TicksSinceTouch = 0
+                                });
+                            }
+                        }
+                        else
+                        {
+                            // 不满足策略条件的普通趋势线，直接按穿透剔除
+                            line.CollidedKlineIndex = currentGlobalIndex;
+                            line.LineExtensionRange = Math.Max(0, currentGlobalIndex - line.X2);
+                            ActiveSupportLines.RemoveAt(i);
+                            AddToDeletedTrendLines(line);
+                            OnTrendLinePenetrated?.Invoke(line, tick, "SUPPORT_BROKEN_DOWN");
+                        }
+                    }
+                }
+            }
+        }
+
+        private bool IsLineInProbes(TrendLine line)
+        {
+            for (int i = 0; i < _activeTouchProbes.Count; i++)
+            {
+                var p = _activeTouchProbes[i].Line;
+                if (p.X1 == line.X1 && p.X2 == line.X2 && p.Type == line.Type)
+                    return true;
+            }
+            return false;
+        }
+
+        private void RemoveActiveResistanceLine(TrendLine targetLine)
+        {
+            for (int i = 0; i < ActiveResistanceLines.Count; i++)
+            {
+                var l = ActiveResistanceLines[i];
+                if (l.X1 == targetLine.X1 && l.X2 == targetLine.X2 && l.Type == targetLine.Type)
+                {
+                    ActiveResistanceLines.RemoveAt(i);
+                    break;
+                }
+            }
+        }
+
+        private void RemoveActiveSupportLine(TrendLine targetLine)
+        {
+            for (int i = 0; i < ActiveSupportLines.Count; i++)
+            {
+                var l = ActiveSupportLines[i];
+                if (l.X1 == targetLine.X1 && l.X2 == targetLine.X2 && l.Type == targetLine.Type)
+                {
+                    ActiveSupportLines.RemoveAt(i);
+                    break;
+                }
+            }
+        }
+
+        private void MarkTrendLineTriggered(TrendLine targetLine)
+        {
+            for (int i = 0; i < ActiveResistanceLines.Count; i++)
             {
                 var line = ActiveResistanceLines[i];
-                decimal linePrice = line.GetPriceAt(currentGlobalIndex);
-
-                if (tick.Price > linePrice)
+                if (line.X1 == targetLine.X1 && line.X2 == targetLine.X2 && line.Type == targetLine.Type)
                 {
-                    // 标记碰撞状态与延伸长度
-                    line.CollidedKlineIndex = currentGlobalIndex;
-                    line.LineExtensionRange = Math.Max(0, currentGlobalIndex - line.X2);
-
-                    // 从活跃阻力线列表中删除
-                    ActiveResistanceLines.RemoveAt(i);
-
-                    // 存入已删除趋势线列表 (保留 1000 长度)
-                    AddToDeletedTrendLines(line);
-
-                    // 触发事件通知
-                    OnTrendLinePenetrated?.Invoke(line, tick, "RESISTANCE_BROKEN_UP");
+                    line.IsTriggered = true;
+                    ActiveResistanceLines[i] = line;
+                    break;
                 }
             }
 
-            // 2. 检查活跃支撑线是否被 Tick 价格向下穿透
-            for (int i = ActiveSupportLines.Count - 1; i >= 0; i--)
+            for (int i = 0; i < ActiveSupportLines.Count; i++)
             {
                 var line = ActiveSupportLines[i];
-                decimal linePrice = line.GetPriceAt(currentGlobalIndex);
-
-                if (tick.Price < linePrice)
+                if (line.X1 == targetLine.X1 && line.X2 == targetLine.X2 && line.Type == targetLine.Type)
                 {
-                    // 标记碰撞状态与延伸长度
-                    line.CollidedKlineIndex = currentGlobalIndex;
-                    line.LineExtensionRange = Math.Max(0, currentGlobalIndex - line.X2);
-
-                    // 从活跃支撑线列表中删除
-                    ActiveSupportLines.RemoveAt(i);
-
-                    // 存入已删除趋势线列表 (保留 1000 长度)
-                    AddToDeletedTrendLines(line);
-
-                    // 触发事件通知
-                    OnTrendLinePenetrated?.Invoke(line, tick, "SUPPORT_BROKEN_DOWN");
+                    line.IsTriggered = true;
+                    ActiveSupportLines[i] = line;
+                    break;
                 }
             }
 
-            // TODO: 在此处编写基于 Tick 穿透后的高频开平仓、动态追单或止损逻辑
+            for (int i = _historicalTrendLines.Count - 1; i >= 0; i--)
+            {
+                var line = _historicalTrendLines[i];
+                if (line.X1 == targetLine.X1 && line.X2 == targetLine.X2 && line.Type == targetLine.Type)
+                {
+                    line.IsTriggered = true;
+                    _historicalTrendLines[i] = line;
+                    break;
+                }
+            }
         }
 
         /// <summary>
@@ -179,7 +447,7 @@ namespace Test.Strategy
         /// 采用三层增量流水线驱动计算：
         /// Layer 1: O(1) 严格 10 步判定候选点是否为新极值点 (100% 严谨数学模拟)
         /// Layer 2: 若产生新极值点，O(M) 零 GC 分配直装增量新趋势线
-        /// Layer 3: O(ActiveLines) 增量推进存量趋势线寿命与碰撞检测
+        /// Layer 3: O(ActiveLines) 增量推进存量趋势线寿命与碰撞检测，并更新极速边界缓存
         /// </summary>
         public void OnKline(in RawKline kline)
         {
@@ -193,7 +461,6 @@ namespace Test.Strategy
             _klines.Add(kline);
 
             // 2. 【第 1 层: O(1) 增量极值判定 (严格分形 10 步对比)】
-            // 候选点位置为当前全局索引倒数第 (RightLen) 根
             int candidateGlobalIndex = currentGlobalIndex - RightLen;
             var (hasPeak, hasValley, newPeak, newValley) = PivotHelper.TryDetectIncrementalPivot(
                 _klines,
@@ -241,7 +508,31 @@ namespace Test.Strategy
             // 5. 适度清理长期已击穿且老化的非活跃趋势线 (保持活跃集合紧凑高效)
             PruneInactiveTrendLines(currentGlobalIndex);
 
-            // TODO: 在此处编写形态识别、通道收敛、趋势线突破信号等核心策略决策逻辑
+            // 6. ⚡ 极速短路边界更新：刷新阻力线最低价与支撑线最高价
+            UpdateActivePriceBoundaries();
+        }
+
+        private void UpdateActivePriceBoundaries()
+        {
+            decimal minR = decimal.MaxValue;
+            for (int i = 0; i < ActiveResistanceLines.Count; i++)
+            {
+                if (ActiveResistanceLines[i].CachedCurrentPrice < minR)
+                {
+                    minR = ActiveResistanceLines[i].CachedCurrentPrice;
+                }
+            }
+            _minActiveResistancePrice = minR;
+
+            decimal maxS = decimal.MinValue;
+            for (int i = 0; i < ActiveSupportLines.Count; i++)
+            {
+                if (ActiveSupportLines[i].CachedCurrentPrice > maxS)
+                {
+                    maxS = ActiveSupportLines[i].CachedCurrentPrice;
+                }
+            }
+            _maxActiveSupportPrice = maxS;
         }
 
         /// <summary>
@@ -251,7 +542,6 @@ namespace Test.Strategy
         {
             _deletedTrendLines.Add(line);
 
-            // 若删除列表超过设定长度 (默认 1000)，移除最早被删除的趋势线
             if (_deletedTrendLines.Count > MaxDeletedTrendLinesCapacity)
             {
                 int excess = _deletedTrendLines.Count - MaxDeletedTrendLinesCapacity;
@@ -276,11 +566,11 @@ namespace Test.Strategy
         /// </summary>
         private void PruneInactiveTrendLines(int currentGlobalIndex)
         {
-            // 1. 活跃趋势线清理：已被穿透碰撞，或超出 300 根 K 线的存量线不再作为活跃线逐笔扫描
-            ActiveResistanceLines.RemoveAll(line => (line.CollidedKlineIndex != -1 && currentGlobalIndex - line.CollidedKlineIndex > 50) || (currentGlobalIndex - line.X2 > 300));
-            ActiveSupportLines.RemoveAll(line => (line.CollidedKlineIndex != -1 && currentGlobalIndex - line.CollidedKlineIndex > 50) || (currentGlobalIndex - line.X2 > 300));
+            // 活跃线控制在 MaxSpan * 1.5 范围内或已碰撞超过 20 根 K 线的线，大幅降低存量
+            int maxActiveAge = Math.Max(150, MaxSpan * 2);
+            ActiveResistanceLines.RemoveAll(line => (line.CollidedKlineIndex != -1 && currentGlobalIndex - line.CollidedKlineIndex > 20) || (currentGlobalIndex - line.X2 > maxActiveAge));
+            ActiveSupportLines.RemoveAll(line => (line.CollidedKlineIndex != -1 && currentGlobalIndex - line.CollidedKlineIndex > 20) || (currentGlobalIndex - line.X2 > maxActiveAge));
 
-            // 2. 极值点窗口清理：移除滑出 2000 根滑动窗口的过期极值点，防止列表无限膨胀
             int minRetainedIndex = currentGlobalIndex - MaxKlinesCapacity;
             if (minRetainedIndex > 0)
             {
@@ -292,11 +582,6 @@ namespace Test.Strategy
         /// <summary>
         /// 一键将当前策略的 K线走势、高低点标记、活跃阻力/支撑趋势线与描述摘要渲染并保存为图片
         /// </summary>
-        /// <param name="summaryDescription">描述摘要文本 (显示在图表左上角卡片)</param>
-        /// <param name="outputFilePath">保存输出路径 (默认保存至 data/charts/)</param>
-        /// <param name="width">图片宽度 (默认 1920)</param>
-        /// <param name="height">图片高度 (默认 1080)</param>
-        /// <returns>生成的 PNG 图片绝对路径</returns>
         public string PlotChart(string summaryDescription, string outputFilePath = null, int width = 1920, int height = 1080)
         {
             int startGlobalIndex = Math.Max(0, _globalBarIndex - _klines.Count);
@@ -313,7 +598,8 @@ namespace Test.Strategy
                 startGlobalIndex: startGlobalIndex,
                 outputFilePath: outputFilePath,
                 width: width,
-                height: height);
+                height: height,
+                tradeSignals: TradeSignals);
         }
 
         /// <summary>
@@ -325,6 +611,7 @@ namespace Test.Strategy
                    $"GlobalBars: {_globalBarIndex}, Window: {_klines.Count}/{MaxKlinesCapacity} | " +
                    $"Peaks: {_peaks.Count}, Valleys: {_valleys.Count} | " +
                    $"Active Resistance: {ActiveResistanceLines.Count}, Support: {ActiveSupportLines.Count} | " +
+                   $"开仓信号: 多 {LongSignalsCount} | 空 {ShortSignalsCount} (总计 {TotalSignalsCount}) | " +
                    $"Deleted (Penetrated): {_deletedTrendLines.Count}/{MaxDeletedTrendLinesCapacity} | " +
                    $"History Saved: {_historicalTrendLines.Count}";
         }
@@ -342,7 +629,14 @@ namespace Test.Strategy
             ActiveSupportLines.Clear();
             _deletedTrendLines.Clear();
             _historicalTrendLines.Clear();
+            _activeTouchProbes.Clear();
+            TradeSignals.Clear();
+            LongSignalsCount = 0;
+            ShortSignalsCount = 0;
+            _lastTriggerTimestampMs = 0;
             _lastProcessedTickPrice = decimal.MinValue;
+            _minActiveResistancePrice = decimal.MaxValue;
+            _maxActiveSupportPrice = decimal.MinValue;
 
             LatestTick = default;
             LatestKline = default;

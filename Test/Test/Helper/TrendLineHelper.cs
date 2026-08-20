@@ -101,12 +101,12 @@ namespace Common.Helper
                 if (currentGlobalIndex > line.X2)
                 {
                     line.LineAge = currentGlobalIndex - line.X2;
+                    decimal expectedPrice = line.GetPriceAt(currentGlobalIndex);
+                    line.CachedCurrentPrice = expectedPrice;
 
                     // 若该线此前尚未被碰撞击穿，检测当前这根 K 线是否造成首次碰撞
                     if (line.CollidedKlineIndex == -1)
                     {
-                        decimal expectedPrice = line.GetPriceAt(currentGlobalIndex);
-
                         if (line.IsResistance && latestKline.High > expectedPrice)
                         {
                             line.CollidedKlineIndex = currentGlobalIndex;
@@ -169,7 +169,8 @@ namespace Common.Helper
                 Type = p1.Type,
                 LineAge = lineAge,
                 CollidedKlineIndex = -1,
-                LineExtensionRange = lineAge
+                LineExtensionRange = lineAge,
+                CachedCurrentPrice = p1.Price + rawK * (latestIndex - p1.Index)
             };
 
             // 从 p2 向后延伸检查首次碰撞

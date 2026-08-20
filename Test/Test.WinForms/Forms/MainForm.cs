@@ -20,10 +20,11 @@ namespace Test.WinForms.Forms
 {
     /// <summary>
     /// 专业量化回测系统主窗体 (WinForms 主界面)
-    /// 架构：
-    /// 1. UI 采用 Timer 定时批量轮询抽取机制 (彻底杜绝 BeginInvoke 洪泛导致的 Windows 消息队列阻塞与界面卡死)
-    /// 2. 后台引擎纯无锁写入队列/原子引用，UI 线程以 16 FPS (60ms) 丝滑更新图表、日志与进度
-    /// 3. 支持实时价格折线图、高低点标记、趋势线动态推流、暂停/继续与自适应 X/Y 轴
+    /// 核心功能：
+    /// 1. 趋势线触碰 3-Tick 内回弹开仓策略 (高点回弹开空，低点回弹开多，LineX1X2>=40, LineAge>=4, 1分钟冷却)
+    /// 2. 触发开仓的趋势线在图表上渲染为显目绿色 (IsTriggered=true)，日志输出完整趋势线特征
+    /// 3. UI 采用 Timer 定时批量轮询抽取机制 (杜绝 BeginInvoke 消息风暴，窗口拖拽与交互 100% 丝滑)
+    /// 4. ScottPlot 交互折线图实时呈现价格、高低点极值、趋势线延伸与交易信号标记
     /// </summary>
     public class MainForm : Form
     {
@@ -37,7 +38,7 @@ namespace Test.WinForms.Forms
         private volatile string _currentRunningCoin = "BTCUSDT";
         private volatile string _currentRunningInterval = "1m";
 
-        // UI 异步消息解耦缓冲 (彻底消除 BeginInvoke 消息风暴)
+        // UI 异步消息解耦缓冲
         private readonly ConcurrentQueue<(string Message, Color Color)> _logQueue = new ConcurrentQueue<(string, Color)>();
         private volatile BacktestProgress? _latestProgress = null;
         private ChartSnapshot? _latestChartSnapshot = null;
@@ -69,6 +70,9 @@ namespace Test.WinForms.Forms
         private NumericUpDown numLeftLen = null!;
         private NumericUpDown numRightLen = null!;
         private NumericUpDown numMaxSpan = null!;
+        private NumericUpDown numMinSignalSpan = null!;
+        private NumericUpDown numMinSignalAge = null!;
+        private NumericUpDown numCooldown = null!;
         private CheckBox chkStrictEnvelope = null!;
         private CheckBox chkRealtimeChart = null!;
         private CheckBox chkAutoScale = null!;
@@ -88,6 +92,7 @@ namespace Test.WinForms.Forms
         private Label lblStatThroughput = null!;
         private Label lblStatKlines = null!;
         private Label lblStatTicks = null!;
+        private Label lblStatSignals = null!;
         private Label lblStatPeaksValleys = null!;
         private Label lblStatActiveLines = null!;
         private Label lblStatDeletedLines = null!;
@@ -112,7 +117,7 @@ namespace Test.WinForms.Forms
             this.StartPosition = FormStartPosition.CenterScreen;
             this.Font = new Font("Microsoft YaHei", 9F, FontStyle.Regular, GraphicsUnit.Point);
 
-            // 1. 主分割容器 (左右分割: 左边为图表+日志, 右边为控制台)
+            // 1. 主分割容器 (左右分割)
             splitMain = new SplitContainer
             {
                 Dock = DockStyle.Fill,
@@ -121,7 +126,7 @@ namespace Test.WinForms.Forms
                 FixedPanel = FixedPanel.Panel2
             };
 
-            // 2. 左侧分割容器 (上下分割: 上边为ScottPlot图表, 下边为日志框)
+            // 2. 左侧分割容器 (上下分割)
             splitLeft = new SplitContainer
             {
                 Dock = DockStyle.Fill,
@@ -163,7 +168,7 @@ namespace Test.WinForms.Forms
 
             lblLogTitle = new Label
             {
-                Text = "⚡ 实时日志与回测监控流",
+                Text = "⚡ 关键日志与开仓信号监控",
                 Font = new Font("Microsoft YaHei", 9.5F, FontStyle.Bold),
                 ForeColor = Color.FromArgb(226, 232, 240),
                 AutoSize = true,
@@ -174,7 +179,7 @@ namespace Test.WinForms.Forms
             {
                 Text = "清空日志",
                 Size = new Size(70, 24),
-                Location = new Point(180, 4),
+                Location = new Point(185, 4),
                 FlatStyle = FlatStyle.Flat,
                 Font = new Font("Microsoft YaHei", 8F),
                 BackColor = Color.FromArgb(51, 65, 85),
@@ -244,36 +249,51 @@ namespace Test.WinForms.Forms
             panelRight.Controls.Add(grpData);
             top += grpData.Height + 10;
 
-            // Group 2: 趋势线策略参数
-            grpStrategy = CreateGroupBox("2. 趋势线策略与推流参数", top, 290);
+            // Group 2: 趋势线策略参数 (增加 LineX1X2 >= 40, LineAge >= 4 与 1分钟冷却阈值)
+            grpStrategy = CreateGroupBox("2. 趋势线与开仓策略参数", top, 375);
             {
                 var lblMaxK = CreateLabel("K线滑动窗口:", 15, 25);
                 numMaxKlines = new NumericUpDown { Location = new Point(130, 22), Width = 210, Minimum = 100, Maximum = 100000, Value = 2000 };
 
-                var lblMinT = CreateLabel("历史趋势线库:", 15, 55);
-                numMinTrendLines = new NumericUpDown { Location = new Point(130, 52), Width = 210, Minimum = 100, Maximum = 50000, Value = 1000 };
+                var lblMinT = CreateLabel("历史趋势线库:", 15, 53);
+                numMinTrendLines = new NumericUpDown { Location = new Point(130, 50), Width = 210, Minimum = 100, Maximum = 50000, Value = 1000 };
 
-                var lblMaxD = CreateLabel("穿透删除列表:", 15, 85);
-                numMaxDeleted = new NumericUpDown { Location = new Point(130, 82), Width = 210, Minimum = 100, Maximum = 50000, Value = 1000 };
+                var lblLeft = CreateLabel("波峰左侧对比:", 15, 81);
+                numLeftLen = new NumericUpDown { Location = new Point(130, 78), Width = 210, Minimum = 1, Maximum = 100, Value = 5 };
 
-                var lblLeft = CreateLabel("波峰左侧对比:", 15, 115);
-                numLeftLen = new NumericUpDown { Location = new Point(130, 112), Width = 210, Minimum = 1, Maximum = 100, Value = 5 };
+                var lblRight = CreateLabel("波峰右侧对比:", 15, 109);
+                numRightLen = new NumericUpDown { Location = new Point(130, 106), Width = 210, Minimum = 1, Maximum = 100, Value = 5 };
 
-                var lblRight = CreateLabel("波峰右侧对比:", 15, 145);
-                numRightLen = new NumericUpDown { Location = new Point(130, 142), Width = 210, Minimum = 1, Maximum = 100, Value = 5 };
+                var lblSpan = CreateLabel("最大配对跨度:", 15, 137);
+                numMaxSpan = new NumericUpDown { Location = new Point(130, 134), Width = 210, Minimum = 10, Maximum = 2000, Value = 100 };
 
-                var lblSpan = CreateLabel("最大配对跨度:", 15, 175);
-                numMaxSpan = new NumericUpDown { Location = new Point(130, 172), Width = 210, Minimum = 10, Maximum = 2000, Value = 100 };
+                var lblSignalSpan = CreateLabel("开仓跨度≥(X1X2):", 15, 165);
+                numMinSignalSpan = new NumericUpDown { Location = new Point(130, 162), Width = 210, Minimum = 1, Maximum = 500, Value = 40 };
 
-                chkStrictEnvelope = new CheckBox { Text = "严格外包络 (禁止内部穿透)", Location = new Point(15, 205), Width = 320, Checked = true };
+                var lblSignalAge = CreateLabel("开仓寿命≥(Age):", 15, 193);
+                numMinSignalAge = new NumericUpDown { Location = new Point(130, 190), Width = 210, Minimum = 1, Maximum = 100, Value = 4 };
 
-                chkRealtimeChart = new CheckBox { Text = "实时推送图表走势 (UI 定时刷新)", Location = new Point(15, 230), Width = 320, Checked = true };
+                var lblCooldown = CreateLabel("触发冷却(秒):", 15, 221);
+                numCooldown = new NumericUpDown { Location = new Point(130, 218), Width = 210, Minimum = 0, Maximum = 3600, Value = 60 };
+
+                chkStrictEnvelope = new CheckBox { Text = "严格外包络 (禁止内部穿透)", Location = new Point(15, 248), Width = 320, Checked = true };
+
+                chkRealtimeChart = new CheckBox { Text = "实时推送图表走势 (UI 定时刷新)", Location = new Point(15, 273), Width = 320, Checked = true };
                 chkRealtimeChart.CheckedChanged += (s, e) => _isRealtimeChartEnabled = chkRealtimeChart.Checked;
 
-                chkAutoScale = new CheckBox { Text = "回放时自动调节 X/Y 轴 (Auto-Scale)", Location = new Point(15, 255), Width = 320, Checked = true };
+                chkAutoScale = new CheckBox { Text = "回放时自动调节 X/Y 轴 (Auto-Scale)", Location = new Point(15, 298), Width = 320, Checked = true };
                 chkAutoScale.CheckedChanged += (s, e) => _isAutoScaleEnabled = chkAutoScale.Checked;
 
-                grpStrategy.Controls.AddRange(new Control[] { lblMaxK, numMaxKlines, lblMinT, numMinTrendLines, lblMaxD, numMaxDeleted, lblLeft, numLeftLen, lblRight, numRightLen, lblSpan, numMaxSpan, chkStrictEnvelope, chkRealtimeChart, chkAutoScale });
+                var lblStrategyNote = new Label
+                {
+                    Text = "🎯 策略规则: 触碰趋势线 3 个 Tick 内回弹即开仓\n(高点回弹开空，低点回弹开多，触发线变绿)",
+                    Location = new Point(15, 324),
+                    Size = new Size(325, 36),
+                    ForeColor = Color.FromArgb(74, 222, 128), // Green 400
+                    Font = new Font("Microsoft YaHei", 8F)
+                };
+
+                grpStrategy.Controls.AddRange(new Control[] { lblMaxK, numMaxKlines, lblMinT, numMinTrendLines, lblLeft, numLeftLen, lblRight, numRightLen, lblSpan, numMaxSpan, lblSignalSpan, numMinSignalSpan, lblSignalAge, numMinSignalAge, lblCooldown, numCooldown, chkStrictEnvelope, chkRealtimeChart, chkAutoScale, lblStrategyNote });
             }
             panelRight.Controls.Add(grpStrategy);
             top += grpStrategy.Height + 10;
@@ -391,18 +411,20 @@ namespace Test.WinForms.Forms
             panelRight.Controls.Add(grpControl);
             top += grpControl.Height + 10;
 
-            // Group 4: 实时统计看板
-            grpStatus = CreateGroupBox("4. 统计监控看板", top, 210);
+            // Group 4: 实时统计看板 (增加开仓信号统计指标)
+            grpStatus = CreateGroupBox("4. 统计监控看板", top, 235);
             {
                 lblStatTime = CreateStatLabel("执行耗时: -", 15, 25);
-                lblStatThroughput = CreateStatLabel("吞吐速率: -", 15, 50);
-                lblStatKlines = CreateStatLabel("K线总量: -", 15, 75);
-                lblStatTicks = CreateStatLabel("Tick总量: -", 15, 100);
-                lblStatPeaksValleys = CreateStatLabel("识别极值: 高点 0 | 低点 0", 15, 125);
-                lblStatActiveLines = CreateStatLabel("活跃趋势线: 阻力 0 | 支撑 0", 15, 150);
-                lblStatDeletedLines = CreateStatLabel("已击穿删除: 0 条", 15, 175);
+                lblStatThroughput = CreateStatLabel("吞吐速率: -", 15, 48);
+                lblStatSignals = CreateStatLabel("开仓信号: 多单 0 | 空单 0 (总计 0)", 15, 71);
+                lblStatSignals.ForeColor = Color.FromArgb(232, 121, 249); // Fuchsia 400
+                lblStatKlines = CreateStatLabel("K线总量: -", 15, 94);
+                lblStatTicks = CreateStatLabel("Tick总量: -", 15, 117);
+                lblStatPeaksValleys = CreateStatLabel("识别极值: 高点 0 | 低点 0", 15, 140);
+                lblStatActiveLines = CreateStatLabel("活跃趋势线: 阻力 0 | 支撑 0", 15, 163);
+                lblStatDeletedLines = CreateStatLabel("已击穿删除: 0 条", 15, 186);
 
-                grpStatus.Controls.AddRange(new Control[] { lblStatTime, lblStatThroughput, lblStatKlines, lblStatTicks, lblStatPeaksValleys, lblStatActiveLines, lblStatDeletedLines });
+                grpStatus.Controls.AddRange(new Control[] { lblStatTime, lblStatThroughput, lblStatSignals, lblStatKlines, lblStatTicks, lblStatPeaksValleys, lblStatActiveLines, lblStatDeletedLines });
             }
             panelRight.Controls.Add(grpStatus);
         }
@@ -451,7 +473,7 @@ namespace Test.WinForms.Forms
         {
             _uiRefreshTimer = new System.Windows.Forms.Timer
             {
-                Interval = 60 // 约 16 FPS，兼顾流畅度与系统超低负载
+                Interval = 60 // 约 16 FPS
             };
             _uiRefreshTimer.Tick += OnUiRefreshTimerTick;
             _uiRefreshTimer.Start();
@@ -459,7 +481,7 @@ namespace Test.WinForms.Forms
 
         private void OnUiRefreshTimerTick(object? sender, EventArgs e)
         {
-            // 1. 批量消费日志队列 (单次最多消费 15 条，防止单帧耗时过长)
+            // 1. 批量消费日志队列
             int logDrainCount = 0;
             while (_logQueue.TryDequeue(out var item) && logDrainCount < 15)
             {
@@ -473,13 +495,14 @@ namespace Test.WinForms.Forms
             {
                 progressBar.Value = (int)Math.Clamp(p.Percentage, 0, 100);
                 lblProgress.Text = p.Message;
+                lblStatSignals.Text = $"开仓信号: 多单 {p.LongSignalsCount} | 空单 {p.ShortSignalsCount} (总计 {p.TotalSignalsCount})";
                 lblStatKlines.Text = $"K线总量: {p.ProcessedKlines:N0} / {p.TotalKlines:N0}";
                 lblStatTicks.Text = $"Tick总量: {p.ProcessedTicks:N0} / {p.TotalTicks:N0}";
                 lblStatActiveLines.Text = $"活跃趋势线: 阻力 {p.ActiveResistanceCount} | 支撑 {p.ActiveSupportCount}";
                 lblStatDeletedLines.Text = $"已击穿删除: {p.DeletedLinesCount} 条";
             }
 
-            // 3. 刷新 ScottPlot 图表 (仅当有新快照时绘制)
+            // 3. 刷新 ScottPlot 图表 (含绿色触发趋势线与交易信号标记)
             var snap = _latestChartSnapshot;
             if (_isRealtimeChartEnabled && snap != null && snap.SnapshotVersion > _renderedSnapshotVersion)
             {
@@ -497,7 +520,8 @@ namespace Test.WinForms.Forms
                             snap.Summary,
                             title: snap.Title,
                             startGlobalIndex: snap.StartGlobalIndex,
-                            autoScaleAxes: snap.AutoScale);
+                            autoScaleAxes: snap.AutoScale,
+                            tradeSignals: snap.TradeSignals);
 
                         formsPlot.Refresh();
                     }
@@ -515,10 +539,18 @@ namespace Test.WinForms.Forms
 
         private void BindEngineEvents()
         {
-            // 引擎事件全部采用纯无锁队列/变量暂存，零 BeginInvoke 派发，彻底解放 UI 线程
             _engineService.OnLogMessage += message =>
             {
                 _logQueue.Enqueue((message, Color.FromArgb(241, 245, 249)));
+            };
+
+            _engineService.OnTradeSignalGenerated += signal =>
+            {
+                Color sigColor = signal.Side == TradeSide.Buy ? Color.FromArgb(74, 222, 128) : Color.FromArgb(244, 63, 94);
+                _logQueue.Enqueue(("\n------------------------------------------------------------", Color.FromArgb(74, 222, 128)));
+                _logQueue.Enqueue((signal.ToString(), sigColor));
+                _logQueue.Enqueue(($"  📌 [趋势线详情] {signal.Reason}", Color.FromArgb(226, 232, 240)));
+                _logQueue.Enqueue(("------------------------------------------------------------\n", Color.FromArgb(74, 222, 128)));
             };
 
             _engineService.OnKlineClosed += (kline, index, strategy) =>
@@ -546,13 +578,22 @@ namespace Test.WinForms.Forms
                             linesSnapshot.Add(strategy.HistoricalTrendLines[i]);
                         }
 
+                        int sigCount = strategy.TradeSignals.Count;
+                        int takeSig = Math.Min(100, sigCount);
+                        var signalsSnapshot = new TradeSignal[takeSig];
+                        for (int i = 0; i < takeSig; i++)
+                        {
+                            signalsSnapshot[i] = strategy.TradeSignals[sigCount - takeSig + i];
+                        }
+
                         int startGlobal = Math.Max(0, strategy.GlobalBarIndex - strategy.KlineCount);
                         string coin = _currentRunningCoin;
                         string intervalStr = _currentRunningInterval;
                         bool autoScale = _isAutoScaleEnabled;
 
                         string realtimeSummary = $"实时回测推进中: {coin} {intervalStr} | 当前 K 线: #{index:D4} (最新收: {kline.Close:F2})\n" +
-                                                 $"识别极值: 高点={peaksSnapshot.Length}, 低点={valleysSnapshot.Length} | 活跃阻力={strategy.ActiveResistanceLines.Count}, 支撑={strategy.ActiveSupportLines.Count} (已穿透删除={strategy.DeletedTrendLinesCount}条)";
+                                                 $"开仓信号: 多单={strategy.LongSignalsCount}笔, 空单={strategy.ShortSignalsCount}笔 (总计 {strategy.TotalSignalsCount}笔)\n" +
+                                                 $"识别极值: 高点={peaksSnapshot.Length}, 低点={valleysSnapshot.Length} | 活跃阻力={strategy.ActiveResistanceLines.Count}, 支撑={strategy.ActiveSupportLines.Count}";
 
                         _latestChartSnapshot = new ChartSnapshot
                         {
@@ -560,6 +601,7 @@ namespace Test.WinForms.Forms
                             Peaks = peaksSnapshot,
                             Valleys = valleysSnapshot,
                             Lines = linesSnapshot,
+                            TradeSignals = signalsSnapshot,
                             Summary = realtimeSummary,
                             Title = $"{coin} {intervalStr} - 实时回测动态走势 (K线 #{index:D4})",
                             StartGlobalIndex = startGlobal,
@@ -572,7 +614,7 @@ namespace Test.WinForms.Forms
 
             _engineService.OnTrendLinePenetrated += (line, tick, reason) =>
             {
-                // 静默处理趋势线穿透，数据已在统计面板与图表实时反映，杜绝高频日志卡顿
+                // 静默处理趋势线穿透，数据已在统计面板与图表实时反映
             };
 
             _engineService.OnProgressChanged += progress =>
@@ -596,7 +638,7 @@ namespace Test.WinForms.Forms
             formsPlot.Plot.Axes.Color(ScottPlot.Color.FromHex("#94a3b8"));
             formsPlot.Plot.Grid.MajorLineColor = ScottPlot.Color.FromHex("#334155");
 
-            formsPlot.Plot.Title("等待回测启动，点击【▶ 开始】加载实时折线图...", size: 16);
+            formsPlot.Plot.Title("等待回测启动，点击【▶ 开始】加载实时折线图与开仓信号...", size: 16);
             formsPlot.Plot.Axes.Title.Label.FontName = chineseFont;
             formsPlot.Plot.Axes.Title.Label.ForeColor = ScottPlot.Color.FromHex("#f8fafc");
 
@@ -655,10 +697,12 @@ namespace Test.WinForms.Forms
                 Interval = interval,
                 MaxKlinesCapacity = (int)numMaxKlines.Value,
                 MinTrendLinesCapacity = (int)numMinTrendLines.Value,
-                MaxDeletedTrendLinesCapacity = (int)numMaxDeleted.Value,
                 LeftLen = (int)numLeftLen.Value,
                 RightLen = (int)numRightLen.Value,
                 MaxSpan = (int)numMaxSpan.Value,
+                MinSignalLineX1X2 = (int)numMinSignalSpan.Value,
+                MinSignalLineAge = (int)numMinSignalAge.Value,
+                SignalCooldownSeconds = (int)numCooldown.Value,
                 AllowInternalPenetration = !chkStrictEnvelope.Checked,
                 ParallelDays = 3,
                 GenerateChart = true
@@ -671,7 +715,8 @@ namespace Test.WinForms.Forms
             _currentRunningInterval = interval.ToIntervalString();
 
             _logQueue.Enqueue(("\n========================================================", Color.FromArgb(56, 189, 248)));
-            _logQueue.Enqueue(($"[启动回测] 目标: {request.Coin}, 周期: {interval.ToIntervalString()}, 时间窗口: {request.StartDate:yyyy-MM-dd} ~ {request.EndDate:yyyy-MM-dd}", Color.FromArgb(56, 189, 248)));
+            _logQueue.Enqueue(($"[启动回测] 目标: {request.Coin}, 周期: {interval.ToIntervalString()}, 窗口: {request.StartDate:yyyy-MM-dd} ~ {request.EndDate:yyyy-MM-dd}", Color.FromArgb(56, 189, 248)));
+            _logQueue.Enqueue(($"[策略模式] 触碰 3-Tick 内回弹开仓 (过滤: LineX1X2 >= {request.MinSignalLineX1X2}, LineAge >= {request.MinSignalLineAge}, 冷却: {request.SignalCooldownSeconds}s)", Color.FromArgb(250, 204, 21)));
             _logQueue.Enqueue(("========================================================", Color.FromArgb(56, 189, 248)));
 
             try
@@ -690,7 +735,7 @@ namespace Test.WinForms.Forms
                     if (strat.ActiveSupportLines.Count > 0) allLines.AddRange(strat.ActiveSupportLines);
 
                     string summary = $"币种: {request.Coin}, 周期: {interval.ToIntervalString()}, 窗口: {request.StartDate:yyyy-MM-dd} ~ {request.EndDate:yyyy-MM-dd}\n" +
-                                     $"耗时: {_latestResult.ElapsedMilliseconds} ms, 吞吐: {_latestResult.TicksPerSecond:N0} ticks/s, 已穿透删除: {strat.DeletedTrendLinesCount}条";
+                                     $"耗时: {_latestResult.ElapsedMilliseconds} ms, 吞吐: {_latestResult.TicksPerSecond:N0} ticks/s | 开仓: 多 {strat.LongSignalsCount} | 空 {strat.ShortSignalsCount}";
 
                     PlotHelper.BuildPlot(
                         formsPlot.Plot,
@@ -701,18 +746,20 @@ namespace Test.WinForms.Forms
                         summary,
                         title: $"{request.Coin} {interval.ToIntervalString()} 趋势线与极值结构折线图 (回测完成)",
                         startGlobalIndex: startGlobal,
-                        autoScaleAxes: true);
+                        autoScaleAxes: true,
+                        tradeSignals: strat.TradeSignals);
 
                     formsPlot.Refresh();
 
                     // 更新统计看板
                     lblStatTime.Text = $"执行耗时: {_latestResult.ElapsedMilliseconds:N0} ms";
                     lblStatThroughput.Text = $"吞吐速率: {_latestResult.TicksPerSecond:N0} ticks/s";
+                    lblStatSignals.Text = $"开仓信号: 多单 {strat.LongSignalsCount} | 空单 {strat.ShortSignalsCount} (总计 {strat.TotalSignalsCount})";
                     lblStatPeaksValleys.Text = $"识别极值: 高点 {strat.Peaks.Count} | 低点 {strat.Valleys.Count}";
                     lblStatActiveLines.Text = $"活跃趋势线: 阻力 {strat.ActiveResistanceLines.Count} | 支撑 {strat.ActiveSupportLines.Count}";
                     lblStatDeletedLines.Text = $"已击穿删除: {strat.DeletedTrendLinesCount} 条";
 
-                    _logQueue.Enqueue(($"\n[回测成功] 耗时: {_latestResult.ElapsedMilliseconds} ms, 价格折线图、高低点与趋势线已全量绘制完成！", Color.FromArgb(74, 222, 128)));
+                    _logQueue.Enqueue(($"\n[回测成功] 耗时: {_latestResult.ElapsedMilliseconds} ms, 触发开仓信号: 多单 {strat.LongSignalsCount} 笔, 空单 {strat.ShortSignalsCount} 笔 (总计 {strat.TotalSignalsCount} 笔)！", Color.FromArgb(74, 222, 128)));
                 }
                 else
                 {
@@ -802,7 +849,6 @@ namespace Test.WinForms.Forms
         {
             if (txtLogs.IsDisposed) return;
 
-            // 限制日志文本长度在 30,000 字符以内，防止排版卡顿
             if (txtLogs.TextLength > 30000)
             {
                 txtLogs.Select(0, 10000);
@@ -826,6 +872,7 @@ namespace Test.WinForms.Forms
             public PivotPoint[] Peaks { get; init; } = Array.Empty<PivotPoint>();
             public PivotPoint[] Valleys { get; init; } = Array.Empty<PivotPoint>();
             public List<TrendLine> Lines { get; init; } = new List<TrendLine>();
+            public TradeSignal[] TradeSignals { get; init; } = Array.Empty<TradeSignal>();
             public string Summary { get; init; } = string.Empty;
             public string Title { get; init; } = string.Empty;
             public int StartGlobalIndex { get; init; }

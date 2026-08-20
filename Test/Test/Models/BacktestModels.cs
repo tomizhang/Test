@@ -1,11 +1,51 @@
 using Binance.Net.Enums;
 using Common;
+using Common.Helper;
 using Common.Models;
 using System;
+using System.Collections.Generic;
 using Test.Strategy;
 
 namespace Common.Models
 {
+    /// <summary>
+    /// 交易开仓方向 (开多 / 开空)
+    /// </summary>
+    public enum TradeSide
+    {
+        /// <summary>
+        /// 开多 (Buy / Long)
+        /// </summary>
+        Buy = 1,
+
+        /// <summary>
+        /// 开空 (Sell / Short)
+        /// </summary>
+        Sell = 2
+    }
+
+    /// <summary>
+    /// 趋势线触碰回弹触发的交易开仓信号
+    /// </summary>
+    public struct TradeSignal
+    {
+        public long SignalId { get; set; }
+        public int GlobalBarIndex { get; set; }
+        public long TimestampMs { get; set; }
+        public DateTime Time => TimeHelper.FromUnixTimeMilliseconds(TimestampMs);
+        public TradeSide Side { get; set; }
+        public decimal Price { get; set; }
+        public TrendLine TriggerLine { get; set; }
+        public int TicksSinceTouch { get; set; }
+        public string Reason { get; set; }
+
+        public override string ToString()
+        {
+            string sideStr = Side == TradeSide.Buy ? "🟢 开多 (Long)" : "🔴 开空 (Short)";
+            return $"[{Time:yyyy-MM-dd HH:mm:ss.fff}] {sideStr} @ 价格:{Price:F2} | 触碰#{TriggerLine.X1}->#{TriggerLine.X2} (跨度:{TriggerLine.LineX1X2}, 寿命:{TriggerLine.LineAge}) {TicksSinceTouch}ticks回弹";
+        }
+    }
+
     /// <summary>
     /// 回测引擎输入请求参数配置
     /// </summary>
@@ -67,6 +107,21 @@ namespace Common.Models
         public bool AllowInternalPenetration { get; set; } = false;
 
         /// <summary>
+        /// 触发开仓所需的最小趋势线跨度 (LineX1X2 >= 40)
+        /// </summary>
+        public int MinSignalLineX1X2 { get; set; } = 40;
+
+        /// <summary>
+        /// 触发开仓所需的最小趋势线寿命 (LineAge >= 4)
+        /// </summary>
+        public int MinSignalLineAge { get; set; } = 4;
+
+        /// <summary>
+        /// 开仓信号触发冷却时间 (秒) (默认 60 秒 / 1分钟内仅允许触发一次)
+        /// </summary>
+        public int SignalCooldownSeconds { get; set; } = 60;
+
+        /// <summary>
         /// Tick 并行读取滑动窗口天数 (默认 3 线程并发)
         /// </summary>
         public int ParallelDays { get; set; } = 3;
@@ -112,10 +167,13 @@ namespace Common.Models
         public int ActiveResistanceCount { get; set; }
         public int ActiveSupportCount { get; set; }
         public int DeletedLinesCount { get; set; }
+        public int LongSignalsCount { get; set; }
+        public int ShortSignalsCount { get; set; }
+        public int TotalSignalsCount => LongSignalsCount + ShortSignalsCount;
 
         public override string ToString()
         {
-            return $"[{Percentage:F1}%] {Message} (Klines: {ProcessedKlines:N0}, Ticks: {ProcessedTicks:N0})";
+            return $"[{Percentage:F1}%] {Message} (Klines: {ProcessedKlines:N0}, Ticks: {ProcessedTicks:N0}, 信号: 多{LongSignalsCount}|空{ShortSignalsCount})";
         }
     }
 
@@ -145,6 +203,21 @@ namespace Common.Models
         public int HistoricalTrendLinesCount { get; set; }
 
         /// <summary>
+        /// 触发开多信号总次数
+        /// </summary>
+        public int LongSignalsCount { get; set; }
+
+        /// <summary>
+        /// 触发开空信号总次数
+        /// </summary>
+        public int ShortSignalsCount { get; set; }
+
+        /// <summary>
+        /// 触发交易信号总次数
+        /// </summary>
+        public int TotalSignalsCount => LongSignalsCount + ShortSignalsCount;
+
+        /// <summary>
         /// 生成并落盘的分析图表绝对路径
         /// </summary>
         public string? ChartPath { get; set; }
@@ -164,6 +237,7 @@ namespace Common.Models
             return $"[BacktestResult - {Coin} {Interval.ToIntervalString()}] " +
                    $"Range: {StartDate:yyyy-MM-dd} ~ {EndDate:yyyy-MM-dd} | " +
                    $"Klines: {TotalKlines:N0}, Ticks: {TotalTicks:N0} | " +
+                   $"信号: 多 {LongSignalsCount} | 空 {ShortSignalsCount} (总计 {TotalSignalsCount}) | " +
                    $"Time: {ElapsedMilliseconds} ms ({TicksPerSecond:N0} ticks/s) | " +
                    $"Peaks: {PeaksCount}, Valleys: {ValleysCount} | " +
                    $"Active Lines: (R:{ActiveResistanceLinesCount}, S:{ActiveSupportLinesCount}), Deleted: {DeletedTrendLinesCount} | " +

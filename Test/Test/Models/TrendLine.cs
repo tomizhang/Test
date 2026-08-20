@@ -99,6 +99,16 @@ namespace Common.Models
         public int CollidedKlineIndex { get; set; }
 
         /// <summary>
+        /// 🌟 是否已触发开仓交易信号 (触发成功后图表渲染为绿色)
+        /// </summary>
+        public bool IsTriggered { get; set; }
+
+        /// <summary>
+        /// ⚡ 当前 K 线索引下的延伸线缓存价格 (在 OnKline 时计算一次，OnTick 零运算极速比较)
+        /// </summary>
+        public decimal CachedCurrentPrice { get; set; }
+
+        /// <summary>
         /// 趋势线类型 (高点阻力线 / 低点支撑线)
         /// </summary>
         public PivotType Type { get; set; }

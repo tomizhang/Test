@@ -7,13 +7,7 @@ using System.IO;
 namespace Common.Helper
 {
     /// <summary>
-    /// 基于 ScottPlot 5 的专业量化回测图表绘制帮助类 (纯核心库，折线图架构)
-    /// 核心要素：
-    /// 1. 价格走势折线图 (Close Price Line, 0.8f 蓝线)
-    /// 2. 高低点极值精准标记 (波峰▲最高价 High, 波谷▼最低价 Low, 标记大小 4)
-    /// 3. 阻力趋势线 (橙色, 0.8f) 与 支撑趋势线 (青色, 0.8f) 完整延伸
-    /// 4. 自动调节 X/Y 轴与呼吸边距 (Auto-Scale Margins)
-    /// 5. 全面系统字体检测，彻底杜绝所有标题、图例、坐标轴与卡片中文乱码
+    /// 基于 ScottPlot 5 的专业量化回测图表绘制帮助类 (纯核心库，折线图架构 + 交易信号标记)
     /// </summary>
     public static class PlotHelper
     {
@@ -24,8 +18,7 @@ namespace Common.Helper
         {
             try
             {
-                // ScottPlot 5: Fonts.Detect(string text) 自动探测并返回包含该文本字形的本地字体名称
-                string detected = Fonts.Detect("量化回测趋势线高低点走势价格");
+                string detected = Fonts.Detect("量化回测趋势线高低点走势价格开多开空");
                 if (!string.IsNullOrWhiteSpace(detected))
                 {
                     return detected;
@@ -39,17 +32,8 @@ namespace Common.Helper
         }
 
         /// <summary>
-        /// 核心绘图管线：将 K 线价格折线、高低点标记、阻力/支撑趋势线及描述摘要渲染至指定 ScottPlot.Plot 画布
+        /// 核心绘图管线：将 K 线价格折线、高低点标记、阻力/支撑趋势线、交易开仓信号及描述摘要渲染至指定 ScottPlot.Plot 画布
         /// </summary>
-        /// <param name="plot">ScottPlot 画布实例</param>
-        /// <param name="klines">K线历史数据序列</param>
-        /// <param name="peaks">波峰/高点集合</param>
-        /// <param name="valleys">波谷/低点集合</param>
-        /// <param name="trendLines">趋势线集合 (自动按阻力/支撑分类并绘制)</param>
-        /// <param name="summaryDescription">图表内嵌描述摘要信息</param>
-        /// <param name="title">图表主标题</param>
-        /// <param name="startGlobalIndex">首根 K 线的全局索引起点 (默认 0)</param>
-        /// <param name="autoScaleAxes">是否自动动态适配调节 X/Y 轴范围 (默认 true)</param>
         public static void BuildPlot(
             Plot plot,
             IReadOnlyList<RawKline> klines,
@@ -59,7 +43,8 @@ namespace Common.Helper
             string summaryDescription,
             string title = "量化回测 - 趋势线与高低点结构分析图",
             int startGlobalIndex = 0,
-            bool autoScaleAxes = true)
+            bool autoScaleAxes = true,
+            IReadOnlyList<TradeSignal>? tradeSignals = null)
         {
             if (plot == null || klines == null || klines.Count == 0)
             {
@@ -68,7 +53,7 @@ namespace Common.Helper
 
             plot.Clear();
 
-            // 1. 全局与局部中文字体配置 (检测系统原生中文字体，全组件覆盖彻底根治方块乱码)
+            // 1. 全局与局部中文字体配置
             string chineseFont = GetInstalledChineseFont();
             Fonts.Default = chineseFont;
 
@@ -92,8 +77,8 @@ namespace Common.Helper
             }
 
             var priceLine = plot.Add.Scatter(xs, ys);
-            priceLine.LineWidth = 0.8f; // 线宽 0.8f
-            priceLine.MarkerSize = 0;   // 纯平滑折线
+            priceLine.LineWidth = 0.8f;
+            priceLine.MarkerSize = 0;
             priceLine.Color = Color.FromHex("#38bdf8"); // 天空蓝 Sky 400
             priceLine.LegendText = $"价格收盘折线 ({count:N0}根)";
 
@@ -118,7 +103,7 @@ namespace Common.Helper
                 {
                     var peakScatter = plot.Add.Scatter(peakXs.ToArray(), peakYs.ToArray());
                     peakScatter.MarkerShape = MarkerShape.FilledTriangleUp;
-                    peakScatter.MarkerSize = 4; // 标记大小 4
+                    peakScatter.MarkerSize = 4;
                     peakScatter.Color = Color.FromHex("#ef4444"); // 红色高点
                     peakScatter.LineWidth = 0;
                     peakScatter.LegendText = $"波峰高点 ({peaksCount})";
@@ -145,7 +130,7 @@ namespace Common.Helper
                 {
                     var valleyScatter = plot.Add.Scatter(valleyXs.ToArray(), valleyYs.ToArray());
                     valleyScatter.MarkerShape = MarkerShape.FilledTriangleDown;
-                    valleyScatter.MarkerSize = 4; // 标记大小 4
+                    valleyScatter.MarkerSize = 4;
                     valleyScatter.Color = Color.FromHex("#22c55e"); // 绿色低点
                     valleyScatter.LineWidth = 0;
                     valleyScatter.LegendText = $"波谷低点 ({valleysCount})";
@@ -155,6 +140,7 @@ namespace Common.Helper
             // 5. 绘制趋势线 (阻力趋势线: 橙红色, 支撑趋势线: 青色, 线宽 0.8f，优先绘制最新与活跃趋势线)
             int resistanceDrawn = 0;
             int supportDrawn = 0;
+            int triggeredDrawn = 0;
 
             if (trendLines != null && trendLines.Count > 0)
             {
@@ -178,29 +164,87 @@ namespace Common.Helper
                     double yEnd = (double)line.GetPriceAt(endX);
 
                     var linePlot = plot.Add.Line(xStart, yStart, xEnd, yEnd);
-                    linePlot.LineWidth = 0.8f; // 线宽 0.8f
 
-                    if (line.IsResistance)
+                    if (line.IsTriggered)
+                    {
+                        linePlot.Color = Color.FromHex("#22c55e"); // 亮绿色: 触发开仓的趋势线
+                        linePlot.LineWidth = 1.6f;                  // 触发线加粗突出显示
+                        triggeredDrawn++;
+                    }
+                    else if (line.IsResistance)
                     {
                         linePlot.Color = Color.FromHex("#f97316"); // 橙红色阻力线
+                        linePlot.LineWidth = 0.8f;
                         resistanceDrawn++;
                     }
                     else
                     {
                         linePlot.Color = Color.FromHex("#06b6d4"); // 青色支撑线
+                        linePlot.LineWidth = 0.8f;
                         supportDrawn++;
                     }
                     drawnTotal++;
                 }
             }
 
-            // 6. 添加左上角结构化描述摘要卡片 (强制中文字体)
+            // 6. 绘制交易信号标记 (多单: 紫色菱形◆, 空单: 粉红色方形■)
+            int longSignalsDrawn = 0;
+            int shortSignalsDrawn = 0;
+            if (tradeSignals != null && tradeSignals.Count > 0)
+            {
+                var buyXs = new List<double>();
+                var buyYs = new List<double>();
+                var sellXs = new List<double>();
+                var sellYs = new List<double>();
+
+                foreach (var s in tradeSignals)
+                {
+                    if (s.GlobalBarIndex >= startGlobalIndex && s.GlobalBarIndex <= endGlobalIndex)
+                    {
+                        if (s.Side == TradeSide.Buy)
+                        {
+                            buyXs.Add(s.GlobalBarIndex);
+                            buyYs.Add((double)s.Price);
+                            longSignalsDrawn++;
+                        }
+                        else
+                        {
+                            sellXs.Add(s.GlobalBarIndex);
+                            sellYs.Add((double)s.Price);
+                            shortSignalsDrawn++;
+                        }
+                    }
+                }
+
+                if (buyXs.Count > 0)
+                {
+                    var buyScatter = plot.Add.Scatter(buyXs.ToArray(), buyYs.ToArray());
+                    buyScatter.MarkerShape = MarkerShape.FilledDiamond;
+                    buyScatter.MarkerSize = 7;
+                    buyScatter.Color = Color.FromHex("#a855f7"); // 紫色开多标记
+                    buyScatter.LineWidth = 0;
+                    buyScatter.LegendText = $"🟢 开多信号 ({longSignalsDrawn})";
+                }
+
+                if (sellXs.Count > 0)
+                {
+                    var sellScatter = plot.Add.Scatter(sellXs.ToArray(), sellYs.ToArray());
+                    sellScatter.MarkerShape = MarkerShape.FilledSquare;
+                    sellScatter.MarkerSize = 6;
+                    sellScatter.Color = Color.FromHex("#f43f5e"); // 玫红开空标记
+                    sellScatter.LineWidth = 0;
+                    sellScatter.LegendText = $"🔴 开空信号 ({shortSignalsDrawn})";
+                }
+            }
+
+            // 7. 添加左上角结构化描述摘要卡片 (强制中文字体)
             string timeRange = $"{TimeHelper.FromUnixTimeMilliseconds(klines[0].OpenTime):yyyy-MM-dd HH:mm} ~ {TimeHelper.FromUnixTimeMilliseconds(klines[count - 1].CloseTime):yyyy-MM-dd HH:mm}";
             string fullSummary = $"【量化结构指标摘要】\n" +
                                  $"• 时间跨度: {timeRange} (UTC+0)\n" +
                                  $"• K线根数: {count:N0} 根 | 价格区间: {klines[0].Close:F2} -> {klines[count - 1].Close:F2}\n" +
                                  $"• 极值高低点: 高点(Peaks)={peaksCount}, 低点(Valleys)={valleysCount}\n" +
-                                 $"• 绘制趋势线: 阻力线={resistanceDrawn}条, 支撑线={supportDrawn}条 (总库: {trendLines?.Count ?? 0})\n" +
+                                 $"• 绘制趋势线: 阻力线={resistanceDrawn}条, 支撑线={supportDrawn}条\n" +
+                                 $"• 开仓信号: 多单={longSignalsDrawn}笔, 空单={shortSignalsDrawn}笔 (策略: 触碰3-Tick回弹 LineX1X2>=40, LineAge>=4)\n" +
                                  $"• 策略备注: {summaryDescription}";
 
             var annotation = plot.Add.Annotation(fullSummary, Alignment.UpperLeft);
@@ -212,7 +256,7 @@ namespace Common.Helper
             annotation.LabelStyle.BorderWidth = 1.5f;
             annotation.LabelStyle.ShadowColor = Colors.Transparent;
 
-            // 7. 设置标题、坐标轴标签与图例 (全面绑定中文字体，解决图例与坐标轴乱码)
+            // 8. 设置标题、坐标轴标签与图例
             plot.Title(title, size: 16);
             plot.Axes.Title.Label.FontName = chineseFont;
             plot.Axes.Title.Label.ForeColor = Color.FromHex("#f8fafc");
@@ -232,17 +276,14 @@ namespace Common.Helper
             plot.Legend.BackgroundColor = Color.FromHex("#0f172a").WithAlpha(0.85);
             plot.Legend.OutlineColor = Color.FromHex("#475569");
 
-            // 8. 自动调节 X/Y 轴坐标与留白呼吸边距 (Auto-Scale)
+            // 9. 自动调节 X/Y 轴坐标与留白呼吸边距 (Auto-Scale)
             if (autoScaleAxes)
             {
-                plot.Axes.Margins(horizontal: 0.02, vertical: 0.08); // X轴留白2%，Y轴上下留白8%
+                plot.Axes.Margins(horizontal: 0.02, vertical: 0.08);
                 plot.Axes.AutoScale();
             }
         }
 
-        /// <summary>
-        /// 兼容重载：按独立阻力线和支撑线列表绘制
-        /// </summary>
         public static void BuildPlot(
             Plot plot,
             IReadOnlyList<RawKline> klines,
@@ -253,7 +294,8 @@ namespace Common.Helper
             string summaryDescription,
             string title = "量化回测 - 趋势线与高低点结构分析图",
             int startGlobalIndex = 0,
-            bool autoScaleAxes = true)
+            bool autoScaleAxes = true,
+            IReadOnlyList<TradeSignal>? tradeSignals = null)
         {
             var allLines = new List<TrendLine>();
             if (resistanceLines != null) allLines.AddRange(resistanceLines);
@@ -268,12 +310,10 @@ namespace Common.Helper
                 summaryDescription,
                 title,
                 startGlobalIndex,
-                autoScaleAxes);
+                autoScaleAxes,
+                tradeSignals);
         }
 
-        /// <summary>
-        /// 绘制包含 K线折线图、极值高低点、支撑/阻力趋势线及描述摘要的专业分析图表并保存落盘
-        /// </summary>
         public static string PlotTrendLineChart(
             IReadOnlyList<RawKline> klines,
             IReadOnlyList<PivotPoint> peaks,
@@ -285,7 +325,8 @@ namespace Common.Helper
             int startGlobalIndex = 0,
             string outputFilePath = null,
             int width = 1920,
-            int height = 1080)
+            int height = 1080,
+            IReadOnlyList<TradeSignal>? tradeSignals = null)
         {
             if (klines == null || klines.Count == 0)
             {
@@ -304,9 +345,9 @@ namespace Common.Helper
                 summaryDescription,
                 title,
                 startGlobalIndex,
-                autoScaleAxes: true);
+                autoScaleAxes: true,
+                tradeSignals: tradeSignals);
 
-            // 确保落盘目录并保存图片
             if (string.IsNullOrWhiteSpace(outputFilePath))
             {
                 string chartsDir = Config.GetChartsPath();
