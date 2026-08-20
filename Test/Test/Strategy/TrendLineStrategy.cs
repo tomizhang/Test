@@ -26,7 +26,8 @@ namespace Test.Strategy
     /// 2. 冷却机制：1 分钟 (60 秒) 内只能触发一次开仓策略 (可配置 SignalCooldownSeconds)
     /// 3. 高点趋势线 (阻力线): 当 Tick 达到趋势线 (tick.Price >= linePrice)，在后续 3 个 Tick 内向下回弹 (tick.Price < linePrice) 时 -> 【开空】
     /// 4. 低点趋势线 (支撑线): 当 Tick 达到趋势线 (tick.Price <= linePrice)，在后续 3 个 Tick 内向上回弹 (tick.Price > linePrice) 时 -> 【开多】
-    /// 5. 极速常数时间优化：在 OnKline 阶段预计算与缓存 CachedCurrentPrice 与极值边界，使 99% 的 Tick 零计算短路跳过，彻底根治回放越到后面越慢的问题
+    /// 5. 仓位与盈亏管理：支持 0.5% 止损 与 1.5% 止盈 (TakeProfitPct=1.5%, StopLossPct=0.5%)
+    /// 6. 极速常数时间优化：在 OnKline 阶段预计算与缓存 CachedCurrentPrice 与极值边界，使 99% 的 Tick 零计算短路跳过
     /// </summary>
     public class TrendLineStrategy
     {
@@ -53,6 +54,10 @@ namespace Test.Strategy
         public int MinSignalLineAge { get; set; } = 4;
         public int SignalCooldownSeconds { get; set; } = 60; // 触发冷却时间 (秒)
         private long _lastTriggerTimestampMs = 0;           // 上次触发交易信号的时间戳 (毫秒)
+
+        // 6. 止盈止损策略参数 (默认 1.5% 止盈, 0.5% 止损)
+        public decimal TakeProfitPct { get; set; } = 1.5m;  // 止盈比例 (%)
+        public decimal StopLossPct { get; set; } = 0.5m;    // 止损比例 (%)
 
         // 全局单调递增 K 线序列号计数器 (0, 1, 2, ... 500,000)
         private int _globalBarIndex = 0;
@@ -86,6 +91,14 @@ namespace Test.Strategy
         public int ShortSignalsCount { get; private set; } = 0;
         public int TotalSignalsCount => LongSignalsCount + ShortSignalsCount;
 
+        // 持仓与已完成交易记录集合 (TP/SL 管理)
+        public List<Position> ActivePositions { get; } = new List<Position>(16);
+        public List<TradeRecord> CompletedTrades { get; } = new List<TradeRecord>(1000);
+        public int WinningTradesCount { get; private set; } = 0;
+        public int LosingTradesCount { get; private set; } = 0;
+        public decimal TotalPnLPct { get; private set; } = 0m;
+        public double WinRate => CompletedTrades.Count > 0 ? (double)WinningTradesCount / CompletedTrades.Count * 100.0 : 0.0;
+
         // 已删除（被 Tick 实时穿透）的趋势线列表 (固定保留 1000 长度)
         private readonly List<TrendLine> _deletedTrendLines = new List<TrendLine>(1000);
         public IReadOnlyList<TrendLine> DeletedTrendLines => _deletedTrendLines;
@@ -105,6 +118,8 @@ namespace Test.Strategy
         // 事件通知
         public event Action<TrendLine, RawTick, string>? OnTrendLinePenetrated;
         public event Action<TradeSignal>? OnTradeSignalGenerated;
+        public event Action<Position>? OnPositionOpened;
+        public event Action<TradeRecord>? OnTradeClosed;
 
         // 逐笔 Tick 处理状态与价格去重缓存
         private decimal _lastProcessedTickPrice = decimal.MinValue;
@@ -135,11 +150,10 @@ namespace Test.Strategy
 
         /// <summary>
         /// 接收 Tick 逐笔行情推送 (全硬件级常数时间 < 2 纳秒)
-        /// 执行触碰检测、3个Tick内回弹开仓判定与趋势线穿透维护：
-        /// 1. 过滤条件：LineX1X2 >= 40 且 LineAge >= 4
-        /// 2. 冷却时间：1 分钟内仅触发 1 次开仓策略
-        /// 3. 高点趋势线触碰后 3 个 Tick 内向下回弹 -> 【开空】并将趋势线变绿 (IsTriggered=true)
-        /// 4. 低点趋势线触碰后 3 个 Tick 内向上回弹 -> 【开多】并将趋势线变绿 (IsTriggered=true)
+        /// 执行：
+        /// 0. 持仓单实时止损(0.5%)与止盈(1.5%)平仓监测
+        /// 1. 触碰检测与 3 个 Tick 内回弹开仓判定
+        /// 2. 开仓时计算止盈止损线并开立仓位
         /// </summary>
         public void OnTick(in RawTick tick)
         {
@@ -155,6 +169,101 @@ namespace Test.Strategy
 
             int currentGlobalIndex = Math.Max(0, _globalBarIndex);
             long cooldownMs = (long)SignalCooldownSeconds * 1000L;
+
+            // ====================================================================
+            // 步骤 0: 实时监控当前持仓仓位，执行 0.5% 止损 与 1.5% 止盈 自动平仓
+            // ====================================================================
+            if (ActivePositions.Count > 0)
+            {
+                for (int i = ActivePositions.Count - 1; i >= 0; i--)
+                {
+                    var pos = ActivePositions[i];
+                    if (tick.Price > pos.HighestPriceSinceEntry) pos.HighestPriceSinceEntry = tick.Price;
+                    if (tick.Price < pos.LowestPriceSinceEntry) pos.LowestPriceSinceEntry = tick.Price;
+
+                    bool isClosed = false;
+                    PositionExitReason exitReason = PositionExitReason.None;
+                    decimal exitPrice = tick.Price;
+
+                    if (pos.Side == TradeSide.Buy)
+                    {
+                        // 多单止盈: 当前价达到或超过止盈价 (+1.5%)
+                        if (tick.Price >= pos.TakeProfitPrice)
+                        {
+                            isClosed = true;
+                            exitReason = PositionExitReason.TakeProfit;
+                            exitPrice = pos.TakeProfitPrice;
+                        }
+                        // 多单止损: 当前价跌破止损价 (-0.5%)
+                        else if (tick.Price <= pos.StopLossPrice)
+                        {
+                            isClosed = true;
+                            exitReason = PositionExitReason.StopLoss;
+                            exitPrice = pos.StopLossPrice;
+                        }
+                    }
+                    else // Sell (空单)
+                    {
+                        // 空单止盈: 当前价跌破或达到止盈价 (+1.5%)
+                        if (tick.Price <= pos.TakeProfitPrice)
+                        {
+                            isClosed = true;
+                            exitReason = PositionExitReason.TakeProfit;
+                            exitPrice = pos.TakeProfitPrice;
+                        }
+                        // 空单止损: 当前价涨破止损价 (-0.5%)
+                        else if (tick.Price >= pos.StopLossPrice)
+                        {
+                            isClosed = true;
+                            exitReason = PositionExitReason.StopLoss;
+                            exitPrice = pos.StopLossPrice;
+                        }
+                    }
+
+                    if (isClosed)
+                    {
+                        decimal pnlPct = pos.Side == TradeSide.Buy
+                            ? (exitPrice - pos.EntryPrice) / pos.EntryPrice * 100m
+                            : (pos.EntryPrice - exitPrice) / pos.EntryPrice * 100m;
+
+                        decimal maxRunup = pos.Side == TradeSide.Buy
+                            ? (pos.HighestPriceSinceEntry - pos.EntryPrice) / pos.EntryPrice * 100m
+                            : (pos.EntryPrice - pos.LowestPriceSinceEntry) / pos.EntryPrice * 100m;
+
+                        decimal maxDrawdown = pos.Side == TradeSide.Buy
+                            ? (pos.EntryPrice - pos.LowestPriceSinceEntry) / pos.EntryPrice * 100m
+                            : (pos.HighestPriceSinceEntry - pos.EntryPrice) / pos.EntryPrice * 100m;
+
+                        var trade = new TradeRecord
+                        {
+                            TradeId = CompletedTrades.Count + 1,
+                            Side = pos.Side,
+                            EntryTimestampMs = pos.EntryTimestampMs,
+                            EntryPrice = pos.EntryPrice,
+                            EntryGlobalBarIndex = pos.EntryGlobalBarIndex,
+                            TakeProfitPrice = pos.TakeProfitPrice,
+                            StopLossPrice = pos.StopLossPrice,
+                            ExitTimestampMs = tick.Time,
+                            ExitPrice = exitPrice,
+                            ExitGlobalBarIndex = currentGlobalIndex,
+                            ExitReason = exitReason,
+                            PnLPct = pnlPct,
+                            MaxRunupPct = Math.Max(0, maxRunup),
+                            MaxDrawdownPct = Math.Max(0, maxDrawdown),
+                            TriggerLine = pos.TriggerLine,
+                            StrategyReason = pos.StrategyReason
+                        };
+
+                        CompletedTrades.Add(trade);
+                        TotalPnLPct += pnlPct;
+                        if (trade.IsWin) WinningTradesCount++;
+                        else LosingTradesCount++;
+
+                        ActivePositions.RemoveAt(i);
+                        OnTradeClosed?.Invoke(trade);
+                    }
+                }
+            }
 
             // ====================================================================
             // 步骤 1: 处理已有的触碰探针，检查 3 个 Tick 内是否发生回弹
@@ -203,6 +312,26 @@ namespace Test.Strategy
                             TradeSignals.Add(signal);
                             ShortSignalsCount++;
                             OnTradeSignalGenerated?.Invoke(signal);
+
+                            // 开立空单仓位 (计算 1.5% 止盈 与 0.5% 止损)
+                            decimal tpPrice = tick.Price * (1m - TakeProfitPct / 100m);
+                            decimal slPrice = tick.Price * (1m + StopLossPct / 100m);
+                            var pos = new Position
+                            {
+                                PositionId = CompletedTrades.Count + ActivePositions.Count + 1,
+                                Side = TradeSide.Sell,
+                                EntryTimestampMs = tick.Time,
+                                EntryPrice = tick.Price,
+                                EntryGlobalBarIndex = currentGlobalIndex,
+                                TakeProfitPrice = tpPrice,
+                                StopLossPrice = slPrice,
+                                HighestPriceSinceEntry = tick.Price,
+                                LowestPriceSinceEntry = tick.Price,
+                                TriggerLine = probe.Line,
+                                StrategyReason = reason
+                            };
+                            ActivePositions.Add(pos);
+                            OnPositionOpened?.Invoke(pos);
 
                             _activeTouchProbes.RemoveAt(i);
                             continue;
@@ -262,6 +391,26 @@ namespace Test.Strategy
                             TradeSignals.Add(signal);
                             LongSignalsCount++;
                             OnTradeSignalGenerated?.Invoke(signal);
+
+                            // 开立多单仓位 (计算 1.5% 止盈 与 0.5% 止损)
+                            decimal tpPrice = tick.Price * (1m + TakeProfitPct / 100m);
+                            decimal slPrice = tick.Price * (1m - StopLossPct / 100m);
+                            var pos = new Position
+                            {
+                                PositionId = CompletedTrades.Count + ActivePositions.Count + 1,
+                                Side = TradeSide.Buy,
+                                EntryTimestampMs = tick.Time,
+                                EntryPrice = tick.Price,
+                                EntryGlobalBarIndex = currentGlobalIndex,
+                                TakeProfitPrice = tpPrice,
+                                StopLossPrice = slPrice,
+                                HighestPriceSinceEntry = tick.Price,
+                                LowestPriceSinceEntry = tick.Price,
+                                TriggerLine = probe.Line,
+                                StrategyReason = reason
+                            };
+                            ActivePositions.Add(pos);
+                            OnPositionOpened?.Invoke(pos);
 
                             _activeTouchProbes.RemoveAt(i);
                             continue;
@@ -444,10 +593,6 @@ namespace Test.Strategy
 
         /// <summary>
         /// 接收 K 线周期行情推送（周期切分/Bar Close 收盘事件）
-        /// 采用三层增量流水线驱动计算：
-        /// Layer 1: O(1) 严格 10 步判定候选点是否为新极值点 (100% 严谨数学模拟)
-        /// Layer 2: 若产生新极值点，O(M) 零 GC 分配直装增量新趋势线
-        /// Layer 3: O(ActiveLines) 增量推进存量趋势线寿命与碰撞检测，并更新极速边界缓存
         /// </summary>
         public void OnKline(in RawKline kline)
         {
@@ -510,6 +655,51 @@ namespace Test.Strategy
 
             // 6. ⚡ 极速短路边界更新：刷新阻力线最低价与支撑线最高价
             UpdateActivePriceBoundaries();
+        }
+
+        /// <summary>
+        /// 回测结束时强制平仓所有未完结持仓
+        /// </summary>
+        public void CloseAllRemainingPositions(decimal finalPrice, long finalTimestampMs)
+        {
+            if (ActivePositions.Count == 0) return;
+
+            int currentGlobalIndex = Math.Max(0, _globalBarIndex);
+            for (int i = ActivePositions.Count - 1; i >= 0; i--)
+            {
+                var pos = ActivePositions[i];
+                decimal pnlPct = pos.Side == TradeSide.Buy
+                    ? (finalPrice - pos.EntryPrice) / pos.EntryPrice * 100m
+                    : (pos.EntryPrice - finalPrice) / pos.EntryPrice * 100m;
+
+                var trade = new TradeRecord
+                {
+                    TradeId = CompletedTrades.Count + 1,
+                    Side = pos.Side,
+                    EntryTimestampMs = pos.EntryTimestampMs,
+                    EntryPrice = pos.EntryPrice,
+                    EntryGlobalBarIndex = pos.EntryGlobalBarIndex,
+                    TakeProfitPrice = pos.TakeProfitPrice,
+                    StopLossPrice = pos.StopLossPrice,
+                    ExitTimestampMs = finalTimestampMs,
+                    ExitPrice = finalPrice,
+                    ExitGlobalBarIndex = currentGlobalIndex,
+                    ExitReason = PositionExitReason.EndOfBacktest,
+                    PnLPct = pnlPct,
+                    MaxRunupPct = Math.Max(0, pos.Side == TradeSide.Buy ? (pos.HighestPriceSinceEntry - pos.EntryPrice) / pos.EntryPrice * 100m : (pos.EntryPrice - pos.LowestPriceSinceEntry) / pos.EntryPrice * 100m),
+                    MaxDrawdownPct = Math.Max(0, pos.Side == TradeSide.Buy ? (pos.EntryPrice - pos.LowestPriceSinceEntry) / pos.EntryPrice * 100m : (pos.HighestPriceSinceEntry - pos.EntryPrice) / pos.EntryPrice * 100m),
+                    TriggerLine = pos.TriggerLine,
+                    StrategyReason = pos.StrategyReason
+                };
+
+                CompletedTrades.Add(trade);
+                TotalPnLPct += pnlPct;
+                if (trade.IsWin) WinningTradesCount++;
+                else LosingTradesCount++;
+
+                OnTradeClosed?.Invoke(trade);
+            }
+            ActivePositions.Clear();
         }
 
         private void UpdateActivePriceBoundaries()
@@ -609,11 +799,9 @@ namespace Test.Strategy
         {
             return $"[TrendLineStrategy - {Symbol} {Interval.ToIntervalString()}] " +
                    $"GlobalBars: {_globalBarIndex}, Window: {_klines.Count}/{MaxKlinesCapacity} | " +
-                   $"Peaks: {_peaks.Count}, Valleys: {_valleys.Count} | " +
-                   $"Active Resistance: {ActiveResistanceLines.Count}, Support: {ActiveSupportLines.Count} | " +
+                   $"交易统计: 完成={CompletedTrades.Count}笔 (胜率={WinRate:F1}%, 盈亏={TotalPnLPct:F2}%) | " +
                    $"开仓信号: 多 {LongSignalsCount} | 空 {ShortSignalsCount} (总计 {TotalSignalsCount}) | " +
-                   $"Deleted (Penetrated): {_deletedTrendLines.Count}/{MaxDeletedTrendLinesCapacity} | " +
-                   $"History Saved: {_historicalTrendLines.Count}";
+                   $"活跃阻力={ActiveResistanceLines.Count}, 支撑={ActiveSupportLines.Count}";
         }
 
         /// <summary>
@@ -631,8 +819,13 @@ namespace Test.Strategy
             _historicalTrendLines.Clear();
             _activeTouchProbes.Clear();
             TradeSignals.Clear();
+            ActivePositions.Clear();
+            CompletedTrades.Clear();
             LongSignalsCount = 0;
             ShortSignalsCount = 0;
+            WinningTradesCount = 0;
+            LosingTradesCount = 0;
+            TotalPnLPct = 0m;
             _lastTriggerTimestampMs = 0;
             _lastProcessedTickPrice = decimal.MinValue;
             _minActiveResistancePrice = decimal.MaxValue;

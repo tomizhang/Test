@@ -58,6 +58,16 @@ namespace Common.Services
         event Action<TradeSignal>? OnTradeSignalGenerated;
 
         /// <summary>
+        /// 仓位开立事件
+        /// </summary>
+        event Action<Position>? OnPositionOpened;
+
+        /// <summary>
+        /// 仓位止盈/止损平仓已完成交易事件
+        /// </summary>
+        event Action<TradeRecord>? OnTradeClosed;
+
+        /// <summary>
         /// 日志与系统消息输出事件
         /// </summary>
         event Action<string>? OnLogMessage;

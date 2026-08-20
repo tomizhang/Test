@@ -25,6 +25,29 @@ namespace Common.Models
     }
 
     /// <summary>
+    /// 仓位平仓原因
+    /// </summary>
+    public enum PositionExitReason
+    {
+        None = 0,
+
+        /// <summary>
+        /// 触碰止盈价平仓 (+1.5%)
+        /// </summary>
+        TakeProfit = 1,
+
+        /// <summary>
+        /// 触碰止损价平仓 (-0.5%)
+        /// </summary>
+        StopLoss = 2,
+
+        /// <summary>
+        /// 回测周期结束强制平仓
+        /// </summary>
+        EndOfBacktest = 3
+    }
+
+    /// <summary>
     /// 趋势线触碰回弹触发的交易开仓信号
     /// </summary>
     public struct TradeSignal
@@ -47,108 +70,109 @@ namespace Common.Models
     }
 
     /// <summary>
+    /// 单笔已完成平仓交易的完整记录
+    /// </summary>
+    public class TradeRecord
+    {
+        public int TradeId { get; set; }
+        public TradeSide Side { get; set; }                    // 开仓方向 (Buy / Sell)
+        public long EntryTimestampMs { get; set; }            // 开仓时间戳
+        public DateTime EntryTime => TimeHelper.FromUnixTimeMilliseconds(EntryTimestampMs);
+        public decimal EntryPrice { get; set; }               // 开仓价
+        public int EntryGlobalBarIndex { get; set; }          // 开仓 K 线序号
+
+        public decimal TakeProfitPrice { get; set; }          // 目标止盈价
+        public decimal StopLossPrice { get; set; }            // 目标止损价
+
+        public long ExitTimestampMs { get; set; }             // 平仓时间戳
+        public DateTime ExitTime => TimeHelper.FromUnixTimeMilliseconds(ExitTimestampMs);
+        public decimal ExitPrice { get; set; }                // 平仓价
+        public int ExitGlobalBarIndex { get; set; }           // 平仓 K 线序号
+        public PositionExitReason ExitReason { get; set; }    // 平仓类型 (止盈 / 止损 / 结束)
+
+        public decimal PnLPct { get; set; }                   // 净盈亏百分比 (%)
+        public bool IsWin => PnLPct > 0;                      // 是否盈利
+        public TimeSpan Duration => ExitTime - EntryTime;     // 持仓时间跨度
+        public int HoldingBars => Math.Max(0, ExitGlobalBarIndex - EntryGlobalBarIndex); // 持仓K线根数
+
+        public decimal MaxRunupPct { get; set; }              // 最大潜在浮盈百分比 (MFE)
+        public decimal MaxDrawdownPct { get; set; }           // 最大潜在浮亏百分比 (MAE)
+
+        public TrendLine TriggerLine { get; set; }            // 触发开仓的趋势线
+        public string StrategyReason { get; set; } = string.Empty; // 策略原因描述
+
+        public override string ToString()
+        {
+            string icon = ExitReason == PositionExitReason.TakeProfit ? "💰 [止盈]" : (ExitReason == PositionExitReason.StopLoss ? "🛑 [止损]" : "🏁 [完结]");
+            string sideStr = Side == TradeSide.Buy ? "多单" : "空单";
+            string sign = PnLPct >= 0 ? "+" : "";
+            return $"{icon} #{TradeId} {sideStr} @ 开:{EntryPrice:F2} -> 平:{ExitPrice:F2} ({sign}{PnLPct:F2}%, 持仓:{Duration.TotalMinutes:F1}分)";
+        }
+    }
+
+    /// <summary>
+    /// 当前持仓中的仓位模型
+    /// </summary>
+    public class Position
+    {
+        public int PositionId { get; set; }
+        public TradeSide Side { get; set; }
+        public long EntryTimestampMs { get; set; }
+        public decimal EntryPrice { get; set; }
+        public int EntryGlobalBarIndex { get; set; }
+        public decimal TakeProfitPrice { get; set; }
+        public decimal StopLossPrice { get; set; }
+        public decimal HighestPriceSinceEntry { get; set; }
+        public decimal LowestPriceSinceEntry { get; set; }
+        public TrendLine TriggerLine { get; set; }
+        public string StrategyReason { get; set; } = string.Empty;
+    }
+
+    /// <summary>
     /// 回测引擎输入请求参数配置
     /// </summary>
     public class BacktestRequest
     {
-        /// <summary>
-        /// 目标交易对 (如 BTCUSDT, ETHUSDT)
-        /// </summary>
         public string Coin { get; set; } = "BTCUSDT";
-
-        /// <summary>
-        /// 回测起始日期 (包含)
-        /// </summary>
         public DateTime StartDate { get; set; } = new DateTime(2025, 1, 1);
-
-        /// <summary>
-        /// 回测结束日期 (包含)
-        /// </summary>
         public DateTime EndDate { get; set; } = new DateTime(2025, 7, 31);
-
-        /// <summary>
-        /// K 线周期 (默认 1m)
-        /// </summary>
         public KlineInterval Interval { get; set; } = KlineInterval.OneMinute;
 
-        /// <summary>
-        /// 策略滑动窗口保留 K 线数量 (默认 2000 根)
-        /// </summary>
         public int MaxKlinesCapacity { get; set; } = 2000;
-
-        /// <summary>
-        /// 历史趋势线库最低保存数量 (默认 1000 条)
-        /// </summary>
         public int MinTrendLinesCapacity { get; set; } = 1000;
-
-        /// <summary>
-        /// 已删除（被穿透）趋势线列表保存长度 (默认 1000 条)
-        /// </summary>
         public int MaxDeletedTrendLinesCapacity { get; set; } = 1000;
 
-        /// <summary>
-        /// 波峰波谷左侧对比根数 (默认 5)
-        /// </summary>
         public int LeftLen { get; set; } = 5;
-
-        /// <summary>
-        /// 波峰波谷右侧对比根数 (默认 5)
-        /// </summary>
         public int RightLen { get; set; } = 5;
-
-        /// <summary>
-        /// 趋势线两极值点间最大跨度 (默认 100 根)
-        /// </summary>
         public int MaxSpan { get; set; } = 100;
-
-        /// <summary>
-        /// 是否允许趋势线内部 K 线穿透 (默认 false, 严格外包络)
-        /// </summary>
         public bool AllowInternalPenetration { get; set; } = false;
 
-        /// <summary>
-        /// 触发开仓所需的最小趋势线跨度 (LineX1X2 >= 40)
-        /// </summary>
         public int MinSignalLineX1X2 { get; set; } = 40;
-
-        /// <summary>
-        /// 触发开仓所需的最小趋势线寿命 (LineAge >= 4)
-        /// </summary>
         public int MinSignalLineAge { get; set; } = 4;
-
-        /// <summary>
-        /// 开仓信号触发冷却时间 (秒) (默认 60 秒 / 1分钟内仅允许触发一次)
-        /// </summary>
         public int SignalCooldownSeconds { get; set; } = 60;
 
         /// <summary>
-        /// Tick 并行读取滑动窗口天数 (默认 3 线程并发)
+        /// 策略止盈比例 (%) (默认 1.5%)
         /// </summary>
+        public decimal TakeProfitPct { get; set; } = 1.5m;
+
+        /// <summary>
+        /// 策略止损比例 (%) (默认 0.5%)
+        /// </summary>
+        public decimal StopLossPct { get; set; } = 0.5m;
+
         public int ParallelDays { get; set; } = 3;
-
-        /// <summary>
-        /// 回测完成后是否自动生成 ScottPlot 分析图表并落盘 (默认 true)
-        /// </summary>
         public bool GenerateChart { get; set; } = true;
-
-        /// <summary>
-        /// 自定义图表输出文件路径 (为 null 时自动生成在 Config.GetChartsPath())
-        /// </summary>
         public string? ChartOutputPath { get; set; } = null;
-
-        /// <summary>
-        /// 图表宽度像素 (默认 1920)
-        /// </summary>
         public int ChartWidth { get; set; } = 1920;
-
-        /// <summary>
-        /// 图表高度像素 (默认 1080)
-        /// </summary>
         public int ChartHeight { get; set; } = 1080;
 
         /// <summary>
-        /// 自定义策略备注/描述
+        /// 是否自动生成专业 HTML 统计报告并落盘 (默认 true)
         /// </summary>
+        public bool GenerateHtmlReport { get; set; } = true;
+
+        public string? ReportOutputPath { get; set; } = null;
         public string? Description { get; set; } = null;
     }
 
@@ -171,9 +195,20 @@ namespace Common.Models
         public int ShortSignalsCount { get; set; }
         public int TotalSignalsCount => LongSignalsCount + ShortSignalsCount;
 
+        public int CompletedTradesCount { get; set; }
+        public int WinningTradesCount { get; set; }
+        public int LosingTradesCount { get; set; }
+        public decimal CurrentTotalPnLPct { get; set; }
+        private double _winRate = -1;
+        public double WinRate
+        {
+            get => _winRate >= 0 ? _winRate : (CompletedTradesCount > 0 ? (double)WinningTradesCount / CompletedTradesCount * 100.0 : 0.0);
+            set => _winRate = value;
+        }
+
         public override string ToString()
         {
-            return $"[{Percentage:F1}%] {Message} (Klines: {ProcessedKlines:N0}, Ticks: {ProcessedTicks:N0}, 信号: 多{LongSignalsCount}|空{ShortSignalsCount})";
+            return $"[{Percentage:F1}%] {Message} (Klines: {ProcessedKlines:N0}, Ticks: {ProcessedTicks:N0}, 交易: {CompletedTradesCount}笔 胜率:{WinRate:F1}% 盈亏:{CurrentTotalPnLPct:F2}%)";
         }
     }
 
@@ -202,46 +237,41 @@ namespace Common.Models
         public int DeletedTrendLinesCount { get; set; }
         public int HistoricalTrendLinesCount { get; set; }
 
-        /// <summary>
-        /// 触发开多信号总次数
-        /// </summary>
         public int LongSignalsCount { get; set; }
-
-        /// <summary>
-        /// 触发开空信号总次数
-        /// </summary>
         public int ShortSignalsCount { get; set; }
-
-        /// <summary>
-        /// 触发交易信号总次数
-        /// </summary>
         public int TotalSignalsCount => LongSignalsCount + ShortSignalsCount;
 
-        /// <summary>
-        /// 生成并落盘的分析图表绝对路径
-        /// </summary>
+        // 交易平仓与收益指标
+        public List<TradeRecord> CompletedTrades { get; set; } = new List<TradeRecord>();
+        public int TotalTrades => CompletedTrades.Count;
+        public int WinningTradesCount { get; set; }
+        public int LosingTradesCount { get; set; }
+        private double _resWinRate = -1;
+        public double WinRate
+        {
+            get => _resWinRate >= 0 ? _resWinRate : (TotalTrades > 0 ? (double)WinningTradesCount / TotalTrades * 100.0 : 0.0);
+            set => _resWinRate = value;
+        }
+        public decimal TotalPnLPct { get; set; }
+        public decimal ProfitFactor { get; set; }
+        public decimal MaxDrawdownPct { get; set; }
+        public decimal AvgWinPct { get; set; }
+        public decimal AvgLossPct { get; set; }
+        public int MaxConsecutiveWins { get; set; }
+        public int MaxConsecutiveLosses { get; set; }
+
         public string? ChartPath { get; set; }
-
-        /// <summary>
-        /// 策略运行最终统计摘要
-        /// </summary>
+        public string? ReportHtmlPath { get; set; }
         public string StrategySummary { get; set; } = string.Empty;
-
-        /// <summary>
-        /// 策略实例引用 (供后续 WinForms 交互式查看与二次分析)
-        /// </summary>
         public TrendLineStrategy? Strategy { get; set; }
 
         public override string ToString()
         {
             return $"[BacktestResult - {Coin} {Interval.ToIntervalString()}] " +
                    $"Range: {StartDate:yyyy-MM-dd} ~ {EndDate:yyyy-MM-dd} | " +
-                   $"Klines: {TotalKlines:N0}, Ticks: {TotalTicks:N0} | " +
-                   $"信号: 多 {LongSignalsCount} | 空 {ShortSignalsCount} (总计 {TotalSignalsCount}) | " +
+                   $"交易: {TotalTrades}笔, 胜率: {WinRate:F1}%, 累计收益: {TotalPnLPct:F2}%, 盈亏比: {ProfitFactor:F2}, 最大回撤: {MaxDrawdownPct:F2}% | " +
                    $"Time: {ElapsedMilliseconds} ms ({TicksPerSecond:N0} ticks/s) | " +
-                   $"Peaks: {PeaksCount}, Valleys: {ValleysCount} | " +
-                   $"Active Lines: (R:{ActiveResistanceLinesCount}, S:{ActiveSupportLinesCount}), Deleted: {DeletedTrendLinesCount} | " +
-                   $"Chart: {ChartPath ?? "None"}";
+                   $"HTML报告: {ReportHtmlPath ?? "None"}";
         }
     }
 }

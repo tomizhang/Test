@@ -232,6 +232,13 @@ namespace Common
             return path;
         }
 
+        public static string GetReportsPath()
+        {
+            string path = Path.Combine(GetRootPath(), "reports");
+            if (!Directory.Exists(path)) Directory.CreateDirectory(path);
+            return path;
+        }
+
         #endregion
     }
 }

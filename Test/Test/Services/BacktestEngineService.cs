@@ -19,6 +19,8 @@ namespace Common.Services
         public event Action<RawKline, int, TrendLineStrategy>? OnKlineClosed;
         public event Action<TrendLine, RawTick, string>? OnTrendLinePenetrated;
         public event Action<TradeSignal>? OnTradeSignalGenerated;
+        public event Action<Position>? OnPositionOpened;
+        public event Action<TradeRecord>? OnTradeClosed;
         public event Action<string>? OnLogMessage;
         public event Action<BacktestProgress>? OnProgressChanged;
 
@@ -99,10 +101,12 @@ namespace Common.Services
                     AllowInternalPenetration = request.AllowInternalPenetration,
                     MinSignalLineX1X2 = request.MinSignalLineX1X2,
                     MinSignalLineAge = request.MinSignalLineAge,
-                    SignalCooldownSeconds = request.SignalCooldownSeconds
+                    SignalCooldownSeconds = request.SignalCooldownSeconds,
+                    TakeProfitPct = request.TakeProfitPct,
+                    StopLossPct = request.StopLossPct
                 };
 
-                // 转发策略内的穿透事件与开仓信号事件
+                // 转发策略内的穿透事件、开仓信号事件、持仓与平仓事件
                 strategy.OnTrendLinePenetrated += (line, tick, reason) =>
                 {
                     OnTrendLinePenetrated?.Invoke(line, tick, reason);
@@ -111,6 +115,16 @@ namespace Common.Services
                 strategy.OnTradeSignalGenerated += signal =>
                 {
                     OnTradeSignalGenerated?.Invoke(signal);
+                };
+
+                strategy.OnPositionOpened += pos =>
+                {
+                    OnPositionOpened?.Invoke(pos);
+                };
+
+                strategy.OnTradeClosed += trade =>
+                {
+                    OnTradeClosed?.Invoke(trade);
                 };
 
                 result.Strategy = strategy;
@@ -240,14 +254,15 @@ namespace Common.Services
                     // 触发逐笔 Tick 外部回调
                     OnTickReceived?.Invoke(tick);
 
-                    // 进度周期汇报
+                    // 进度周期汇报 (携带实时胜率、完成交易笔数与累计收益率)
                     if (currentTickIndex % 50000 == 0)
                     {
                         double percent = klineCount > 0
                             ? 10.0 + ((double)currentKlineIndex / klineCount) * 80.0
                             : 50.0;
 
-                        ReportProgress(progress, percent, $"正在流式回测 ({currentKlineIndex:N0}/{klineCount:N0} 根K线, 信号: 多{strategy.LongSignalsCount}|空{strategy.ShortSignalsCount})...",
+                        string sign = strategy.TotalPnLPct >= 0 ? "+" : "";
+                        ReportProgress(progress, percent, $"正在流式回测 ({currentKlineIndex:N0}/{klineCount:N0} 根K线, 战绩: {strategy.CompletedTrades.Count}笔 胜率:{strategy.WinRate:F1}% 盈亏:{sign}{strategy.TotalPnLPct:F2}%)...",
                             processedKlines: currentKlineIndex,
                             totalKlines: klineCount,
                             processedTicks: currentTickIndex,
@@ -256,7 +271,11 @@ namespace Common.Services
                             activeS: strategy.ActiveSupportLines.Count,
                             deletedCount: strategy.DeletedTrendLinesCount,
                             longSignals: strategy.LongSignalsCount,
-                            shortSignals: strategy.ShortSignalsCount);
+                            shortSignals: strategy.ShortSignalsCount,
+                            completedTrades: strategy.CompletedTrades.Count,
+                            winningTrades: strategy.WinningTradesCount,
+                            losingTrades: strategy.LosingTradesCount,
+                            totalPnL: strategy.TotalPnLPct);
                     }
                 }
 
@@ -280,6 +299,13 @@ namespace Common.Services
                     }
                 }
 
+                // 平仓所有未完结持仓
+                if (strategy.ActivePositions.Count > 0)
+                {
+                    decimal exitPrice = lastPushedTickPrice > decimal.MinValue ? lastPushedTickPrice : (strategy.LatestKline.Close > 0 ? strategy.LatestKline.Close : 0);
+                    strategy.CloseAllRemainingPositions(exitPrice, Environment.TickCount64);
+                }
+
                 sw.Stop();
                 result.ElapsedMilliseconds = sw.ElapsedMilliseconds;
                 result.TotalTicks = currentTickIndex;
@@ -293,21 +319,28 @@ namespace Common.Services
                 result.HistoricalTrendLinesCount = strategy.HistoricalTrendLinesCount;
                 result.LongSignalsCount = strategy.LongSignalsCount;
                 result.ShortSignalsCount = strategy.ShortSignalsCount;
+                result.CompletedTrades = new List<TradeRecord>(strategy.CompletedTrades);
+                result.WinningTradesCount = strategy.WinningTradesCount;
+                result.LosingTradesCount = strategy.LosingTradesCount;
+                result.TotalPnLPct = strategy.TotalPnLPct;
+                result.WinRate = strategy.WinRate;
                 result.StrategySummary = strategy.GetStrategySummary();
 
                 RaiseLog($"[完成] 回测执行完毕！总耗时: {sw.ElapsedMilliseconds} ms, 实际吞吐: {result.TicksPerSecond:N0} ticks/s");
-                RaiseLog($"-> 开仓信号统计: 多单(Long)={result.LongSignalsCount} 笔 | 空单(Short)={result.ShortSignalsCount} 笔 (总计 {result.TotalSignalsCount} 笔)");
+                RaiseLog($"-> 交易统计: 完成={result.TotalTrades} 笔, 胜率={result.WinRate:F1}%, 累计收益率={result.TotalPnLPct:F2}% (止盈: +{request.TakeProfitPct:F1}%, 止损: -{request.StopLossPct:F1}%)");
+                RaiseLog($"-> 信号统计: 多单(Long)={result.LongSignalsCount} 笔 | 空单(Short)={result.ShortSignalsCount} 笔 (总计 {result.TotalSignalsCount} 笔)");
                 RaiseLog($"-> 策略最终状态: {result.StrategySummary}");
 
                 // 6. 渲染生成 ScottPlot 分析图表
                 if (request.GenerateChart && strategy.KlineCount > 0)
                 {
-                    RaiseLog($"[3/3] 正在生成 ScottPlot 专业分析图表...");
-                    ReportProgress(progress, 95.0, "正在生成分析图表...");
+                    RaiseLog($"[3/4] 正在生成 ScottPlot 专业分析图表...");
+                    ReportProgress(progress, 90.0, "正在生成分析图表...");
 
                     string summaryText = request.Description ??
                         $"币种: {request.Coin}, 周期: {request.Interval.ToIntervalString()}, 时间窗口: {request.StartDate:yyyy-MM-dd} ~ {request.EndDate:yyyy-MM-dd}\n" +
-                        $"策略模式: 趋势线触碰 3-Tick 回弹开仓 (LineX1X2>=40, LineAge>=4) | 信号: 多 {strategy.LongSignalsCount} | 空 {strategy.ShortSignalsCount}";
+                        $"交易胜率: {result.WinRate:F1}% ({result.WinningTradesCount}胜/{result.LosingTradesCount}负) | 收益: {result.TotalPnLPct:F2}%\n" +
+                        $"策略参数: 触碰 3-Tick 回弹开仓 | 止盈: +{request.TakeProfitPct:F1}% | 止损: -{request.StopLossPct:F1}% | 信号: 多 {strategy.LongSignalsCount} | 空 {strategy.ShortSignalsCount}";
 
                     result.ChartPath = strategy.PlotChart(
                         summaryText,
@@ -316,6 +349,16 @@ namespace Common.Services
                         request.ChartHeight);
 
                     RaiseLog($"-> 图表已成功保存至: {result.ChartPath}");
+                }
+
+                // 7. 生成独立交互式 HTML 回测报告
+                if (request.GenerateHtmlReport)
+                {
+                    RaiseLog($"[4/4] 正在生成独立交互式 HTML 回测报告...");
+                    ReportProgress(progress, 95.0, "正在生成 HTML 回测报告...");
+                    string htmlPath = HtmlReportHelper.GenerateReport(result, request, request.ReportOutputPath);
+                    result.ReportHtmlPath = htmlPath;
+                    RaiseLog($"-> HTML 分析报告已生成落盘: {htmlPath}");
                 }
 
                 ReportProgress(progress, 100.0, "回测全部完成！",
@@ -327,7 +370,11 @@ namespace Common.Services
                     activeS: strategy.ActiveSupportLines.Count,
                     deletedCount: strategy.DeletedTrendLinesCount,
                     longSignals: strategy.LongSignalsCount,
-                    shortSignals: strategy.ShortSignalsCount);
+                    shortSignals: strategy.ShortSignalsCount,
+                    completedTrades: strategy.CompletedTrades.Count,
+                    winningTrades: strategy.WinningTradesCount,
+                    losingTrades: strategy.LosingTradesCount,
+                    totalPnL: strategy.TotalPnLPct);
 
                 return result;
             }
@@ -367,7 +414,11 @@ namespace Common.Services
             int activeS = 0,
             int deletedCount = 0,
             int longSignals = 0,
-            int shortSignals = 0)
+            int shortSignals = 0,
+            int completedTrades = 0,
+            int winningTrades = 0,
+            int losingTrades = 0,
+            decimal totalPnL = 0m)
         {
             var p = new BacktestProgress
             {
@@ -381,7 +432,11 @@ namespace Common.Services
                 ActiveSupportCount = activeS,
                 DeletedLinesCount = deletedCount,
                 LongSignalsCount = longSignals,
-                ShortSignalsCount = shortSignals
+                ShortSignalsCount = shortSignals,
+                CompletedTradesCount = completedTrades,
+                WinningTradesCount = winningTrades,
+                LosingTradesCount = losingTrades,
+                CurrentTotalPnLPct = totalPnL
             };
 
             progress?.Report(p);
