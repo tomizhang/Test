@@ -21,10 +21,11 @@ namespace Test.WinForms.Forms
     /// <summary>
     /// 专业量化回测系统主窗体 (WinForms 主界面)
     /// 核心功能：
-    /// 1. 趋势线触碰 3-Tick 内回弹开仓策略 (高点回弹开空，低点回弹开多，LineX1X2>=40, LineAge>=4, 1分钟冷却)
-    /// 2. 触发开仓的趋势线在图表上渲染为显目绿色 (IsTriggered=true)，日志输出完整趋势线特征
-    /// 3. UI 采用 Timer 定时批量轮询抽取机制 (杜绝 BeginInvoke 消息风暴，窗口拖拽与交互 100% 丝滑)
-    /// 4. ScottPlot 交互折线图实时呈现价格、高低点极值、趋势线延伸与交易信号标记
+    /// 1. 自动记忆与持久化界面配置信息 (交易对、周期、起止时间、策略参数、窗口尺寸及分割布局)
+    /// 2. 趋势线触碰 3-Tick 内回弹开仓策略 (高点回弹开空，低点回弹开多，LineX1X2>=40, LineAge>=4, 1分钟冷却)
+    /// 3. 触发开仓的趋势线在图表上渲染为显目绿色 (IsTriggered=true)，日志输出完整趋势线特征
+    /// 4. UI 采用 Timer 定时批量轮询抽取机制 (杜绝 BeginInvoke 消息风暴，窗口拖拽与交互 100% 丝滑)
+    /// 5. ScottPlot 交互折线图实时呈现价格、高低点极值、趋势线延伸与交易信号标记
     /// </summary>
     public class MainForm : Form
     {
@@ -213,11 +214,16 @@ namespace Test.WinForms.Forms
 
             this.Controls.Add(splitMain);
 
+            // 窗体加载与关闭事件：自动加载与保存用户界面配置
             this.Load += (s, e) =>
             {
-                splitMain.SplitterDistance = this.ClientSize.Width - 380;
-                splitLeft.SplitterDistance = (int)(splitLeft.Height * 0.65);
+                LoadSettingsToUi();
                 InitializeDefaultPlot();
+            };
+
+            this.FormClosing += (s, e) =>
+            {
+                SaveSettingsFromUi();
             };
         }
 
@@ -467,6 +473,122 @@ namespace Test.WinForms.Forms
 
         #endregion
 
+        #region 界面配置自动持久化与加载恢复
+
+        private void LoadSettingsToUi()
+        {
+            var settings = UiSettingsManager.Load();
+
+            if (!string.IsNullOrEmpty(settings.Coin))
+            {
+                int coinIdx = cboCoin.FindStringExact(settings.Coin);
+                if (coinIdx >= 0) cboCoin.SelectedIndex = coinIdx;
+                else cboCoin.Text = settings.Coin;
+            }
+
+            if (!string.IsNullOrEmpty(settings.Interval))
+            {
+                int intIdx = cboInterval.FindString(settings.Interval);
+                if (intIdx >= 0) cboInterval.SelectedIndex = intIdx;
+                else cboInterval.Text = settings.Interval;
+            }
+
+            if (settings.StartDate >= dtpStart.MinDate && settings.StartDate <= dtpStart.MaxDate)
+                dtpStart.Value = settings.StartDate;
+
+            if (settings.EndDate >= dtpEnd.MinDate && settings.EndDate <= dtpEnd.MaxDate)
+                dtpEnd.Value = settings.EndDate;
+
+            numMaxKlines.Value = Math.Clamp(settings.MaxKlinesCapacity, numMaxKlines.Minimum, numMaxKlines.Maximum);
+            numMinTrendLines.Value = Math.Clamp(settings.MinTrendLinesCapacity, numMinTrendLines.Minimum, numMinTrendLines.Maximum);
+            numLeftLen.Value = Math.Clamp(settings.LeftLen, numLeftLen.Minimum, numLeftLen.Maximum);
+            numRightLen.Value = Math.Clamp(settings.RightLen, numRightLen.Minimum, numRightLen.Maximum);
+            numMaxSpan.Value = Math.Clamp(settings.MaxSpan, numMaxSpan.Minimum, numMaxSpan.Maximum);
+            numMinSignalSpan.Value = Math.Clamp(settings.MinSignalLineX1X2, numMinSignalSpan.Minimum, numMinSignalSpan.Maximum);
+            numMinSignalAge.Value = Math.Clamp(settings.MinSignalLineAge, numMinSignalAge.Minimum, numMinSignalAge.Maximum);
+            numCooldown.Value = Math.Clamp(settings.SignalCooldownSeconds, numCooldown.Minimum, numCooldown.Maximum);
+
+            chkStrictEnvelope.Checked = settings.StrictEnvelope;
+            chkRealtimeChart.Checked = settings.RealtimeChart;
+            chkAutoScale.Checked = settings.AutoScale;
+
+            _isRealtimeChartEnabled = chkRealtimeChart.Checked;
+            _isAutoScaleEnabled = chkAutoScale.Checked;
+
+            // 窗体尺寸与状态恢复
+            if (settings.FormWidth >= this.MinimumSize.Width && settings.FormHeight >= this.MinimumSize.Height)
+            {
+                this.Size = new Size(settings.FormWidth, settings.FormHeight);
+            }
+            if (settings.IsMaximized)
+            {
+                this.WindowState = FormWindowState.Maximized;
+            }
+
+            try
+            {
+                if (settings.SplitMainDistance > 100 && settings.SplitMainDistance < splitMain.Width - 100)
+                {
+                    splitMain.SplitterDistance = settings.SplitMainDistance;
+                }
+                else
+                {
+                    splitMain.SplitterDistance = Math.Max(200, this.ClientSize.Width - 380);
+                }
+
+                if (settings.SplitLeftDistance > 100 && settings.SplitLeftDistance < splitLeft.Height - 50)
+                {
+                    splitLeft.SplitterDistance = settings.SplitLeftDistance;
+                }
+                else
+                {
+                    splitLeft.SplitterDistance = (int)(splitLeft.Height * 0.65);
+                }
+            }
+            catch
+            {
+                // 忽略分割栏初次调整异常
+            }
+        }
+
+        private void SaveSettingsFromUi()
+        {
+            try
+            {
+                var settings = new UiSettings
+                {
+                    Coin = cboCoin.SelectedItem?.ToString() ?? cboCoin.Text,
+                    Interval = cboInterval.SelectedItem?.ToString() ?? cboInterval.Text,
+                    StartDate = dtpStart.Value.Date,
+                    EndDate = dtpEnd.Value.Date,
+                    MaxKlinesCapacity = (int)numMaxKlines.Value,
+                    MinTrendLinesCapacity = (int)numMinTrendLines.Value,
+                    LeftLen = (int)numLeftLen.Value,
+                    RightLen = (int)numRightLen.Value,
+                    MaxSpan = (int)numMaxSpan.Value,
+                    MinSignalLineX1X2 = (int)numMinSignalSpan.Value,
+                    MinSignalLineAge = (int)numMinSignalAge.Value,
+                    SignalCooldownSeconds = (int)numCooldown.Value,
+                    StrictEnvelope = chkStrictEnvelope.Checked,
+                    RealtimeChart = chkRealtimeChart.Checked,
+                    AutoScale = chkAutoScale.Checked,
+                    FormWidth = this.WindowState == FormWindowState.Normal ? this.Width : this.RestoreBounds.Width,
+                    FormHeight = this.WindowState == FormWindowState.Normal ? this.Height : this.RestoreBounds.Height,
+                    IsMaximized = this.WindowState == FormWindowState.Maximized,
+                    SplitMainDistance = splitMain.SplitterDistance,
+                    SplitLeftDistance = splitLeft.SplitterDistance
+                };
+
+                UiSettingsManager.Save(settings);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[MainForm] 保存界面配置失败: {ex.Message}");
+            }
+        }
+
+        #endregion
+
         #region UI 定时批量刷新引擎 (彻底消除 Windows 消息风暴与界面卡死)
 
         private void SetupUiRefreshTimer()
@@ -664,6 +786,9 @@ namespace Test.WinForms.Forms
                 MessageBox.Show("起始日期不能大于结束日期！", "参数错误", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
+
+            // 自动保存当前界面配置
+            SaveSettingsFromUi();
 
             // 锁定按钮状态
             btnStart.Enabled = false;
