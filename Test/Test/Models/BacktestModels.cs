@@ -157,9 +157,15 @@ namespace Common.Models
         public decimal TakeProfitPct { get; set; } = 1.5m;
 
         /// <summary>
+        /// <summary>
         /// 策略止损比例 (%) (默认 0.5%)
         /// </summary>
         public decimal StopLossPct { get; set; } = 0.5m;
+
+        /// <summary>
+        /// 是否开启策略交易 (触碰回弹开仓与止盈止损) (默认 true)
+        /// </summary>
+        public bool EnableTrading { get; set; } = true;
 
         public int ParallelDays { get; set; } = 3;
         public bool GenerateChart { get; set; } = true;

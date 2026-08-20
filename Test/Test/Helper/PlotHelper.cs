@@ -137,50 +137,76 @@ namespace Common.Helper
                 }
             }
 
-            // 5. 绘制趋势线 (阻力趋势线: 橙红色, 支撑趋势线: 青色, 线宽 0.8f，优先绘制最新与活跃趋势线)
+            // 5. 绘制趋势线 (活跃趋势线向右延长至当前图表末端；已击穿趋势线严格在碰撞击穿位置终止)
             int resistanceDrawn = 0;
             int supportDrawn = 0;
             int triggeredDrawn = 0;
 
             if (trendLines != null && trendLines.Count > 0)
             {
-                int maxLinesToDraw = 120;
+                int maxLinesToDraw = 200;
                 int drawnTotal = 0;
 
                 for (int i = trendLines.Count - 1; i >= 0 && drawnTotal < maxLinesToDraw; i--)
                 {
                     var line = trendLines[i];
 
-                    // 确保趋势线在当前图表可见范围有交集
-                    if (line.X2 < startGlobalIndex || line.X1 > endGlobalIndex)
+                    // 计算趋势线延伸终点：
+                    // 1. 若为已被击穿/删除的趋势线 (CollidedKlineIndex >= 0)，则严格延长至发生击穿时的 K 线位置终止，绝不往后多画
+                    // 2. 若为活跃趋势线 (未发生击穿 CollidedKlineIndex == -1)，则向右延长至当前图表最右端 (endGlobalIndex)
+                    int effectiveEndX;
+                    if (line.CollidedKlineIndex >= 0)
+                    {
+                        effectiveEndX = line.CollidedKlineIndex;
+                    }
+                    else
+                    {
+                        effectiveEndX = Math.Max(line.X2, endGlobalIndex);
+                    }
+
+                    // 确保趋势线延伸段与当前图表可见范围 [startGlobalIndex, endGlobalIndex] 有交集
+                    if (effectiveEndX < startGlobalIndex || line.X1 > endGlobalIndex)
                         continue;
 
-                    int endX = line.CollidedKlineIndex >= 0 ? line.CollidedKlineIndex : (line.X2 + line.LineExtensionRange);
-                    if (endX > endGlobalIndex) endX = endGlobalIndex;
-
                     double xStart = line.X1;
-                    double xEnd = endX;
+                    double xEnd = effectiveEndX;
                     double yStart = (double)line.Y1;
-                    double yEnd = (double)line.GetPriceAt(endX);
+                    double yEnd = (double)line.GetPriceAt(effectiveEndX);
 
                     var linePlot = plot.Add.Line(xStart, yStart, xEnd, yEnd);
 
                     if (line.IsTriggered)
                     {
-                        linePlot.Color = Color.FromHex("#22c55e"); // 亮绿色: 触发开仓的趋势线
-                        linePlot.LineWidth = 1.6f;                  // 触发线加粗突出显示
+                        linePlot.Color = Color.FromHex("#22c55e"); // 亮绿色: 触发开仓的趋势线 (加粗突出)
+                        linePlot.LineWidth = 2.0f;
                         triggeredDrawn++;
                     }
                     else if (line.IsResistance)
                     {
-                        linePlot.Color = Color.FromHex("#f97316"); // 橙红色阻力线
-                        linePlot.LineWidth = 0.8f;
+                        if (line.CollidedKlineIndex >= 0)
+                        {
+                            linePlot.Color = Color.FromHex("#64748b").WithAlpha(0.45); // 已击穿历史阻力线: 灰暗色且在击穿点严格终止
+                            linePlot.LineWidth = 0.7f;
+                        }
+                        else
+                        {
+                            linePlot.Color = Color.FromHex("#f97316"); // 活跃阻力线: 鲜明橙红 (向右无限延伸)
+                            linePlot.LineWidth = 1.2f;
+                        }
                         resistanceDrawn++;
                     }
                     else
                     {
-                        linePlot.Color = Color.FromHex("#06b6d4"); // 青色支撑线
-                        linePlot.LineWidth = 0.8f;
+                        if (line.CollidedKlineIndex >= 0)
+                        {
+                            linePlot.Color = Color.FromHex("#64748b").WithAlpha(0.45); // 已击穿历史支撑线: 灰暗色且在击穿点严格终止
+                            linePlot.LineWidth = 0.7f;
+                        }
+                        else
+                        {
+                            linePlot.Color = Color.FromHex("#06b6d4"); // 活跃支撑线: 鲜明青色 (向右无限延伸)
+                            linePlot.LineWidth = 1.2f;
+                        }
                         supportDrawn++;
                     }
                     drawnTotal++;

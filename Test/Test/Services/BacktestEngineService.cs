@@ -103,7 +103,8 @@ namespace Common.Services
                     MinSignalLineAge = request.MinSignalLineAge,
                     SignalCooldownSeconds = request.SignalCooldownSeconds,
                     TakeProfitPct = request.TakeProfitPct,
-                    StopLossPct = request.StopLossPct
+                    StopLossPct = request.StopLossPct,
+                    EnableTrading = request.EnableTrading
                 };
 
                 // 转发策略内的穿透事件、开仓信号事件、持仓与平仓事件

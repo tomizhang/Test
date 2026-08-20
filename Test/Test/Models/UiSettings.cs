@@ -24,6 +24,7 @@ namespace Common.Models
         public int SignalCooldownSeconds { get; set; } = 60;
         public decimal TakeProfitPct { get; set; } = 1.5m;
         public decimal StopLossPct { get; set; } = 0.5m;
+        public bool EnableTrading { get; set; } = true;
         public bool StrictEnvelope { get; set; } = true;
         public bool RealtimeChart { get; set; } = true;
         public bool AutoScale { get; set; } = true;
