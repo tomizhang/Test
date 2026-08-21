@@ -167,6 +167,11 @@ namespace Common.Models
         /// </summary>
         public bool EnableTrading { get; set; } = true;
 
+        /// <summary>
+        /// 趋势线最大允许斜率 (%/bar)，过滤超高斜率与异常噪音趋势线 (默认 2.0%/bar)
+        /// </summary>
+        public decimal MaxSlopePctPerBar { get; set; } = 2.0m;
+
         public int ParallelDays { get; set; } = 3;
         public bool GenerateChart { get; set; } = true;
         public string? ChartOutputPath { get; set; } = null;

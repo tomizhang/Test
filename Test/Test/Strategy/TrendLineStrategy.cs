@@ -62,6 +62,9 @@ namespace Test.Strategy
         // 7. 是否开启策略交易 (默认 true，未开启时仅进行趋势线计算而不开仓下单)
         public bool EnableTrading { get; set; } = true;
 
+        // 8. 趋势线最大允许斜率 (%/bar)，过滤超高斜率与异常噪音趋势线 (默认 2.0%/bar)
+        public decimal MaxSlopePctPerBar { get; set; } = 2.0m;
+
         // 全局单调递增 K 线序列号计数器 (0, 1, 2, ... 500,000)
         private int _globalBarIndex = 0;
         public int GlobalBarIndex => _globalBarIndex;
@@ -681,7 +684,7 @@ namespace Test.Strategy
                 LeftLen,
                 RightLen);
 
-            // 3. 【第 2 层: O(M) 增量趋势线生成 (零堆对象分配直装模式)】
+            // 3. 【第 2 层: O(M) 增量趋势线生成 (零堆对象分配直装模式，高点只保留<0度，低点只保留>0度，过滤超高斜率)】
             if (hasPeak)
             {
                 TrendLineHelper.GenerateIncrementalTrendLines(
@@ -692,7 +695,8 @@ namespace Test.Strategy
                     ActiveResistanceLines,
                     _historicalTrendLines,
                     maxSpan: MaxSpan,
-                    allowInternalPenetration: AllowInternalPenetration);
+                    allowInternalPenetration: AllowInternalPenetration,
+                    maxSlopePctPerBar: MaxSlopePctPerBar);
 
                 _peaks.Add(newPeak);
                 PruneHistoryCapacity();
@@ -708,7 +712,8 @@ namespace Test.Strategy
                     ActiveSupportLines,
                     _historicalTrendLines,
                     maxSpan: MaxSpan,
-                    allowInternalPenetration: AllowInternalPenetration);
+                    allowInternalPenetration: AllowInternalPenetration,
+                    maxSlopePctPerBar: MaxSlopePctPerBar);
 
                 _valleys.Add(newValley);
                 PruneHistoryCapacity();

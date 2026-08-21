@@ -28,7 +28,8 @@ namespace Common.Helper
             List<TrendLine> targetActiveLines,
             List<TrendLine> targetHistoryLines,
             int maxSpan = 100,
-            bool allowInternalPenetration = false)
+            bool allowInternalPenetration = false,
+            decimal maxSlopePctPerBar = 2.0m)
         {
             if (existingPoints == null || existingPoints.Count == 0 || klines == null || klines.Count == 0)
             {
@@ -43,7 +44,27 @@ namespace Common.Helper
                 if (span <= 0) continue;
                 if (span > maxSpan) break; // 极值点已按 Index 严格递增排序，超出直接 break
 
-                // 检查两点内部是否有 K 线穿透 (严格逻辑剪枝)
+                // 1. 【角度与方向约束】
+                // 高点 (Peak / 阻力线)：仅保留小于 0 度的趋势线 (Y2 < Y1，价格向下倾斜)
+                // 低点 (Valley / 支撑线)：仅保留大于 0 度的趋势线 (Y2 > Y1，价格向上倾斜)
+                if (newPoint.Type == PivotType.Peak && newPoint.Price >= pOld.Price)
+                {
+                    continue; // 过滤高点大于等于 0 度的趋势线
+                }
+                else if (newPoint.Type == PivotType.Valley && newPoint.Price <= pOld.Price)
+                {
+                    continue; // 过滤低点小于等于 0 度的趋势线
+                }
+
+                // 2. 【超高斜率过滤】
+                decimal dy = newPoint.Price - pOld.Price;
+                decimal normalizedK = pOld.Price > 0m ? Math.Abs((dy / pOld.Price) / span * 100m) : 0m;
+                if (maxSlopePctPerBar > 0m && normalizedK > maxSlopePctPerBar)
+                {
+                    continue; // 过滤极端过陡的异常噪音斜率趋势线
+                }
+
+                // 3. 检查两点内部是否有 K 线穿透 (严格逻辑剪枝)
                 if (!allowInternalPenetration && IsPenetratedInternally(pOld, newPoint, klines, currentGlobalIndex))
                 {
                     continue;
@@ -68,7 +89,8 @@ namespace Common.Helper
             IReadOnlyList<RawKline> klines,
             int currentGlobalIndex,
             int maxSpan = 100,
-            bool allowInternalPenetration = false)
+            bool allowInternalPenetration = false,
+            decimal maxSlopePctPerBar = 2.0m)
         {
             var newLines = new List<TrendLine>();
             GenerateIncrementalTrendLines(
@@ -79,7 +101,8 @@ namespace Common.Helper
                 newLines,
                 null,
                 maxSpan,
-                allowInternalPenetration);
+                allowInternalPenetration,
+                maxSlopePctPerBar);
             return newLines;
         }
 
@@ -235,6 +258,14 @@ namespace Common.Helper
                         int span = p2.Index - p1.Index;
                         if (span <= 0 || span > maxSpan) continue;
 
+                        // 高点只保留小于 0 度的趋势线 (Y2 < Y1)
+                        if (p2.Price >= p1.Price) continue;
+
+                        // 过滤超高斜率
+                        decimal dy = p2.Price - p1.Price;
+                        decimal normalizedK = p1.Price > 0m ? Math.Abs((dy / p1.Price) / span * 100m) : 0m;
+                        if (normalizedK > 2.0m) continue;
+
                         if (!allowInternalPenetration && IsPenetratedInternally(p1, p2, klines, latestIdx))
                             continue;
 
@@ -253,6 +284,14 @@ namespace Common.Helper
                         var p2 = valleys[j];
                         int span = p2.Index - p1.Index;
                         if (span <= 0 || span > maxSpan) continue;
+
+                        // 低点只保留大于 0 度的趋势线 (Y2 > Y1)
+                        if (p2.Price <= p1.Price) continue;
+
+                        // 过滤超高斜率
+                        decimal dy = p2.Price - p1.Price;
+                        decimal normalizedK = p1.Price > 0m ? Math.Abs((dy / p1.Price) / span * 100m) : 0m;
+                        if (normalizedK > 2.0m) continue;
 
                         if (!allowInternalPenetration && IsPenetratedInternally(p1, p2, klines, latestIdx))
                             continue;

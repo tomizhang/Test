@@ -104,7 +104,8 @@ namespace Common.Services
                     SignalCooldownSeconds = request.SignalCooldownSeconds,
                     TakeProfitPct = request.TakeProfitPct,
                     StopLossPct = request.StopLossPct,
-                    EnableTrading = request.EnableTrading
+                    EnableTrading = request.EnableTrading,
+                    MaxSlopePctPerBar = request.MaxSlopePctPerBar
                 };
 
                 // 转发策略内的穿透事件、开仓信号事件、持仓与平仓事件
