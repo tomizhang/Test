@@ -137,10 +137,14 @@ namespace Common.Helper
                 }
             }
 
-            // 5. 绘制趋势线 (活跃趋势线向右延长至当前图表末端；已击穿趋势线严格在碰撞击穿位置终止)
+            // 5. 绘制趋势线 (三点确认线: 金黄色加粗凸显；触发线: 绿色加粗；活跃阻力: 橙红；活跃支撑: 青色；已击穿: 灰暗色)
             int resistanceDrawn = 0;
             int supportDrawn = 0;
             int triggeredDrawn = 0;
+            int threePointConfirmedDrawn = 0;
+
+            var thirdPointXs = new List<double>();
+            var thirdPointYs = new List<double>();
 
             if (trendLines != null && trendLines.Count > 0)
             {
@@ -178,8 +182,30 @@ namespace Common.Helper
                     if (line.IsTriggered)
                     {
                         linePlot.Color = Color.FromHex("#22c55e"); // 亮绿色: 触发开仓的趋势线 (加粗突出)
-                        linePlot.LineWidth = 2.0f;
+                        linePlot.LineWidth = 2.2f;
                         triggeredDrawn++;
+                    }
+                    else if (line.IsThreePointConfirmed)
+                    {
+                        // 🌟 三点共线/连接第3点附近的强趋势线 (凸显为耀眼金黄色)
+                        if (line.CollidedKlineIndex >= 0)
+                        {
+                            linePlot.Color = Color.FromHex("#d97706").WithAlpha(0.65); // 已击穿的三点线: 琥珀金暗色
+                            linePlot.LineWidth = 1.4f;
+                        }
+                        else
+                        {
+                            linePlot.Color = Color.FromHex("#fbbf24"); // 活跃三点强趋势线: 金黄色加粗凸显
+                            linePlot.LineWidth = 2.2f;
+                        }
+                        threePointConfirmedDrawn++;
+
+                        // 记录第 3 个触碰点用于打标
+                        if (line.X3 >= startGlobalIndex && line.X3 <= endGlobalIndex)
+                        {
+                            thirdPointXs.Add(line.X3);
+                            thirdPointYs.Add(line.Y3 > 0m ? (double)line.Y3 : (double)line.GetPriceAt(line.X3));
+                        }
                     }
                     else if (line.IsResistance)
                     {
@@ -211,6 +237,17 @@ namespace Common.Helper
                     }
                     drawnTotal++;
                 }
+            }
+
+            // 绘制第 3 点触碰确认高亮标记
+            if (thirdPointXs.Count > 0)
+            {
+                var starScatter = plot.Add.Scatter(thirdPointXs.ToArray(), thirdPointYs.ToArray());
+                starScatter.MarkerShape = MarkerShape.FilledCircle;
+                starScatter.MarkerSize = 6;
+                starScatter.Color = Color.FromHex("#fbbf24"); // 金黄色第3点标记
+                starScatter.LineWidth = 0;
+                starScatter.LegendText = $"⭐ 三点确认 ({thirdPointXs.Count})";
             }
 
             // 6. 绘制交易信号标记 (多单: 紫色菱形◆, 空单: 粉红色方形■)
@@ -269,7 +306,7 @@ namespace Common.Helper
                                  $"• 时间跨度: {timeRange} (UTC+0)\n" +
                                  $"• K线根数: {count:N0} 根 | 价格区间: {klines[0].Close:F2} -> {klines[count - 1].Close:F2}\n" +
                                  $"• 极值高低点: 高点(Peaks)={peaksCount}, 低点(Valleys)={valleysCount}\n" +
-                                 $"• 绘制趋势线: 阻力线={resistanceDrawn}条, 支撑线={supportDrawn}条\n" +
+                                 $"• 绘制趋势线: 阻力线={resistanceDrawn}条, 支撑线={supportDrawn}条 (⭐三点共线强线={threePointConfirmedDrawn}条)\n" +
                                  $"• 开仓信号: 多单={longSignalsDrawn}笔, 空单={shortSignalsDrawn}笔 (策略: 触碰3-Tick回弹 LineX1X2>=40, LineAge>=4)\n" +
                                  $"• 策略备注: {summaryDescription}";
 

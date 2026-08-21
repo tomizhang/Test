@@ -45,15 +45,15 @@ namespace Common.Helper
                 if (span > maxSpan) break; // 极值点已按 Index 严格递增排序，超出直接 break
 
                 // 1. 【角度与方向约束】
-                // 高点 (Peak / 阻力线)：仅保留小于 0 度的趋势线 (Y2 < Y1，价格向下倾斜)
-                // 低点 (Valley / 支撑线)：仅保留大于 0 度的趋势线 (Y2 > Y1，价格向上倾斜)
-                if (newPoint.Type == PivotType.Peak && newPoint.Price >= pOld.Price)
+                // 由高点生成的趋势线：需要大于等于 0 度 (Y2 >= Y1，价格向上或水平延伸)
+                // 由低点生成的趋势线：需要小于等于 0 度 (Y2 <= Y1，价格向下或水平延伸)
+                if (newPoint.Type == PivotType.Peak && newPoint.Price < pOld.Price)
                 {
-                    continue; // 过滤高点大于等于 0 度的趋势线
+                    continue; // 过滤高点小于 0 度的趋势线
                 }
-                else if (newPoint.Type == PivotType.Valley && newPoint.Price <= pOld.Price)
+                else if (newPoint.Type == PivotType.Valley && newPoint.Price > pOld.Price)
                 {
-                    continue; // 过滤低点小于等于 0 度的趋势线
+                    continue; // 过滤低点大于 0 度的趋势线
                 }
 
                 // 2. 【超高斜率过滤】
@@ -196,6 +196,10 @@ namespace Common.Helper
                 LineAge = lineAge,
                 CollidedKlineIndex = -1,
                 LineExtensionRange = lineAge,
+                IsThreePointConfirmed = false,
+                TouchCount = 2,
+                X3 = -1,
+                Y3 = 0m,
                 CachedCurrentPrice = p1.Price + rawK * (latestIndex - p1.Index)
             };
 
@@ -258,8 +262,8 @@ namespace Common.Helper
                         int span = p2.Index - p1.Index;
                         if (span <= 0 || span > maxSpan) continue;
 
-                        // 高点只保留小于 0 度的趋势线 (Y2 < Y1)
-                        if (p2.Price >= p1.Price) continue;
+                        // 由高点生成的趋势线只保留大于等于 0 度 (Y2 >= Y1)
+                        if (p2.Price < p1.Price) continue;
 
                         // 过滤超高斜率
                         decimal dy = p2.Price - p1.Price;
@@ -285,8 +289,8 @@ namespace Common.Helper
                         int span = p2.Index - p1.Index;
                         if (span <= 0 || span > maxSpan) continue;
 
-                        // 低点只保留大于 0 度的趋势线 (Y2 > Y1)
-                        if (p2.Price <= p1.Price) continue;
+                        // 由低点生成的趋势线只保留小于等于 0 度 (Y2 <= Y1)
+                        if (p2.Price > p1.Price) continue;
 
                         // 过滤超高斜率
                         decimal dy = p2.Price - p1.Price;

@@ -684,7 +684,7 @@ namespace Test.Strategy
                 LeftLen,
                 RightLen);
 
-            // 3. 【第 2 层: O(M) 增量趋势线生成 (零堆对象分配直装模式，高点只保留<0度，低点只保留>0度，过滤超高斜率)】
+            // 3. 【第 2 层: O(M) 增量趋势线生成 (零堆对象分配直装模式，高点只保留>=0度，低点只保留<=0度，过滤超高斜率)】
             if (hasPeak)
             {
                 TrendLineHelper.GenerateIncrementalTrendLines(
@@ -697,6 +697,25 @@ namespace Test.Strategy
                     maxSpan: MaxSpan,
                     allowInternalPenetration: AllowInternalPenetration,
                     maxSlopePctPerBar: MaxSlopePctPerBar);
+
+                // 检查现有活跃阻力趋势线是否在当前 newPeak 处连接第 3 个点 (价格在 0.1% 范围内)
+                for (int i = 0; i < ActiveResistanceLines.Count; i++)
+                {
+                    var line = ActiveResistanceLines[i];
+                    if (newPeak.Index > line.X2)
+                    {
+                        decimal expectedPrice = line.GetPriceAt(newPeak.Index);
+                        if (expectedPrice > 0m && Math.Abs(newPeak.Price - expectedPrice) / expectedPrice <= 0.001m)
+                        {
+                            line.IsThreePointConfirmed = true;
+                            line.TouchCount = 3;
+                            line.X3 = newPeak.Index;
+                            line.Y3 = newPeak.Price;
+                            ActiveResistanceLines[i] = line;
+                            SyncHistoricalTrendLineConfirmed(line);
+                        }
+                    }
+                }
 
                 _peaks.Add(newPeak);
                 PruneHistoryCapacity();
@@ -715,11 +734,30 @@ namespace Test.Strategy
                     allowInternalPenetration: AllowInternalPenetration,
                     maxSlopePctPerBar: MaxSlopePctPerBar);
 
+                // 检查现有活跃支撑趋势线是否在当前 newValley 处连接第 3 个点 (价格在 0.1% 范围内)
+                for (int i = 0; i < ActiveSupportLines.Count; i++)
+                {
+                    var line = ActiveSupportLines[i];
+                    if (newValley.Index > line.X2)
+                    {
+                        decimal expectedPrice = line.GetPriceAt(newValley.Index);
+                        if (expectedPrice > 0m && Math.Abs(newValley.Price - expectedPrice) / expectedPrice <= 0.001m)
+                        {
+                            line.IsThreePointConfirmed = true;
+                            line.TouchCount = 3;
+                            line.X3 = newValley.Index;
+                            line.Y3 = newValley.Price;
+                            ActiveSupportLines[i] = line;
+                            SyncHistoricalTrendLineConfirmed(line);
+                        }
+                    }
+                }
+
                 _valleys.Add(newValley);
                 PruneHistoryCapacity();
             }
 
-            // 4. 【第 3 层: 当周期结束 K 线推送时，检测 K 线 close 穿过或者 high/low 穿过后删除趋势线】
+            // 4. 【第 3 层: 当周期结束 K 线推送时，检测 K 线 close 穿过或者 high/low 穿过后删除趋势线 (第3点附近0.1%不删除)】
             for (int i = ActiveResistanceLines.Count - 1; i >= 0; i--)
             {
                 var line = ActiveResistanceLines[i];
@@ -729,8 +767,30 @@ namespace Test.Strategy
                     decimal expectedPrice = line.GetPriceAt(currentGlobalIndex);
                     line.CachedCurrentPrice = expectedPrice;
 
-                    // 阻力趋势线：当周期结束 K 线的 close 或 high 向上穿过趋势线时 -> 删除趋势线
-                    if (kline.Close > expectedPrice || kline.High > expectedPrice)
+                    // 检查当前 K 线是否连接/触碰第 3 个点 (高点在趋势线 0.1% 范围内)
+                    decimal touchDiffPct = expectedPrice > 0m ? Math.Abs(kline.High - expectedPrice) / expectedPrice : 1m;
+                    if (touchDiffPct <= 0.001m)
+                    {
+                        line.IsThreePointConfirmed = true;
+                        line.TouchCount = 3;
+                        if (line.X3 <= 0)
+                        {
+                            line.X3 = currentGlobalIndex;
+                            line.Y3 = kline.High;
+                        }
+                        line.LineExtensionRange = currentGlobalIndex - line.X2;
+                        ActiveResistanceLines[i] = line;
+                        SyncHistoricalTrendLineConfirmed(line);
+                        continue; // 连接第 3 个点附近不删除！
+                    }
+
+                    // 阻力趋势线删除判定：
+                    // 若为三点确认线，仅在收盘实体明显上破 (>0.1%) 时删除；普通趋势线在 close 或 high 穿过时删除
+                    bool isPenetrated = line.IsThreePointConfirmed
+                        ? (kline.Close > expectedPrice * 1.001m)
+                        : (kline.Close > expectedPrice || kline.High > expectedPrice);
+
+                    if (isPenetrated)
                     {
                         line.CollidedKlineIndex = currentGlobalIndex;
                         line.LineExtensionRange = currentGlobalIndex - line.X2;
@@ -755,8 +815,30 @@ namespace Test.Strategy
                     decimal expectedPrice = line.GetPriceAt(currentGlobalIndex);
                     line.CachedCurrentPrice = expectedPrice;
 
-                    // 支撑趋势线：当周期结束 K 线的 close 或 low 向下穿过趋势线时 -> 删除趋势线
-                    if (kline.Close < expectedPrice || kline.Low < expectedPrice)
+                    // 检查当前 K 线是否连接/触碰第 3 个点 (低点在趋势线 0.1% 范围内)
+                    decimal touchDiffPct = expectedPrice > 0m ? Math.Abs(kline.Low - expectedPrice) / expectedPrice : 1m;
+                    if (touchDiffPct <= 0.001m)
+                    {
+                        line.IsThreePointConfirmed = true;
+                        line.TouchCount = 3;
+                        if (line.X3 <= 0)
+                        {
+                            line.X3 = currentGlobalIndex;
+                            line.Y3 = kline.Low;
+                        }
+                        line.LineExtensionRange = currentGlobalIndex - line.X2;
+                        ActiveSupportLines[i] = line;
+                        SyncHistoricalTrendLineConfirmed(line);
+                        continue; // 连接第 3 个点附近不删除！
+                    }
+
+                    // 支撑趋势线删除判定：
+                    // 若为三点确认线，仅在收盘实体明显下破 (>0.1%) 时删除；普通趋势线在 close 或 low 穿过时删除
+                    bool isPenetrated = line.IsThreePointConfirmed
+                        ? (kline.Close < expectedPrice * 0.999m)
+                        : (kline.Close < expectedPrice || kline.Low < expectedPrice);
+
+                    if (isPenetrated)
                     {
                         line.CollidedKlineIndex = currentGlobalIndex;
                         line.LineExtensionRange = currentGlobalIndex - line.X2;
@@ -868,6 +950,26 @@ namespace Test.Strategy
                 {
                     h.CollidedKlineIndex = line.CollidedKlineIndex;
                     h.LineExtensionRange = line.LineExtensionRange;
+                    _historicalTrendLines[i] = h;
+                    break;
+                }
+            }
+        }
+
+        /// <summary>
+        /// 同步更新历史趋势线库中对应趋势线的三点确认状态
+        /// </summary>
+        private void SyncHistoricalTrendLineConfirmed(TrendLine confirmedLine)
+        {
+            for (int i = _historicalTrendLines.Count - 1; i >= 0; i--)
+            {
+                var h = _historicalTrendLines[i];
+                if (h.X1 == confirmedLine.X1 && h.X2 == confirmedLine.X2 && h.Type == confirmedLine.Type)
+                {
+                    h.IsThreePointConfirmed = true;
+                    h.TouchCount = 3;
+                    h.X3 = confirmedLine.X3;
+                    h.Y3 = confirmedLine.Y3;
                     _historicalTrendLines[i] = h;
                     break;
                 }

@@ -104,6 +104,26 @@ namespace Common.Models
         public bool IsTriggered { get; set; }
 
         /// <summary>
+        /// 🌟 是否已连接/触碰确认第 3 个点 (价格在趋势线 0.1% 附近，三点共线强趋势线不删除且凸显金黄色)
+        /// </summary>
+        public bool IsThreePointConfirmed { get; set; }
+
+        /// <summary>
+        /// 第 3 个触碰确认点的 K 线索引 (若无则为 -1)
+        /// </summary>
+        public int X3 { get; set; }
+
+        /// <summary>
+        /// 第 3 个触碰确认点的价格 (若无则为 0)
+        /// </summary>
+        public decimal Y3 { get; set; }
+
+        /// <summary>
+        /// 触碰/连接的极值点总数 (默认 2，触碰第 3 个点后为 3)
+        /// </summary>
+        public int TouchCount { get; set; }
+
+        /// <summary>
         /// ⚡ 当前 K 线索引下的延伸线缓存价格 (在 OnKline 时计算一次，OnTick 零运算极速比较)
         /// </summary>
         public decimal CachedCurrentPrice { get; set; }
