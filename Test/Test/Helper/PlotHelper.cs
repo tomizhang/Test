@@ -44,7 +44,8 @@ namespace Common.Helper
             string title = "量化回测 - 趋势线与高低点结构分析图",
             int startGlobalIndex = 0,
             bool autoScaleAxes = true,
-            IReadOnlyList<TradeSignal>? tradeSignals = null)
+            IReadOnlyList<TradeSignal>? tradeSignals = null,
+            float lineWidth = 0.8f)
         {
             if (plot == null || klines == null || klines.Count == 0)
             {
@@ -66,7 +67,7 @@ namespace Common.Helper
             int count = klines.Count;
             int endGlobalIndex = startGlobalIndex + count - 1;
 
-            // 3. 绘制 K 线价格走势折线图 (以收盘价 Close 绘制基准折线，线宽 0.8f)
+            // 3. 绘制 K 线价格走势折线图 (以收盘价 Close 绘制基准折线，线宽 lineWidth)
             double[] xs = new double[count];
             double[] ys = new double[count];
 
@@ -77,7 +78,7 @@ namespace Common.Helper
             }
 
             var priceLine = plot.Add.Scatter(xs, ys);
-            priceLine.LineWidth = 0.8f;
+            priceLine.LineWidth = Math.Max(0.5f, lineWidth);
             priceLine.MarkerSize = 0;
             priceLine.Color = Color.FromHex("#38bdf8"); // 天空蓝 Sky 400
             priceLine.LegendText = $"价格收盘折线 ({count:N0}根)";
@@ -182,7 +183,7 @@ namespace Common.Helper
                     if (line.IsTriggered)
                     {
                         linePlot.Color = Color.FromHex("#22c55e"); // 亮绿色: 触发开仓的趋势线 (加粗突出)
-                        linePlot.LineWidth = 2.2f;
+                        linePlot.LineWidth = Math.Max(1.0f, lineWidth * 2.0f);
                         triggeredDrawn++;
                     }
                     else if (line.IsThreePointConfirmed)
@@ -191,12 +192,12 @@ namespace Common.Helper
                         if (line.CollidedKlineIndex >= 0)
                         {
                             linePlot.Color = Color.FromHex("#d97706").WithAlpha(0.65); // 已击穿的三点线: 琥珀金暗色
-                            linePlot.LineWidth = 1.4f;
+                            linePlot.LineWidth = Math.Max(0.5f, lineWidth * 1.3f);
                         }
                         else
                         {
                             linePlot.Color = Color.FromHex("#fbbf24"); // 活跃三点强趋势线: 金黄色加粗凸显
-                            linePlot.LineWidth = 2.2f;
+                            linePlot.LineWidth = Math.Max(1.0f, lineWidth * 2.0f);
                         }
                         threePointConfirmedDrawn++;
 
@@ -212,12 +213,12 @@ namespace Common.Helper
                         if (line.CollidedKlineIndex >= 0)
                         {
                             linePlot.Color = Color.FromHex("#64748b").WithAlpha(0.45); // 已击穿历史阻力线: 灰暗色且在击穿点严格终止
-                            linePlot.LineWidth = 0.7f;
+                            linePlot.LineWidth = Math.Max(0.4f, lineWidth * 0.7f);
                         }
                         else
                         {
                             linePlot.Color = Color.FromHex("#f97316"); // 活跃阻力线: 鲜明橙红 (向右无限延伸)
-                            linePlot.LineWidth = 1.2f;
+                            linePlot.LineWidth = lineWidth;
                         }
                         resistanceDrawn++;
                     }
@@ -226,12 +227,12 @@ namespace Common.Helper
                         if (line.CollidedKlineIndex >= 0)
                         {
                             linePlot.Color = Color.FromHex("#64748b").WithAlpha(0.45); // 已击穿历史支撑线: 灰暗色且在击穿点严格终止
-                            linePlot.LineWidth = 0.7f;
+                            linePlot.LineWidth = Math.Max(0.4f, lineWidth * 0.7f);
                         }
                         else
                         {
                             linePlot.Color = Color.FromHex("#06b6d4"); // 活跃支撑线: 鲜明青色 (向右无限延伸)
-                            linePlot.LineWidth = 1.2f;
+                            linePlot.LineWidth = lineWidth;
                         }
                         supportDrawn++;
                     }
@@ -244,7 +245,7 @@ namespace Common.Helper
             {
                 var starScatter = plot.Add.Scatter(thirdPointXs.ToArray(), thirdPointYs.ToArray());
                 starScatter.MarkerShape = MarkerShape.FilledCircle;
-                starScatter.MarkerSize = 6;
+                starScatter.MarkerSize = 4;
                 starScatter.Color = Color.FromHex("#fbbf24"); // 金黄色第3点标记
                 starScatter.LineWidth = 0;
                 starScatter.LegendText = $"⭐ 三点确认 ({thirdPointXs.Count})";
@@ -358,7 +359,8 @@ namespace Common.Helper
             string title = "量化回测 - 趋势线与高低点结构分析图",
             int startGlobalIndex = 0,
             bool autoScaleAxes = true,
-            IReadOnlyList<TradeSignal>? tradeSignals = null)
+            IReadOnlyList<TradeSignal>? tradeSignals = null,
+            float lineWidth = 0.8f)
         {
             var allLines = new List<TrendLine>();
             if (resistanceLines != null) allLines.AddRange(resistanceLines);
@@ -374,7 +376,8 @@ namespace Common.Helper
                 title,
                 startGlobalIndex,
                 autoScaleAxes,
-                tradeSignals);
+                tradeSignals,
+                lineWidth);
         }
 
         public static string PlotTrendLineChart(
@@ -389,7 +392,8 @@ namespace Common.Helper
             string outputFilePath = null,
             int width = 1920,
             int height = 1080,
-            IReadOnlyList<TradeSignal>? tradeSignals = null)
+            IReadOnlyList<TradeSignal>? tradeSignals = null,
+            float lineWidth = 0.8f)
         {
             if (klines == null || klines.Count == 0)
             {
@@ -409,7 +413,8 @@ namespace Common.Helper
                 title,
                 startGlobalIndex,
                 autoScaleAxes: true,
-                tradeSignals: tradeSignals);
+                tradeSignals: tradeSignals,
+                lineWidth: lineWidth);
 
             if (string.IsNullOrWhiteSpace(outputFilePath))
             {

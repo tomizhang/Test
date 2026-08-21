@@ -76,6 +76,7 @@ namespace Test.WinForms.Forms
         private NumericUpDown numCooldown = null!;
         private NumericUpDown numTakeProfit = null!;
         private NumericUpDown numStopLoss = null!;
+        private NumericUpDown numLineWidth = null!;
         private CheckBox chkEnableTrading = null!;
         private CheckBox chkStrictEnvelope = null!;
         private CheckBox chkRealtimeChart = null!;
@@ -295,35 +296,40 @@ namespace Test.WinForms.Forms
                 numStopLoss = new NumericUpDown { Location = new Point(130, 274), Width = 210, Minimum = 0.1m, Maximum = 100m, DecimalPlaces = 2, Increment = 0.1m, Value = 0.50m };
                 numStopLoss.ForeColor = Color.FromArgb(244, 63, 94); // Red
 
+                var lblLineWidth = CreateLabel("趋势线线宽 (px):", 15, 305);
+                numLineWidth = new NumericUpDown { Location = new Point(130, 302), Width = 210, Minimum = 0.1m, Maximum = 10.0m, DecimalPlaces = 1, Increment = 0.1m, Value = 0.8m };
+                numLineWidth.ForeColor = Color.FromArgb(56, 189, 248); // Sky Blue
+
                 chkEnableTrading = new CheckBox
                 {
                     Text = "开启策略交易 (触碰回弹开仓/自动微止损)",
-                    Location = new Point(15, 305),
+                    Location = new Point(15, 333),
                     Width = 320,
                     Checked = true,
                     Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold),
                     ForeColor = Color.FromArgb(74, 222, 128)
                 };
 
-                chkStrictEnvelope = new CheckBox { Text = "严格外包络 (禁止内部穿透)", Location = new Point(15, 330), Width = 320, Checked = true };
+                chkStrictEnvelope = new CheckBox { Text = "严格外包络 (禁止内部穿透)", Location = new Point(15, 358), Width = 320, Checked = true };
 
-                chkRealtimeChart = new CheckBox { Text = "实时推送图表走势 (UI 定时刷新)", Location = new Point(15, 355), Width = 320, Checked = true };
+                chkRealtimeChart = new CheckBox { Text = "实时推送图表走势 (UI 定时刷新)", Location = new Point(15, 383), Width = 320, Checked = true };
                 chkRealtimeChart.CheckedChanged += (s, e) => _isRealtimeChartEnabled = chkRealtimeChart.Checked;
 
-                chkAutoScale = new CheckBox { Text = "回放时自动调节 X/Y 轴 (Auto-Scale)", Location = new Point(15, 380), Width = 320, Checked = true };
+                chkAutoScale = new CheckBox { Text = "回放时自动调节 X/Y 轴 (Auto-Scale)", Location = new Point(15, 408), Width = 320, Checked = true };
                 chkAutoScale.CheckedChanged += (s, e) => _isAutoScaleEnabled = chkAutoScale.Checked;
 
                 var lblStrategyNote = new Label
                 {
                     Text = "🎯 模式: 触碰 3-Tick 回弹开仓 | 1.5% 止盈, 5-Tick 自动微止损",
-                    Location = new Point(15, 407),
+                    Location = new Point(15, 435),
                     Size = new Size(325, 36),
                     ForeColor = Color.FromArgb(74, 222, 128), // Green 400
                     Font = new Font("Microsoft YaHei", 8F)
                 };
 
-                grpStrategy.Controls.AddRange(new Control[] { lblMaxK, numMaxKlines, lblMinT, numMinTrendLines, lblLeft, numLeftLen, lblRight, numRightLen, lblSpan, numMaxSpan, lblSignalSpan, numMinSignalSpan, lblSignalAge, numMinSignalAge, lblCooldown, numCooldown, lblTP, numTakeProfit, lblSL, numStopLoss, chkEnableTrading, chkStrictEnvelope, chkRealtimeChart, chkAutoScale, lblStrategyNote });
+                grpStrategy.Controls.AddRange(new Control[] { lblMaxK, numMaxKlines, lblMinT, numMinTrendLines, lblLeft, numLeftLen, lblRight, numRightLen, lblSpan, numMaxSpan, lblSignalSpan, numMinSignalSpan, lblSignalAge, numMinSignalAge, lblCooldown, numCooldown, lblTP, numTakeProfit, lblSL, numStopLoss, lblLineWidth, numLineWidth, chkEnableTrading, chkStrictEnvelope, chkRealtimeChart, chkAutoScale, lblStrategyNote });
             }
+            grpStrategy.Height = 485;
             panelRight.Controls.Add(grpStrategy);
             top += grpStrategy.Height + 10;
 
@@ -548,6 +554,7 @@ namespace Test.WinForms.Forms
             numCooldown.Value = Math.Clamp(settings.SignalCooldownSeconds, numCooldown.Minimum, numCooldown.Maximum);
             numTakeProfit.Value = Math.Clamp(settings.TakeProfitPct > 0 ? settings.TakeProfitPct : 1.5m, numTakeProfit.Minimum, numTakeProfit.Maximum);
             numStopLoss.Value = Math.Clamp(settings.StopLossPct > 0 ? settings.StopLossPct : 0.5m, numStopLoss.Minimum, numStopLoss.Maximum);
+            numLineWidth.Value = Math.Clamp(settings.LineWidth > 0 ? settings.LineWidth : 0.8m, numLineWidth.Minimum, numLineWidth.Maximum);
 
             chkEnableTrading.Checked = settings.EnableTrading;
             chkStrictEnvelope.Checked = settings.StrictEnvelope;
@@ -613,6 +620,7 @@ namespace Test.WinForms.Forms
                     SignalCooldownSeconds = (int)numCooldown.Value,
                     TakeProfitPct = numTakeProfit.Value,
                     StopLossPct = numStopLoss.Value,
+                    LineWidth = numLineWidth.Value,
                     EnableTrading = chkEnableTrading.Checked,
                     StrictEnvelope = chkStrictEnvelope.Checked,
                     RealtimeChart = chkRealtimeChart.Checked,
@@ -690,7 +698,8 @@ namespace Test.WinForms.Forms
                             title: snap.Title,
                             startGlobalIndex: snap.StartGlobalIndex,
                             autoScaleAxes: snap.AutoScale,
-                            tradeSignals: snap.TradeSignals);
+                            tradeSignals: snap.TradeSignals,
+                            lineWidth: snap.LineWidth);
 
                         formsPlot.Refresh();
                     }
@@ -790,6 +799,7 @@ namespace Test.WinForms.Forms
                             Title = $"{coin} {intervalStr} - 实时回测动态走势 (K线 #{index:D4})",
                             StartGlobalIndex = startGlobal,
                             AutoScale = autoScale,
+                            LineWidth = (float)numLineWidth.Value,
                             SnapshotVersion = now
                         };
                     }
@@ -901,6 +911,7 @@ namespace Test.WinForms.Forms
                 SignalCooldownSeconds = (int)numCooldown.Value,
                 TakeProfitPct = numTakeProfit.Value,
                 StopLossPct = numStopLoss.Value,
+                LineWidth = numLineWidth.Value,
                 EnableTrading = chkEnableTrading.Checked,
                 AllowInternalPenetration = !chkStrictEnvelope.Checked,
                 ParallelDays = 3,
@@ -917,7 +928,7 @@ namespace Test.WinForms.Forms
             string tradeModeStr = request.EnableTrading ? "已开启 (触碰 3-Tick 回弹开仓 / 自动微止损)" : "已关闭 (仅纯结构与趋势线分析)";
             _logQueue.Enqueue(("\n========================================================", Color.FromArgb(56, 189, 248)));
             _logQueue.Enqueue(($"[启动回测] 目标: {request.Coin}, 周期: {interval.ToIntervalString()}, 窗口: {request.StartDate:yyyy-MM-dd} ~ {request.EndDate:yyyy-MM-dd}", Color.FromArgb(56, 189, 248)));
-            _logQueue.Enqueue(($"[策略模式] 交易开关: {tradeModeStr} | 止盈: +{request.TakeProfitPct:F2}% | 最大止损: -{request.StopLossPct:F2}% | 冷却: {request.SignalCooldownSeconds}s", Color.FromArgb(250, 204, 21)));
+            _logQueue.Enqueue(($"[策略模式] 交易开关: {tradeModeStr} | 线宽: {request.LineWidth:F1}px | 止盈: +{request.TakeProfitPct:F2}% | 最大止损: -{request.StopLossPct:F2}% | 冷却: {request.SignalCooldownSeconds}s", Color.FromArgb(250, 204, 21)));
             _logQueue.Enqueue(("========================================================", Color.FromArgb(56, 189, 248)));
 
             try
@@ -956,7 +967,8 @@ namespace Test.WinForms.Forms
                         title: $"{request.Coin} {interval.ToIntervalString()} 趋势线与极值结构折线图 (回测完成)",
                         startGlobalIndex: startGlobal,
                         autoScaleAxes: true,
-                        tradeSignals: strat.TradeSignals);
+                        tradeSignals: strat.TradeSignals,
+                        lineWidth: (float)request.LineWidth);
 
                     formsPlot.Refresh();
 
@@ -1120,6 +1132,7 @@ namespace Test.WinForms.Forms
             public string Title { get; init; } = string.Empty;
             public int StartGlobalIndex { get; init; }
             public bool AutoScale { get; init; }
+            public float LineWidth { get; init; } = 0.8f;
             public long SnapshotVersion { get; init; }
         }
 

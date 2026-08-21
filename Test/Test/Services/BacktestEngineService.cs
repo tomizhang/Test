@@ -348,7 +348,8 @@ namespace Common.Services
                         summaryText,
                         request.ChartOutputPath,
                         request.ChartWidth,
-                        request.ChartHeight);
+                        request.ChartHeight,
+                        lineWidth: (float)request.LineWidth);
 
                     RaiseLog($"-> 图表已成功保存至: {result.ChartPath}");
                 }

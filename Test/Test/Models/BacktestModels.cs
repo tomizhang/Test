@@ -172,6 +172,11 @@ namespace Common.Models
         /// </summary>
         public decimal MaxSlopePctPerBar { get; set; } = 2.0m;
 
+        /// <summary>
+        /// 趋势线绘制基础线宽 (px) (默认 0.8)
+        /// </summary>
+        public decimal LineWidth { get; set; } = 0.8m;
+
         public int ParallelDays { get; set; } = 3;
         public bool GenerateChart { get; set; } = true;
         public string? ChartOutputPath { get; set; } = null;

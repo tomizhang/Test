@@ -705,7 +705,7 @@ namespace Test.Strategy
                     if (newPeak.Index > line.X2)
                     {
                         decimal expectedPrice = line.GetPriceAt(newPeak.Index);
-                        if (expectedPrice > 0m && Math.Abs(newPeak.Price - expectedPrice) / expectedPrice <= 0.001m)
+                        if (expectedPrice > 0m && Math.Abs(newPeak.Price - expectedPrice) / expectedPrice <= 0.00001m)
                         {
                             line.IsThreePointConfirmed = true;
                             line.TouchCount = 3;
@@ -741,7 +741,7 @@ namespace Test.Strategy
                     if (newValley.Index > line.X2)
                     {
                         decimal expectedPrice = line.GetPriceAt(newValley.Index);
-                        if (expectedPrice > 0m && Math.Abs(newValley.Price - expectedPrice) / expectedPrice <= 0.001m)
+                        if (expectedPrice > 0m && Math.Abs(newValley.Price - expectedPrice) / expectedPrice <= 0.00001m)
                         {
                             line.IsThreePointConfirmed = true;
                             line.TouchCount = 3;
@@ -1009,7 +1009,7 @@ namespace Test.Strategy
         /// <summary>
         /// 一键将当前策略的 K线走势、高低点标记、活跃阻力/支撑趋势线与描述摘要渲染并保存为图片
         /// </summary>
-        public string PlotChart(string summaryDescription, string outputFilePath = null, int width = 1920, int height = 1080)
+        public string PlotChart(string summaryDescription, string outputFilePath = null, int width = 1920, int height = 1080, float lineWidth = 0.8f)
         {
             int startGlobalIndex = Math.Max(0, _globalBarIndex - _klines.Count);
             string title = $"{Symbol} {Interval.ToIntervalString()} 趋势线与极值结构分析图";
@@ -1026,7 +1026,8 @@ namespace Test.Strategy
                 outputFilePath: outputFilePath,
                 width: width,
                 height: height,
-                tradeSignals: TradeSignals);
+                tradeSignals: TradeSignals,
+                lineWidth: lineWidth);
         }
 
         /// <summary>
