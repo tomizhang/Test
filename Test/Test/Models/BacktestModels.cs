@@ -149,6 +149,11 @@ namespace Common.Models
 
         public int MinSignalLineX1X2 { get; set; } = 40;
         public int MinSignalLineAge { get; set; } = 4;
+        /// <summary>
+        /// 趋势线开仓最小整体百分比斜率 (%)，要求整条趋势线具备一定整体倾斜幅度 (默认 0.50%)
+        /// </summary>
+        public decimal MinSignalOverallSlopePct { get; set; } = 0.50m;
+        public decimal MinSignalSlopePct { get => MinSignalOverallSlopePct; set => MinSignalOverallSlopePct = value; }
         public int SignalCooldownSeconds { get; set; } = 60;
 
         /// <summary>
@@ -166,6 +171,11 @@ namespace Common.Models
         /// 是否开启策略交易 (触碰回弹开仓与止盈止损) (默认 true)
         /// </summary>
         public bool EnableTrading { get; set; } = true;
+
+        /// <summary>
+        /// 是否开启 Tick 级别微止损 (5-Tick 价格点位 / 若为 false 则使用固定 StopLossPct 比例止损) (默认 true)
+        /// </summary>
+        public bool EnableTickStopLoss { get; set; } = true;
 
         /// <summary>
         /// 趋势线最大允许斜率 (%/bar)，过滤超高斜率与异常噪音趋势线 (默认 2.0%/bar)

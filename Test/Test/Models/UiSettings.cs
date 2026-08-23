@@ -21,14 +21,21 @@ namespace Common.Models
         public int MaxSpan { get; set; } = 100;
         public int MinSignalLineX1X2 { get; set; } = 40;
         public int MinSignalLineAge { get; set; } = 4;
+        /// <summary>
+        /// 趋势线开仓最小整体百分比斜率 (%)，要求整条趋势线具备一定整体倾斜幅度 (默认 0.50%)
+        /// </summary>
+        public decimal MinSignalOverallSlopePct { get; set; } = 0.50m;
+        public decimal MinSignalSlopePct { get => MinSignalOverallSlopePct; set => MinSignalOverallSlopePct = value; }
         public int SignalCooldownSeconds { get; set; } = 60;
         public decimal TakeProfitPct { get; set; } = 1.5m;
         public decimal StopLossPct { get; set; } = 0.5m;
         public decimal LineWidth { get; set; } = 0.8m;
         public bool EnableTrading { get; set; } = true;
+        public bool EnableTickStopLoss { get; set; } = true;
         public bool StrictEnvelope { get; set; } = true;
         public bool RealtimeChart { get; set; } = true;
         public bool AutoScale { get; set; } = true;
+        public bool EnableUiLogs { get; set; } = true;
 
         // 3. 窗体与布局记忆
         public int FormWidth { get; set; } = 1600;

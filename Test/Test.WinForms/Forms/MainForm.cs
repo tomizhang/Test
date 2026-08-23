@@ -37,6 +37,7 @@ namespace Test.WinForms.Forms
         // 线程安全运行态缓存
         private volatile bool _isRealtimeChartEnabled = true;
         private volatile bool _isAutoScaleEnabled = true;
+        private volatile bool _isUiLogEnabled = true;
         private volatile string _currentRunningCoin = "BTCUSDT";
         private volatile string _currentRunningInterval = "1m";
 
@@ -73,14 +74,17 @@ namespace Test.WinForms.Forms
         private NumericUpDown numMaxSpan = null!;
         private NumericUpDown numMinSignalSpan = null!;
         private NumericUpDown numMinSignalAge = null!;
+        private NumericUpDown numMinSlope = null!;
         private NumericUpDown numCooldown = null!;
         private NumericUpDown numTakeProfit = null!;
         private NumericUpDown numStopLoss = null!;
         private NumericUpDown numLineWidth = null!;
         private CheckBox chkEnableTrading = null!;
+        private CheckBox chkEnableTickStopLoss = null!;
         private CheckBox chkStrictEnvelope = null!;
         private CheckBox chkRealtimeChart = null!;
         private CheckBox chkAutoScale = null!;
+        private CheckBox chkEnableUiLogs = null!;
 
         private GroupBox grpControl = null!;
         private Button btnStart = null!;
@@ -285,51 +289,66 @@ namespace Test.WinForms.Forms
                 var lblSignalAge = CreateLabel("开仓寿命≥(Age):", 15, 193);
                 numMinSignalAge = new NumericUpDown { Location = new Point(130, 190), Width = 210, Minimum = 1, Maximum = 100, Value = 4 };
 
-                var lblCooldown = CreateLabel("触发冷却(秒):", 15, 221);
-                numCooldown = new NumericUpDown { Location = new Point(130, 218), Width = 210, Minimum = 0, Maximum = 3600, Value = 60 };
+                var lblMinSlope = CreateLabel("开仓整体斜率≥(%):", 15, 221);
+                numMinSlope = new NumericUpDown { Location = new Point(130, 218), Width = 210, Minimum = 0.00m, Maximum = 50.00m, DecimalPlaces = 2, Increment = 0.10m, Value = 0.50m };
+                numMinSlope.ForeColor = Color.FromArgb(250, 204, 21); // Yellow 400
 
-                var lblTP = CreateLabel("止盈比例 (%):", 15, 249);
-                numTakeProfit = new NumericUpDown { Location = new Point(130, 246), Width = 210, Minimum = 0.1m, Maximum = 100m, DecimalPlaces = 2, Increment = 0.1m, Value = 1.50m };
+                var lblCooldown = CreateLabel("触发冷却(秒):", 15, 249);
+                numCooldown = new NumericUpDown { Location = new Point(130, 246), Width = 210, Minimum = 0, Maximum = 3600, Value = 60 };
+
+                var lblTP = CreateLabel("止盈比例 (%):", 15, 277);
+                numTakeProfit = new NumericUpDown { Location = new Point(130, 274), Width = 210, Minimum = 0.1m, Maximum = 100m, DecimalPlaces = 2, Increment = 0.1m, Value = 1.50m };
                 numTakeProfit.ForeColor = Color.FromArgb(74, 222, 128); // Green
 
-                var lblSL = CreateLabel("止损比例 (%):", 15, 277);
-                numStopLoss = new NumericUpDown { Location = new Point(130, 274), Width = 210, Minimum = 0.1m, Maximum = 100m, DecimalPlaces = 2, Increment = 0.1m, Value = 0.50m };
+                var lblSL = CreateLabel("止损比例 (%):", 15, 305);
+                numStopLoss = new NumericUpDown { Location = new Point(130, 302), Width = 210, Minimum = 0.1m, Maximum = 100m, DecimalPlaces = 2, Increment = 0.1m, Value = 0.50m };
                 numStopLoss.ForeColor = Color.FromArgb(244, 63, 94); // Red
 
-                var lblLineWidth = CreateLabel("趋势线线宽 (px):", 15, 305);
-                numLineWidth = new NumericUpDown { Location = new Point(130, 302), Width = 210, Minimum = 0.1m, Maximum = 10.0m, DecimalPlaces = 1, Increment = 0.1m, Value = 0.8m };
+                var lblLineWidth = CreateLabel("趋势线线宽 (px):", 15, 333);
+                numLineWidth = new NumericUpDown { Location = new Point(130, 330), Width = 210, Minimum = 0.1m, Maximum = 10.0m, DecimalPlaces = 1, Increment = 0.1m, Value = 0.8m };
                 numLineWidth.ForeColor = Color.FromArgb(56, 189, 248); // Sky Blue
 
                 chkEnableTrading = new CheckBox
                 {
-                    Text = "开启策略交易 (触碰回弹开仓/自动微止损)",
-                    Location = new Point(15, 333),
+                    Text = "开启策略交易 (触碰回弹开仓/止盈止损)",
+                    Location = new Point(15, 360),
                     Width = 320,
                     Checked = true,
                     Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold),
                     ForeColor = Color.FromArgb(74, 222, 128)
                 };
 
-                chkStrictEnvelope = new CheckBox { Text = "严格外包络 (禁止内部穿透)", Location = new Point(15, 358), Width = 320, Checked = true };
+                chkEnableTickStopLoss = new CheckBox
+                {
+                    Text = "以 Tick 级别止损 (5-Tick 点位 / 取消为固定止损)",
+                    Location = new Point(15, 385),
+                    Width = 320,
+                    Checked = true
+                };
 
-                chkRealtimeChart = new CheckBox { Text = "实时推送图表走势 (UI 定时刷新)", Location = new Point(15, 383), Width = 320, Checked = true };
+                chkStrictEnvelope = new CheckBox { Text = "严格外包络 (禁止内部穿透)", Location = new Point(15, 410), Width = 320, Checked = true };
+
+                chkRealtimeChart = new CheckBox { Text = "实时推送图表走势 (UI 定时刷新)", Location = new Point(15, 435), Width = 320, Checked = true };
                 chkRealtimeChart.CheckedChanged += (s, e) => _isRealtimeChartEnabled = chkRealtimeChart.Checked;
 
-                chkAutoScale = new CheckBox { Text = "回放时自动调节 X/Y 轴 (Auto-Scale)", Location = new Point(15, 408), Width = 320, Checked = true };
+                chkAutoScale = new CheckBox { Text = "回放时自动调节 X/Y 轴 (Auto-Scale)", Location = new Point(15, 460), Width = 320, Checked = true };
                 chkAutoScale.CheckedChanged += (s, e) => _isAutoScaleEnabled = chkAutoScale.Checked;
+
+                chkEnableUiLogs = new CheckBox { Text = "输出界面实时日志 (取消勾选可防卡顿并提速)", Location = new Point(15, 485), Width = 320, Checked = true };
+                chkEnableUiLogs.CheckedChanged += (s, e) => _isUiLogEnabled = chkEnableUiLogs.Checked;
 
                 var lblStrategyNote = new Label
                 {
-                    Text = "🎯 模式: 触碰 3-Tick 回弹开仓 | 1.5% 止盈, 5-Tick 自动微止损",
-                    Location = new Point(15, 435),
+                    Text = "🎯 模式: 3点线 0.001% 附近触碰 + 3-Tick 连续反向回弹开仓 | 1.5% 止盈",
+                    Location = new Point(15, 512),
                     Size = new Size(325, 36),
                     ForeColor = Color.FromArgb(74, 222, 128), // Green 400
                     Font = new Font("Microsoft YaHei", 8F)
                 };
 
-                grpStrategy.Controls.AddRange(new Control[] { lblMaxK, numMaxKlines, lblMinT, numMinTrendLines, lblLeft, numLeftLen, lblRight, numRightLen, lblSpan, numMaxSpan, lblSignalSpan, numMinSignalSpan, lblSignalAge, numMinSignalAge, lblCooldown, numCooldown, lblTP, numTakeProfit, lblSL, numStopLoss, lblLineWidth, numLineWidth, chkEnableTrading, chkStrictEnvelope, chkRealtimeChart, chkAutoScale, lblStrategyNote });
+                grpStrategy.Controls.AddRange(new Control[] { lblMaxK, numMaxKlines, lblMinT, numMinTrendLines, lblLeft, numLeftLen, lblRight, numRightLen, lblSpan, numMaxSpan, lblSignalSpan, numMinSignalSpan, lblSignalAge, numMinSignalAge, lblMinSlope, numMinSlope, lblCooldown, numCooldown, lblTP, numTakeProfit, lblSL, numStopLoss, lblLineWidth, numLineWidth, chkEnableTrading, chkEnableTickStopLoss, chkStrictEnvelope, chkRealtimeChart, chkAutoScale, chkEnableUiLogs, lblStrategyNote });
             }
-            grpStrategy.Height = 485;
+            grpStrategy.Height = 555;
             panelRight.Controls.Add(grpStrategy);
             top += grpStrategy.Height + 10;
 
@@ -551,18 +570,22 @@ namespace Test.WinForms.Forms
             numMaxSpan.Value = Math.Clamp(settings.MaxSpan, numMaxSpan.Minimum, numMaxSpan.Maximum);
             numMinSignalSpan.Value = Math.Clamp(settings.MinSignalLineX1X2, numMinSignalSpan.Minimum, numMinSignalSpan.Maximum);
             numMinSignalAge.Value = Math.Clamp(settings.MinSignalLineAge, numMinSignalAge.Minimum, numMinSignalAge.Maximum);
+            numMinSlope.Value = Math.Clamp(settings.MinSignalOverallSlopePct >= 0 ? settings.MinSignalOverallSlopePct : 0.50m, numMinSlope.Minimum, numMinSlope.Maximum);
             numCooldown.Value = Math.Clamp(settings.SignalCooldownSeconds, numCooldown.Minimum, numCooldown.Maximum);
             numTakeProfit.Value = Math.Clamp(settings.TakeProfitPct > 0 ? settings.TakeProfitPct : 1.5m, numTakeProfit.Minimum, numTakeProfit.Maximum);
             numStopLoss.Value = Math.Clamp(settings.StopLossPct > 0 ? settings.StopLossPct : 0.5m, numStopLoss.Minimum, numStopLoss.Maximum);
             numLineWidth.Value = Math.Clamp(settings.LineWidth > 0 ? settings.LineWidth : 0.8m, numLineWidth.Minimum, numLineWidth.Maximum);
 
             chkEnableTrading.Checked = settings.EnableTrading;
+            chkEnableTickStopLoss.Checked = settings.EnableTickStopLoss;
             chkStrictEnvelope.Checked = settings.StrictEnvelope;
             chkRealtimeChart.Checked = settings.RealtimeChart;
             chkAutoScale.Checked = settings.AutoScale;
+            chkEnableUiLogs.Checked = settings.EnableUiLogs;
 
             _isRealtimeChartEnabled = chkRealtimeChart.Checked;
             _isAutoScaleEnabled = chkAutoScale.Checked;
+            _isUiLogEnabled = chkEnableUiLogs.Checked;
 
             // 窗体尺寸与状态恢复
             if (settings.FormWidth >= this.MinimumSize.Width && settings.FormHeight >= this.MinimumSize.Height)
@@ -617,14 +640,17 @@ namespace Test.WinForms.Forms
                     MaxSpan = (int)numMaxSpan.Value,
                     MinSignalLineX1X2 = (int)numMinSignalSpan.Value,
                     MinSignalLineAge = (int)numMinSignalAge.Value,
+                    MinSignalOverallSlopePct = numMinSlope.Value,
                     SignalCooldownSeconds = (int)numCooldown.Value,
                     TakeProfitPct = numTakeProfit.Value,
                     StopLossPct = numStopLoss.Value,
                     LineWidth = numLineWidth.Value,
                     EnableTrading = chkEnableTrading.Checked,
+                    EnableTickStopLoss = chkEnableTickStopLoss.Checked,
                     StrictEnvelope = chkStrictEnvelope.Checked,
                     RealtimeChart = chkRealtimeChart.Checked,
                     AutoScale = chkAutoScale.Checked,
+                    EnableUiLogs = chkEnableUiLogs.Checked,
                     FormWidth = this.WindowState == FormWindowState.Normal ? this.Width : this.RestoreBounds.Width,
                     FormHeight = this.WindowState == FormWindowState.Normal ? this.Height : this.RestoreBounds.Height,
                     IsMaximized = this.WindowState == FormWindowState.Maximized,
@@ -656,7 +682,12 @@ namespace Test.WinForms.Forms
 
         private void OnUiRefreshTimerTick(object? sender, EventArgs e)
         {
-            // 1. 批量消费日志队列
+            // 1. 批量消费日志队列 (积压熔断保护：当队列堆积过多时丢弃超额数据，杜绝消息泵卡死)
+            if (_logQueue.Count > 200)
+            {
+                while (_logQueue.Count > 30) _logQueue.TryDequeue(out _);
+            }
+
             int logDrainCount = 0;
             while (_logQueue.TryDequeue(out var item) && logDrainCount < 15)
             {
@@ -719,30 +750,42 @@ namespace Test.WinForms.Forms
         {
             _engineService.OnLogMessage += message =>
             {
-                _logQueue.Enqueue((message, Color.FromArgb(241, 245, 249)));
+                if (_isUiLogEnabled || message.Contains("[启动回测]") || message.Contains("完成") || message.Contains("异常") || message.Contains("错误"))
+                {
+                    _logQueue.Enqueue((message, Color.FromArgb(241, 245, 249)));
+                }
             };
 
             _engineService.OnTradeSignalGenerated += signal =>
             {
-                Color sigColor = signal.Side == TradeSide.Buy ? Color.FromArgb(74, 222, 128) : Color.FromArgb(244, 63, 94);
-                _logQueue.Enqueue(("\n------------------------------------------------------------", Color.FromArgb(74, 222, 128)));
-                _logQueue.Enqueue((signal.ToString(), sigColor));
-                _logQueue.Enqueue(($"  📌 [趋势线详情] {signal.Reason}", Color.FromArgb(226, 232, 240)));
-                _logQueue.Enqueue(("------------------------------------------------------------\n", Color.FromArgb(74, 222, 128)));
+                if (_isUiLogEnabled)
+                {
+                    Color sigColor = signal.Side == TradeSide.Buy ? Color.FromArgb(74, 222, 128) : Color.FromArgb(244, 63, 94);
+                    _logQueue.Enqueue(("\n------------------------------------------------------------", Color.FromArgb(74, 222, 128)));
+                    _logQueue.Enqueue((signal.ToString(), sigColor));
+                    _logQueue.Enqueue(($"  📌 [趋势线详情] {signal.Reason}", Color.FromArgb(226, 232, 240)));
+                    _logQueue.Enqueue(("------------------------------------------------------------\n", Color.FromArgb(74, 222, 128)));
+                }
             };
 
             _engineService.OnPositionOpened += pos =>
             {
-                string side = pos.Side == TradeSide.Buy ? "多单" : "空单";
-                decimal slDistPct = pos.EntryPrice > 0 ? Math.Abs((pos.StopLossPrice - pos.EntryPrice) / pos.EntryPrice * 100m) : 0m;
-                decimal tpDistPct = pos.EntryPrice > 0 ? Math.Abs((pos.TakeProfitPrice - pos.EntryPrice) / pos.EntryPrice * 100m) : 0m;
-                _logQueue.Enqueue(($"📥 [开立仓位] #{pos.PositionId} {side} @ 进场价:{pos.EntryPrice:F2} | 止盈目标:{pos.TakeProfitPrice:F2} (+{tpDistPct:F2}%), 5-Tick自动微止损:{pos.StopLossPrice:F2} (-{slDistPct:F3}%)", Color.FromArgb(56, 189, 248)));
+                if (_isUiLogEnabled)
+                {
+                    string side = pos.Side == TradeSide.Buy ? "多单" : "空单";
+                    decimal slDistPct = pos.EntryPrice > 0 ? Math.Abs((pos.StopLossPrice - pos.EntryPrice) / pos.EntryPrice * 100m) : 0m;
+                    decimal tpDistPct = pos.EntryPrice > 0 ? Math.Abs((pos.TakeProfitPrice - pos.EntryPrice) / pos.EntryPrice * 100m) : 0m;
+                    _logQueue.Enqueue(($"📥 [开立仓位] #{pos.PositionId} {side} @ 进场价:{pos.EntryPrice:F2} | 止盈目标:{pos.TakeProfitPrice:F2} (+{tpDistPct:F2}%), 5-Tick自动微止损:{pos.StopLossPrice:F2} (-{slDistPct:F3}%)", Color.FromArgb(56, 189, 248)));
+                }
             };
 
             _engineService.OnTradeClosed += trade =>
             {
-                Color tradeColor = trade.IsWin ? Color.FromArgb(74, 222, 128) : Color.FromArgb(244, 63, 94);
-                _logQueue.Enqueue((trade.ToString(), tradeColor));
+                if (_isUiLogEnabled)
+                {
+                    Color tradeColor = trade.IsWin ? Color.FromArgb(74, 222, 128) : Color.FromArgb(244, 63, 94);
+                    _logQueue.Enqueue((trade.ToString(), tradeColor));
+                }
             };
 
             _engineService.OnKlineClosed += (kline, index, strategy) =>
@@ -908,11 +951,13 @@ namespace Test.WinForms.Forms
                 MaxSpan = (int)numMaxSpan.Value,
                 MinSignalLineX1X2 = (int)numMinSignalSpan.Value,
                 MinSignalLineAge = (int)numMinSignalAge.Value,
+                MinSignalOverallSlopePct = numMinSlope.Value,
                 SignalCooldownSeconds = (int)numCooldown.Value,
                 TakeProfitPct = numTakeProfit.Value,
                 StopLossPct = numStopLoss.Value,
                 LineWidth = numLineWidth.Value,
                 EnableTrading = chkEnableTrading.Checked,
+                EnableTickStopLoss = chkEnableTickStopLoss.Checked,
                 AllowInternalPenetration = !chkStrictEnvelope.Checked,
                 ParallelDays = 3,
                 GenerateChart = true,
@@ -922,13 +967,15 @@ namespace Test.WinForms.Forms
             // 缓存运行态变量供后台线程安全读取
             _isRealtimeChartEnabled = chkRealtimeChart.Checked;
             _isAutoScaleEnabled = chkAutoScale.Checked;
+            _isUiLogEnabled = chkEnableUiLogs.Checked;
             _currentRunningCoin = request.Coin;
             _currentRunningInterval = interval.ToIntervalString();
 
-            string tradeModeStr = request.EnableTrading ? "已开启 (触碰 3-Tick 回弹开仓 / 自动微止损)" : "已关闭 (仅纯结构与趋势线分析)";
+            string tradeModeStr = request.EnableTrading ? "已开启 (3点线 0.001%触碰 / 3-Tick反向回弹开仓)" : "已关闭 (仅纯结构与趋势线分析)";
+            string slModeDesc = request.EnableTickStopLoss ? "5-Tick 级别微止损" : $"固定比例止损 (-{request.StopLossPct:F2}%)";
             _logQueue.Enqueue(("\n========================================================", Color.FromArgb(56, 189, 248)));
             _logQueue.Enqueue(($"[启动回测] 目标: {request.Coin}, 周期: {interval.ToIntervalString()}, 窗口: {request.StartDate:yyyy-MM-dd} ~ {request.EndDate:yyyy-MM-dd}", Color.FromArgb(56, 189, 248)));
-            _logQueue.Enqueue(($"[策略模式] 交易开关: {tradeModeStr} | 线宽: {request.LineWidth:F1}px | 止盈: +{request.TakeProfitPct:F2}% | 最大止损: -{request.StopLossPct:F2}% | 冷却: {request.SignalCooldownSeconds}s", Color.FromArgb(250, 204, 21)));
+            _logQueue.Enqueue(($"[策略模式] 交易开关: {tradeModeStr} | 止损模式: {slModeDesc} | 3点线 0.001%触碰 + 3-Tick反向回弹入场 | 开仓整体斜率≥{request.MinSignalOverallSlopePct:F2}% | 线宽: {request.LineWidth:F1}px | 止盈: +{request.TakeProfitPct:F2}% | 冷却: {request.SignalCooldownSeconds}s", Color.FromArgb(250, 204, 21)));
             _logQueue.Enqueue(("========================================================", Color.FromArgb(56, 189, 248)));
 
             try
@@ -1104,9 +1151,9 @@ namespace Test.WinForms.Forms
         {
             if (txtLogs.IsDisposed) return;
 
-            if (txtLogs.TextLength > 30000)
+            if (txtLogs.TextLength > 20000)
             {
-                txtLogs.Select(0, 10000);
+                txtLogs.Select(0, 8000);
                 txtLogs.SelectedText = "";
             }
 

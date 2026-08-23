@@ -8,14 +8,16 @@ using System.Collections.Generic;
 namespace Test.Strategy
 {
     /// <summary>
-    /// 趋势线触碰跟踪探针状态 (用于判定 3 个 Tick 内的回弹开仓)
+    /// 3点趋势线触碰跟踪探针状态 (用于判定到达 0.001% 附近后出现 3 个 Tick 反向回弹入场)
     /// </summary>
     public class TouchProbe
     {
         public TrendLine Line;
         public decimal TouchPrice;
+        public decimal LastPrice;
         public int TouchGlobalIndex;
         public int TicksSinceTouch;
+        public int ReboundTicks; // 连续反向回弹 Tick 计数
         public bool IsResistance => Line.IsResistance;
     }
 
@@ -49,9 +51,11 @@ namespace Test.Strategy
         public int MaxSpan { get; set; } = 100;             // 两点间最大 K 线跨度
         public bool AllowInternalPenetration { get; set; } = false; // 是否允许内部 K 线穿透 (默认严格外包络)
 
-        // 5. 开仓信号趋势线过滤阈值与冷却时间 (LineX1X2 >= 40, LineAge >= 4, Cooldown = 60s)
+        // 5. 开仓信号趋势线过滤阈值与冷却时间 (LineX1X2 >= 40, LineAge >= 4, Cooldown = 60s, MinOverallSlope = 0.50%)
         public int MinSignalLineX1X2 { get; set; } = 40;
         public int MinSignalLineAge { get; set; } = 4;
+        public decimal MinSignalOverallSlopePct { get; set; } = 0.50m; // 趋势线开仓最小整体百分比斜率 (%)
+        public decimal MinSignalSlopePct { get => MinSignalOverallSlopePct; set => MinSignalOverallSlopePct = value; }
         public int SignalCooldownSeconds { get; set; } = 60; // 触发冷却时间 (秒)
         private long _lastTriggerTimestampMs = 0;           // 上次触发交易信号的时间戳 (毫秒)
 
@@ -59,8 +63,9 @@ namespace Test.Strategy
         public decimal TakeProfitPct { get; set; } = 1.5m;  // 止盈比例 (%)
         public decimal StopLossPct { get; set; } = 0.5m;    // 止损比例 (%)
 
-        // 7. 是否开启策略交易 (默认 true，未开启时仅进行趋势线计算而不开仓下单)
+        // 7. 是否开启策略交易与 Tick 级别止损
         public bool EnableTrading { get; set; } = true;
+        public bool EnableTickStopLoss { get; set; } = true; // 是否开启 Tick 级别微止损 (5-Tick 点位 / false 为固定比例止损)
 
         // 8. 趋势线最大允许斜率 (%/bar)，过滤超高斜率与异常噪音趋势线 (默认 2.0%/bar)
         public decimal MaxSlopePctPerBar { get; set; } = 2.0m;
@@ -341,7 +346,7 @@ namespace Test.Strategy
             }
 
             // ====================================================================
-            // 步骤 1: 处理已有的触碰探针，检查 3 个 Tick 内是否发生回弹
+            // 步骤 1: 处理已有的触碰探针，检查是否出现 3 个 Tick 连续反向回弹入场
             // ====================================================================
             for (int i = _activeTouchProbes.Count - 1; i >= 0; i--)
             {
@@ -352,29 +357,40 @@ namespace Test.Strategy
 
                 if (probe.IsResistance)
                 {
-                    // 高点阻力线：若在 3 个 Tick 内价格向下回弹低于趋势线且低于触碰价 -> 开空！
-                    if (probe.TicksSinceTouch <= 3)
+                    // 高点阻力线：反向回弹为价格向下下跌
+                    if (tick.Price < probe.LastPrice)
                     {
-                        if (tick.Price < linePrice && tick.Price < probe.TouchPrice)
+                        probe.ReboundTicks++;
+                    }
+                    else
+                    {
+                        probe.ReboundTicks = 0; // 若未连续向下回弹，重置回弹计数
+                    }
+                    probe.LastPrice = tick.Price;
+
+                    // 出现 3 个 Tick 连续反向回弹且价格低于触碰价 -> 开空！
+                    if (probe.ReboundTicks >= 3 && tick.Price < probe.TouchPrice)
+                    {
+                        // 检查冷却时间：若处于冷却时间内，本轮不触发开仓
+                        if (_lastTriggerTimestampMs > 0 && (tick.Time - _lastTriggerTimestampMs) < cooldownMs)
                         {
-                            // 检查冷却时间：若处于冷却时间内，本轮不触发开仓
-                            if (_lastTriggerTimestampMs > 0 && (tick.Time - _lastTriggerTimestampMs) < cooldownMs)
-                            {
-                                _activeTouchProbes.RemoveAt(i);
-                                continue;
-                            }
+                            _activeTouchProbes.RemoveAt(i);
+                            continue;
+                        }
 
-                            // 触发成功！更新冷却时间戳并标记趋势线为绿色触发线
-                            _lastTriggerTimestampMs = tick.Time;
-                            probe.Line.IsTriggered = true;
-                            MarkTrendLineTriggered(probe.Line);
+                        // 触发成功！更新冷却时间戳并标记趋势线为绿色触发线
+                        _lastTriggerTimestampMs = tick.Time;
+                        probe.Line.IsTriggered = true;
+                        MarkTrendLineTriggered(probe.Line);
 
-                            // 开立空单仓位 (1.5% 止盈, 5-Tick 自动极小微止损)
-                            decimal tpPrice = tick.Price * (1m - TakeProfitPct / 100m);
+                        // 开立空单仓位 (1.5% 止盈, 支持 Tick 级别 5-Tick 极小微止损 或 固定比例止损)
+                        decimal tpPrice = tick.Price * (1m - TakeProfitPct / 100m);
 
+                        decimal slPrice;
+                        if (EnableTickStopLoss)
+                        {
                             // 5 个 Tick 之前的价格作为自动极小微止损点位
                             decimal tick5Price = GetPriceTicksAgo(5);
-                            decimal slPrice;
                             if (tick5Price > tick.Price)
                             {
                                 slPrice = tick5Price;
@@ -388,79 +404,97 @@ namespace Test.Strategy
                             // 安全兜底上限：最大止损不超过 StopLossPct (默认 0.5%)
                             decimal maxSlPrice = tick.Price * (1m + StopLossPct / 100m);
                             if (slPrice > maxSlPrice) slPrice = maxSlPrice;
-
-                            decimal slPct = (slPrice - tick.Price) / tick.Price * 100m;
-                            int lineAge = currentGlobalIndex - probe.Line.X2;
-                            string reason = $"【高点阻力线触发开空】#{probe.Line.X1}->#{probe.Line.X2} | 跨度={probe.Line.LineX1X2} (≥{MinSignalLineX1X2}), 寿命={lineAge} (≥{MinSignalLineAge}) | 触碰价:{probe.TouchPrice:F2} -> 第{probe.TicksSinceTouch}个Tick回弹价:{tick.Price:F2} | 止盈:{tpPrice:F2} (+{TakeProfitPct:F1}%), 5-Tick微止损:{slPrice:F2} (-{slPct:F3}%)";
-
-                            var signal = new TradeSignal
-                            {
-                                SignalId = TradeSignals.Count + 1,
-                                GlobalBarIndex = currentGlobalIndex,
-                                TimestampMs = tick.Time,
-                                Side = TradeSide.Sell,
-                                Price = tick.Price,
-                                TriggerLine = probe.Line,
-                                TicksSinceTouch = probe.TicksSinceTouch,
-                                Reason = reason
-                            };
-
-                            TradeSignals.Add(signal);
-                            ShortSignalsCount++;
-                            OnTradeSignalGenerated?.Invoke(signal);
-
-                            var pos = new Position
-                            {
-                                PositionId = CompletedTrades.Count + ActivePositions.Count + 1,
-                                Side = TradeSide.Sell,
-                                EntryTimestampMs = tick.Time,
-                                EntryPrice = tick.Price,
-                                EntryGlobalBarIndex = currentGlobalIndex,
-                                TakeProfitPrice = tpPrice,
-                                StopLossPrice = slPrice,
-                                HighestPriceSinceEntry = tick.Price,
-                                LowestPriceSinceEntry = tick.Price,
-                                TriggerLine = probe.Line,
-                                StrategyReason = reason
-                            };
-                            ActivePositions.Add(pos);
-                            OnPositionOpened?.Invoke(pos);
-
-                            _activeTouchProbes.Clear();
-                            return;
                         }
+                        else
+                        {
+                            // 固定比例止损
+                            slPrice = tick.Price * (1m + StopLossPct / 100m);
+                        }
+
+                        decimal slPct = (slPrice - tick.Price) / tick.Price * 100m;
+                        int lineAge = currentGlobalIndex - probe.Line.X2;
+                        string slModeStr = EnableTickStopLoss ? "5-Tick微止损" : "固定止损";
+                        decimal overallSlopePct = probe.Line.Y1 > 0m ? (probe.Line.CachedCurrentPrice - probe.Line.Y1) / probe.Line.Y1 * 100m : 0m;
+                        string reason = $"【3点高点阻力线触碰开空】#{probe.Line.X1}->#{probe.Line.X2}->#{probe.Line.X3} | 整体斜率=+{overallSlopePct:F2}% (≥{MinSignalOverallSlopePct:F2}%), 跨度={probe.Line.LineX1X2}, 寿命={lineAge} | 触碰价:{probe.TouchPrice:F2} (0.001%附近) -> 3-Tick反向回弹价:{tick.Price:F2} | 止盈:{tpPrice:F2} (+{TakeProfitPct:F1}%), {slModeStr}:{slPrice:F2} (-{slPct:F3}%)";
+
+                        var signal = new TradeSignal
+                        {
+                            SignalId = TradeSignals.Count + 1,
+                            GlobalBarIndex = currentGlobalIndex,
+                            TimestampMs = tick.Time,
+                            Side = TradeSide.Sell,
+                            Price = tick.Price,
+                            TriggerLine = probe.Line,
+                            TicksSinceTouch = probe.TicksSinceTouch,
+                            Reason = reason
+                        };
+
+                        TradeSignals.Add(signal);
+                        ShortSignalsCount++;
+                        OnTradeSignalGenerated?.Invoke(signal);
+
+                        var pos = new Position
+                        {
+                            PositionId = CompletedTrades.Count + ActivePositions.Count + 1,
+                            Side = TradeSide.Sell,
+                            EntryTimestampMs = tick.Time,
+                            EntryPrice = tick.Price,
+                            EntryGlobalBarIndex = currentGlobalIndex,
+                            TakeProfitPrice = tpPrice,
+                            StopLossPrice = slPrice,
+                            HighestPriceSinceEntry = tick.Price,
+                            LowestPriceSinceEntry = tick.Price,
+                            TriggerLine = probe.Line,
+                            StrategyReason = reason
+                        };
+                        ActivePositions.Add(pos);
+                        OnPositionOpened?.Invoke(pos);
+
+                        _activeTouchProbes.Clear();
+                        return;
                     }
-                    else
+                    else if (probe.TicksSinceTouch > 15 || tick.Price > linePrice * 1.002m)
                     {
-                        // 超过 3 个 Tick 未回弹，探针失效移除 (趋势线删除统一在 OnKline 周期结束收盘时判定)
+                        // 超过 15 个 Tick 未完成 3-Tick 回弹或明显击穿，探针失效
                         _activeTouchProbes.RemoveAt(i);
                     }
                 }
                 else
                 {
-                    // 低点支撑线：若在 3 个 Tick 内价格向上回弹高于趋势线且高于触碰价 -> 开多！
-                    if (probe.TicksSinceTouch <= 3)
+                    // 低点支撑线：反向回弹为价格向上上涨
+                    if (tick.Price > probe.LastPrice)
                     {
-                        if (tick.Price > linePrice && tick.Price > probe.TouchPrice)
+                        probe.ReboundTicks++;
+                    }
+                    else
+                    {
+                        probe.ReboundTicks = 0; // 若未连续向上回弹，重置回弹计数
+                    }
+                    probe.LastPrice = tick.Price;
+
+                    // 出现 3 个 Tick 连续反向回弹且价格高于触碰价 -> 开多！
+                    if (probe.ReboundTicks >= 3 && tick.Price > probe.TouchPrice)
+                    {
+                        // 检查冷却时间：若处于冷却时间内，本轮不触发开仓
+                        if (_lastTriggerTimestampMs > 0 && (tick.Time - _lastTriggerTimestampMs) < cooldownMs)
                         {
-                            // 检查冷却时间：若处于冷却时间内，本轮不触发开仓
-                            if (_lastTriggerTimestampMs > 0 && (tick.Time - _lastTriggerTimestampMs) < cooldownMs)
-                            {
-                                _activeTouchProbes.RemoveAt(i);
-                                continue;
-                            }
+                            _activeTouchProbes.RemoveAt(i);
+                            continue;
+                        }
 
-                            // 触发成功！更新冷却时间戳并标记趋势线为绿色触发线
-                            _lastTriggerTimestampMs = tick.Time;
-                            probe.Line.IsTriggered = true;
-                            MarkTrendLineTriggered(probe.Line);
+                        // 触发成功！更新冷却时间戳并标记趋势线为绿色触发线
+                        _lastTriggerTimestampMs = tick.Time;
+                        probe.Line.IsTriggered = true;
+                        MarkTrendLineTriggered(probe.Line);
 
-                            // 开立多单仓位 (1.5% 止盈, 5-Tick 自动极小微止损)
-                            decimal tpPrice = tick.Price * (1m + TakeProfitPct / 100m);
+                        // 开立多单仓位 (1.5% 止盈, 支持 Tick 级别 5-Tick 极小微止损 或 固定比例止损)
+                        decimal tpPrice = tick.Price * (1m + TakeProfitPct / 100m);
 
+                        decimal slPrice;
+                        if (EnableTickStopLoss)
+                        {
                             // 5 个 Tick 之前的价格作为自动极小微止损点位
                             decimal tick5Price = GetPriceTicksAgo(5);
-                            decimal slPrice;
                             if (tick5Price > 0m && tick5Price < tick.Price)
                             {
                                 slPrice = tick5Price;
@@ -474,72 +508,86 @@ namespace Test.Strategy
                             // 安全兜底下限：最大止损不超过 StopLossPct (默认 0.5%)
                             decimal minSlPrice = tick.Price * (1m - StopLossPct / 100m);
                             if (slPrice < minSlPrice) slPrice = minSlPrice;
-
-                            decimal slPct = (tick.Price - slPrice) / tick.Price * 100m;
-                            int lineAge = currentGlobalIndex - probe.Line.X2;
-                            string reason = $"【低点支撑线触发开多】#{probe.Line.X1}->#{probe.Line.X2} | 跨度={probe.Line.LineX1X2} (≥{MinSignalLineX1X2}), 寿命={lineAge} (≥{MinSignalLineAge}) | 触碰价:{probe.TouchPrice:F2} -> 第{probe.TicksSinceTouch}个Tick回弹价:{tick.Price:F2} | 止盈:{tpPrice:F2} (+{TakeProfitPct:F1}%), 5-Tick微止损:{slPrice:F2} (-{slPct:F3}%)";
-
-                            var signal = new TradeSignal
-                            {
-                                SignalId = TradeSignals.Count + 1,
-                                GlobalBarIndex = currentGlobalIndex,
-                                TimestampMs = tick.Time,
-                                Side = TradeSide.Buy,
-                                Price = tick.Price,
-                                TriggerLine = probe.Line,
-                                TicksSinceTouch = probe.TicksSinceTouch,
-                                Reason = reason
-                            };
-
-                            TradeSignals.Add(signal);
-                            LongSignalsCount++;
-                            OnTradeSignalGenerated?.Invoke(signal);
-
-                            var pos = new Position
-                            {
-                                PositionId = CompletedTrades.Count + ActivePositions.Count + 1,
-                                Side = TradeSide.Buy,
-                                EntryTimestampMs = tick.Time,
-                                EntryPrice = tick.Price,
-                                EntryGlobalBarIndex = currentGlobalIndex,
-                                TakeProfitPrice = tpPrice,
-                                StopLossPrice = slPrice,
-                                HighestPriceSinceEntry = tick.Price,
-                                LowestPriceSinceEntry = tick.Price,
-                                TriggerLine = probe.Line,
-                                StrategyReason = reason
-                            };
-                            ActivePositions.Add(pos);
-                            OnPositionOpened?.Invoke(pos);
-
-                            _activeTouchProbes.Clear();
-                            return;
                         }
+                        else
+                        {
+                            // 固定比例止损
+                            slPrice = tick.Price * (1m - StopLossPct / 100m);
+                        }
+
+                        decimal slPct = (tick.Price - slPrice) / tick.Price * 100m;
+                        int lineAge = currentGlobalIndex - probe.Line.X2;
+                        string slModeStr = EnableTickStopLoss ? "5-Tick微止损" : "固定止损";
+                        decimal overallSlopePct = probe.Line.Y1 > 0m ? (probe.Line.CachedCurrentPrice - probe.Line.Y1) / probe.Line.Y1 * 100m : 0m;
+                        string reason = $"【3点低点支撑线触碰开多】#{probe.Line.X1}->#{probe.Line.X2}->#{probe.Line.X3} | 整体斜率={overallSlopePct:F2}% (|K整体|≥{MinSignalOverallSlopePct:F2}%), 跨度={probe.Line.LineX1X2}, 寿命={lineAge} | 触碰价:{probe.TouchPrice:F2} (0.001%附近) -> 3-Tick反向回弹价:{tick.Price:F2} | 止盈:{tpPrice:F2} (+{TakeProfitPct:F1}%), {slModeStr}:{slPrice:F2} (-{slPct:F3}%)";
+
+                        var signal = new TradeSignal
+                        {
+                            SignalId = TradeSignals.Count + 1,
+                            GlobalBarIndex = currentGlobalIndex,
+                            TimestampMs = tick.Time,
+                            Side = TradeSide.Buy,
+                            Price = tick.Price,
+                            TriggerLine = probe.Line,
+                            TicksSinceTouch = probe.TicksSinceTouch,
+                            Reason = reason
+                        };
+
+                        TradeSignals.Add(signal);
+                        LongSignalsCount++;
+                        OnTradeSignalGenerated?.Invoke(signal);
+
+                        var pos = new Position
+                        {
+                            PositionId = CompletedTrades.Count + ActivePositions.Count + 1,
+                            Side = TradeSide.Buy,
+                            EntryTimestampMs = tick.Time,
+                            EntryPrice = tick.Price,
+                            EntryGlobalBarIndex = currentGlobalIndex,
+                            TakeProfitPrice = tpPrice,
+                            StopLossPrice = slPrice,
+                            HighestPriceSinceEntry = tick.Price,
+                            LowestPriceSinceEntry = tick.Price,
+                            TriggerLine = probe.Line,
+                            StrategyReason = reason
+                        };
+                        ActivePositions.Add(pos);
+                        OnPositionOpened?.Invoke(pos);
+
+                        _activeTouchProbes.Clear();
+                        return;
                     }
-                    else
+                    else if (probe.TicksSinceTouch > 15 || tick.Price < linePrice * 0.998m)
                     {
-                        // 超过 3 个 Tick 未回弹，探针失效移除 (趋势线删除统一在 OnKline 周期结束收盘时判定)
+                        // 超过 15 个 Tick 未完成 3-Tick 回弹或明显击穿，探针失效
                         _activeTouchProbes.RemoveAt(i);
                     }
                 }
             }
 
             // ====================================================================
-            // 步骤 2: 检测活跃阻力线 (高点趋势线) - 极速单指令边界短路
+            // 步骤 2: 检测 3 点活跃阻力线 (高点趋势线) - 到达 0.001% 附近
             // ====================================================================
             if (tick.Price >= _minActiveResistancePrice)
             {
                 for (int i = ActiveResistanceLines.Count - 1; i >= 0; i--)
                 {
                     var line = ActiveResistanceLines[i];
+                    if (!line.IsThreePointConfirmed) continue; // 🌟 仅 3 点趋势线参与开仓交易
 
-                    // 判断是否达到/穿过趋势线 (tick.Price >= CachedCurrentPrice)
-                    if (tick.Price >= line.CachedCurrentPrice)
+                    decimal linePrice = line.CachedCurrentPrice;
+                    if (linePrice <= 0m) continue;
+
+                    decimal diffPct = Math.Abs(tick.Price - linePrice) / linePrice * 100m;
+
+                    // 到达 3 点阻力趋势线附近 0.001% (或略向上触碰)
+                    if (diffPct <= 0.001m || tick.Price >= linePrice * (1m - 0.00001m))
                     {
                         int lineAge = currentGlobalIndex - line.X2;
+                        decimal overallSlopePct = line.Y1 > 0m ? (linePrice - line.Y1) / line.Y1 * 100m : 0m;
 
-                        // 检查是否满足策略准入条件: LineX1X2 >= 40 且 LineAge >= 4
-                        if (line.LineX1X2 >= MinSignalLineX1X2 && lineAge >= MinSignalLineAge)
+                        // 检查是否满足策略准入条件: LineX1X2 >= 40 且 LineAge >= 4 且 整体斜率 >= MinSignalOverallSlopePct
+                        if (line.LineX1X2 >= MinSignalLineX1X2 && lineAge >= MinSignalLineAge && overallSlopePct >= MinSignalOverallSlopePct)
                         {
                             if (!IsLineInProbes(line))
                             {
@@ -547,8 +595,10 @@ namespace Test.Strategy
                                 {
                                     Line = line,
                                     TouchPrice = tick.Price,
+                                    LastPrice = tick.Price,
                                     TouchGlobalIndex = currentGlobalIndex,
-                                    TicksSinceTouch = 0
+                                    TicksSinceTouch = 0,
+                                    ReboundTicks = 0
                                 });
                             }
                         }
@@ -557,21 +607,28 @@ namespace Test.Strategy
             }
 
             // ====================================================================
-            // 步骤 3: 检测活跃支撑线 (低点趋势线) - 极速单指令边界短路
+            // 步骤 3: 检测 3 点活跃支撑线 (低点趋势线) - 到达 0.001% 附近
             // ====================================================================
             if (tick.Price <= _maxActiveSupportPrice)
             {
                 for (int i = ActiveSupportLines.Count - 1; i >= 0; i--)
                 {
                     var line = ActiveSupportLines[i];
+                    if (!line.IsThreePointConfirmed) continue; // 🌟 仅 3 点趋势线参与开仓交易
 
-                    // 判断是否达到/穿过趋势线 (tick.Price <= CachedCurrentPrice)
-                    if (tick.Price <= line.CachedCurrentPrice)
+                    decimal linePrice = line.CachedCurrentPrice;
+                    if (linePrice <= 0m) continue;
+
+                    decimal diffPct = Math.Abs(tick.Price - linePrice) / linePrice * 100m;
+
+                    // 到达 3 点支撑趋势线附近 0.001% (或略向下触碰)
+                    if (diffPct <= 0.001m || tick.Price <= linePrice * (1m + 0.00001m))
                     {
                         int lineAge = currentGlobalIndex - line.X2;
+                        decimal absOverallSlopePct = line.Y1 > 0m ? Math.Abs((linePrice - line.Y1) / line.Y1 * 100m) : 0m;
 
-                        // 检查是否满足策略准入条件: LineX1X2 >= 40 且 LineAge >= 4
-                        if (line.LineX1X2 >= MinSignalLineX1X2 && lineAge >= MinSignalLineAge)
+                        // 检查是否满足策略准入条件: LineX1X2 >= 40 且 LineAge >= 4 且 |整体斜率| >= MinSignalOverallSlopePct
+                        if (line.LineX1X2 >= MinSignalLineX1X2 && lineAge >= MinSignalLineAge && absOverallSlopePct >= MinSignalOverallSlopePct)
                         {
                             if (!IsLineInProbes(line))
                             {
@@ -579,8 +636,10 @@ namespace Test.Strategy
                                 {
                                     Line = line,
                                     TouchPrice = tick.Price,
+                                    LastPrice = tick.Price,
                                     TouchGlobalIndex = currentGlobalIndex,
-                                    TicksSinceTouch = 0
+                                    TicksSinceTouch = 0,
+                                    ReboundTicks = 0
                                 });
                             }
                         }
@@ -911,9 +970,10 @@ namespace Test.Strategy
             decimal minR = decimal.MaxValue;
             for (int i = 0; i < ActiveResistanceLines.Count; i++)
             {
-                if (ActiveResistanceLines[i].CachedCurrentPrice < minR)
+                decimal triggerPrice = ActiveResistanceLines[i].CachedCurrentPrice * (1m - 0.00001m);
+                if (triggerPrice < minR)
                 {
-                    minR = ActiveResistanceLines[i].CachedCurrentPrice;
+                    minR = triggerPrice;
                 }
             }
             _minActiveResistancePrice = minR;
@@ -921,9 +981,10 @@ namespace Test.Strategy
             decimal maxS = decimal.MinValue;
             for (int i = 0; i < ActiveSupportLines.Count; i++)
             {
-                if (ActiveSupportLines[i].CachedCurrentPrice > maxS)
+                decimal triggerPrice = ActiveSupportLines[i].CachedCurrentPrice * (1m + 0.00001m);
+                if (triggerPrice > maxS)
                 {
-                    maxS = ActiveSupportLines[i].CachedCurrentPrice;
+                    maxS = triggerPrice;
                 }
             }
             _maxActiveSupportPrice = maxS;

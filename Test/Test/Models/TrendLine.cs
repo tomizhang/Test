@@ -60,6 +60,16 @@ namespace Common.Models
         public decimal K { get; set; }
 
         /// <summary>
+        /// 趋势线基准极值点间的整体百分比斜率 (%): (y2 - y1) / y1 * 100
+        /// </summary>
+        public decimal OverallSlopePct => Y1 > 0m ? (Y2 - Y1) / Y1 * 100m : 0m;
+
+        /// <summary>
+        /// 趋势线延伸至当前缓存价格的全局总整体百分比斜率 (%): (CachedCurrentPrice - y1) / y1 * 100
+        /// </summary>
+        public decimal TotalOverallSlopePct => Y1 > 0m ? (CachedCurrentPrice - Y1) / Y1 * 100m : 0m;
+
+        /// <summary>
         /// x1 到 x2 的 K 线跨度差值 (line_x1_x2 = x2 - x1)
         /// </summary>
         public int LineX1X2 => X2 - X1;

@@ -101,10 +101,12 @@ namespace Common.Services
                     AllowInternalPenetration = request.AllowInternalPenetration,
                     MinSignalLineX1X2 = request.MinSignalLineX1X2,
                     MinSignalLineAge = request.MinSignalLineAge,
+                    MinSignalOverallSlopePct = request.MinSignalOverallSlopePct,
                     SignalCooldownSeconds = request.SignalCooldownSeconds,
                     TakeProfitPct = request.TakeProfitPct,
                     StopLossPct = request.StopLossPct,
                     EnableTrading = request.EnableTrading,
+                    EnableTickStopLoss = request.EnableTickStopLoss,
                     MaxSlopePctPerBar = request.MaxSlopePctPerBar
                 };
 
