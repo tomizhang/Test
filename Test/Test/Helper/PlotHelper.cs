@@ -139,13 +139,15 @@ namespace Common.Helper
                 }
             }
 
-            // 5. 绘制趋势线 (选中线: 红色高亮加粗；趋势通道: 红色线宽0.8f；三点确认线: 金黄色加粗；触发线: 绿色加粗；活跃阻力: 橙红；活跃支撑: 青色；已击穿: 灰暗色)
+            // 5. 绘制趋势线 (选中线: 红色高亮加粗；趋势通道: 红色线宽0.8f；特殊趋势线: 紫色线宽0.8f；三点确认线: 金黄色加粗；触发线: 绿色加粗；活跃阻力: 橙红；活跃支撑: 青色；已击穿: 灰暗色)
             int resistanceDrawn = 0;
             int supportDrawn = 0;
             int triggeredDrawn = 0;
             int threePointConfirmedDrawn = 0;
             int channelLinesDrawn = 0;
+            int specialLinesDrawn = 0;
             bool channelLegendSet = false;
+            bool specialLegendSet = false;
             bool selectedLineDrawn = false;
 
             var thirdPointXs = new List<double>();
@@ -207,6 +209,18 @@ namespace Common.Helper
                             channelLegendSet = true;
                         }
                         channelLinesDrawn++;
+                    }
+                    else if (line.IsSpecialTrendLine)
+                    {
+                        // 🟣 特殊结构突破趋势线: 紫色高亮显示，线宽 0.8f
+                        linePlot.Color = Color.FromHex("#a855f7"); // Purple 500
+                        linePlot.LineWidth = 0.8f;
+                        if (!specialLegendSet)
+                        {
+                            linePlot.LegendText = "🟣 特殊趋势线 (线宽 0.8f)";
+                            specialLegendSet = true;
+                        }
+                        specialLinesDrawn++;
                     }
                     else if (line.IsTriggered)
                     {
@@ -458,11 +472,12 @@ namespace Common.Helper
             // 7. 添加左上角结构化描述摘要卡片 (强制中文字体)
             string timeRange = $"{TimeHelper.FromUnixTimeMilliseconds(klines[0].OpenTime):yyyy-MM-dd HH:mm} ~ {TimeHelper.FromUnixTimeMilliseconds(klines[count - 1].CloseTime):yyyy-MM-dd HH:mm}";
             string channelSummary = channelLinesDrawn > 0 ? $", 🔴趋势通道={channelLinesDrawn / 2}组" : "";
+            string specialSummary = specialLinesDrawn > 0 ? $", 🟣特殊趋势线={specialLinesDrawn}条" : "";
             string fullSummary = $"【量化结构指标摘要】\n" +
                                  $"• 时间跨度: {timeRange} (UTC+0)\n" +
                                  $"• K线根数: {count:N0} 根 | 价格区间: {klines[0].Close:F2} -> {klines[count - 1].Close:F2}\n" +
                                  $"• 极值高低点: 高点(Peaks)={peaksCount}, 低点(Valleys)={valleysCount}\n" +
-                                 $"• 绘制趋势线: 阻力线={resistanceDrawn}条, 支撑线={supportDrawn}条 (⭐三点共线={threePointConfirmedDrawn}条{channelSummary})\n" +
+                                 $"• 绘制趋势线: 阻力线={resistanceDrawn}条, 支撑线={supportDrawn}条 (⭐三点共线={threePointConfirmedDrawn}条{channelSummary}{specialSummary})\n" +
                                  $"• 开仓信号: 多单={longSignalsDrawn}笔, 空单={shortSignalsDrawn}笔 (策略: 触碰3-Tick回弹 LineX1X2>=40, LineAge>=4)\n" +
                                  $"• 策略备注: {summaryDescription}";
 

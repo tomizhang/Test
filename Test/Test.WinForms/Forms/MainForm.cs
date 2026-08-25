@@ -1493,13 +1493,19 @@ namespace Test.WinForms.Forms
 
             if (line.CollidedKlineIndex >= 0)
             {
-                stateStr = $"已击穿删除 (于 Bar #{line.CollidedKlineIndex} 发生穿透失效)";
-                themeColor = Color.FromArgb(148, 163, 184); // Slate 400
+                string extra = line.IsSpecialTrendLine ? " 【🟣 特殊结构突破线 (紫色高亮 0.8f)】" : "";
+                stateStr = $"已击穿删除 (于 Bar #{line.CollidedKlineIndex} 发生穿透失效){extra}";
+                themeColor = line.IsSpecialTrendLine ? Color.FromArgb(168, 85, 247) : Color.FromArgb(148, 163, 184); // Purple 500 / Slate 400
             }
             else if (line.IsInChannel)
             {
                 stateStr = $"活跃 (🔴 趋势通道 - 红色高亮 0.8f, 通道 #{line.ChannelId})";
                 themeColor = Color.FromArgb(239, 68, 68); // Red 500
+            }
+            else if (line.IsSpecialTrendLine)
+            {
+                stateStr = "活跃 (🟣 特殊趋势线 - 紫色高亮 0.8f)";
+                themeColor = Color.FromArgb(168, 85, 247); // Purple 500
             }
             else if (line.IsTriggered)
             {
@@ -1523,6 +1529,10 @@ namespace Test.WinForms.Forms
             _logQueue.Enqueue(("\n========================================================", themeColor));
             _logQueue.Enqueue(($"🎯 [选中趋势线] 【{typeName}】", themeColor));
             _logQueue.Enqueue(($"  • 运行状态: {stateStr}", Color.FromArgb(241, 245, 249)));
+            if (line.IsSpecialTrendLine)
+            {
+                _logQueue.Enqueue(($"  • 特殊形态: 【🟣 特殊结构突破趋势线】(源于极值大底/大顶，长时间顺势后发生突破，紫色高亮 0.8f)", Color.FromArgb(168, 85, 247)));
+            }
             if (line.IsInChannel)
             {
                 _logQueue.Enqueue(($"  • 通道形态: 【🔴 符合条件的趋势通道】属于通道 #{line.ChannelId} (红色高亮 0.8f)", Color.FromArgb(239, 68, 68)));

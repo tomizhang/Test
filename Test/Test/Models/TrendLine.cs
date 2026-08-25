@@ -149,6 +149,11 @@ namespace Common.Models
         public int ChannelId { get; set; }
 
         /// <summary>
+        /// 🟣 是否为特殊趋势线 (源于结构大底/大顶极值点，长时间顺势运行后被突破/穿透，紫色 0.8f 高亮显示)
+        /// </summary>
+        public bool IsSpecialTrendLine { get; set; }
+
+        /// <summary>
         /// 趋势线类型 (高点阻力线 / 低点支撑线)
         /// </summary>
         public PivotType Type { get; set; }

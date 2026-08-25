@@ -77,6 +77,9 @@ namespace Test.Strategy
         public decimal MaxChannelSlopeDiffPct { get; set; } = 0.08m;
         public decimal MaxChannelRelativeSlopeDiff { get; set; } = 0.18m;
 
+        // 10. 特殊趋势线判定参数 (基于相对高低点波段起点识别，默认最小波段总存续时长 >= 15)
+        public int MinSpecialTrendLineTotalAge { get; set; } = 15;
+
         // 全局单调递增 K 线序列号计数器 (0, 1, 2, ... 500,000)
         private int _globalBarIndex = 0;
         public int GlobalBarIndex => _globalBarIndex;
@@ -861,6 +864,15 @@ namespace Test.Strategy
                         ? (kline.Close > expectedPrice * 1.001m)
                         : (kline.Close > expectedPrice || kline.High > expectedPrice);
 
+                    if (isPenetrated)
+                    {
+                        // 🟣 检查是否符合“特殊趋势线”结构特征 (源于相对高点/下跌波段起点向下延伸被向上突破)
+                        if (TrendLineHelper.IsSpecialTrendLineConditionMet(line, _peaks, currentGlobalIndex, minTotalAge: MinSpecialTrendLineTotalAge))
+                        {
+                            line.IsSpecialTrendLine = true;
+                        }
+                    }
+
                     // 🌟 配对的趋势通道线先不删除，保持通道结构完整
                     if (isPenetrated && !line.IsInChannel)
                     {
@@ -909,6 +921,15 @@ namespace Test.Strategy
                     bool isPenetrated = line.IsThreePointConfirmed
                         ? (kline.Close < expectedPrice * 0.999m)
                         : (kline.Close < expectedPrice || kline.Low < expectedPrice);
+
+                    if (isPenetrated)
+                    {
+                        // 🟣 检查是否符合“特殊趋势线”结构特征 (源于相对低点/上涨波段起点向上延伸被向下击穿)
+                        if (TrendLineHelper.IsSpecialTrendLineConditionMet(line, _valleys, currentGlobalIndex, minTotalAge: MinSpecialTrendLineTotalAge))
+                        {
+                            line.IsSpecialTrendLine = true;
+                        }
+                    }
 
                     // 🌟 配对的趋势通道线先不删除，保持通道结构完整
                     if (isPenetrated && !line.IsInChannel)
@@ -1033,7 +1054,7 @@ namespace Test.Strategy
                 _deletedTrendLines.RemoveRange(0, excess);
             }
 
-            // 同步更新历史趋势线库中对应趋势线的击穿碰撞状态
+            // 同步更新历史趋势线库中对应趋势线的击穿碰撞状态与特殊趋势线标记
             for (int i = _historicalTrendLines.Count - 1; i >= 0; i--)
             {
                 var h = _historicalTrendLines[i];
@@ -1041,6 +1062,7 @@ namespace Test.Strategy
                 {
                     h.CollidedKlineIndex = line.CollidedKlineIndex;
                     h.LineExtensionRange = line.LineExtensionRange;
+                    h.IsSpecialTrendLine = line.IsSpecialTrendLine;
                     _historicalTrendLines[i] = h;
                     break;
                 }

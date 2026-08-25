@@ -544,5 +544,120 @@ namespace Common.Helper
         }
 
         #endregion
+
+        #region 5. 特殊结构突破趋势线 (Special Trend Line) 判定
+
+        /// <summary>
+        /// 检查发生穿透/击穿的趋势线是否满足“特殊趋势线”结构特征：
+        /// 核心机制：无需固定 LineX1X2 跨度门槛，而是从相对高点或低点识别一段趋势的起点。
+        /// 1. 低点支撑线被向下穿透 (上涨趋势起点终结)：
+        ///    - 必须为向上倾斜的趋势线 (K > 0，即 Y2 > Y1，代表上涨波段)；
+        ///    - 源头起点 X1 位于相对低点/波段起点 (向前对比同向低点为最低，或为新低/同级波段底)；
+        ///    - 自源头 X1 至当前击穿点具备一定波段持续周期 (totalAge >= minTotalAge，默认 15 根)；
+        /// 2. 高点阻力线被向上突破 (下跌趋势高点反转，反之亦然)：
+        ///    - 必须为向下倾斜的趋势线 (K < 0，即 Y2 < Y1，代表下跌波段)；
+        ///    - 源头起点 X1 位于相对高点/波段高点 (向前对比同向高点为最高，或为新高/同级波段顶)；
+        ///    - 自源头 X1 至当前击穿点具备一定波段持续周期 (totalAge >= minTotalAge，默认 15 根)。
+        /// </summary>
+        /// <param name="line">待判定的趋势线</param>
+        /// <param name="pivots">同向极值点历史列表 (Peaks 或 Valleys)</param>
+        /// <param name="currentGlobalIndex">发生穿透时的当前全局 K 线索引</param>
+        /// <param name="minTotalAge">源头至击穿点的最小波段总跨度 (默认 15 根)</param>
+        /// <returns>是否为特殊趋势线</returns>
+        public static bool IsSpecialTrendLineConditionMet(
+            TrendLine line,
+            IReadOnlyList<PivotPoint> pivots,
+            int currentGlobalIndex,
+            int minTotalAge = 15)
+        {
+            if (!line.IsValid) return false;
+
+            int totalAge = currentGlobalIndex - line.X1;
+            if (totalAge < minTotalAge)
+            {
+                return false;
+            }
+
+            if (line.IsSupport) // 低点支撑线 (上涨趋势起点 -> 向上延伸 -> 价格跌破)
+            {
+                // 必须是向上倾斜的趋势线 (K > 0，形成上涨波段基准线)
+                if (line.K <= 0m && line.RawK <= 0m) return false;
+
+                if (pivots == null || pivots.Count == 0) return false;
+
+                // 查找源头点 X1 在 pivots (Valleys) 中的位置
+                int sourceIdx = -1;
+                for (int i = 0; i < pivots.Count; i++)
+                {
+                    if (pivots[i].Index == line.X1)
+                    {
+                        sourceIdx = i;
+                        break;
+                    }
+                }
+
+                if (sourceIdx < 0) return false;
+
+                decimal sourcePrice = pivots[sourceIdx].Price;
+
+                // 检查源头点是否为相对低点/波段起点 (向前对比 1~3 个低点中最低，或者与前一个低点对比更低/同级)
+                bool isSourceLowest = true;
+                int lookback = 0;
+                for (int k = sourceIdx - 1; k >= 0 && lookback < 3; k--, lookback++)
+                {
+                    if (sourcePrice > pivots[k].Price)
+                    {
+                        isSourceLowest = false;
+                        break;
+                    }
+                }
+
+                bool isSourceLowerOrEqualPrev = sourceIdx > 0 && sourcePrice <= pivots[sourceIdx - 1].Price;
+
+                return isSourceLowest || isSourceLowerOrEqualPrev || sourceIdx == 0;
+            }
+            else if (line.IsResistance) // 高点阻力线 (下跌趋势高点 -> 向下延伸 -> 价格突破)
+            {
+                // 必须是向下倾斜的趋势线 (K < 0，形成下跌波段压力线)
+                if (line.K >= 0m && line.RawK >= 0m) return false;
+
+                if (pivots == null || pivots.Count == 0) return false;
+
+                // 查找源头点 X1 在 pivots (Peaks) 中的位置
+                int sourceIdx = -1;
+                for (int i = 0; i < pivots.Count; i++)
+                {
+                    if (pivots[i].Index == line.X1)
+                    {
+                        sourceIdx = i;
+                        break;
+                    }
+                }
+
+                if (sourceIdx < 0) return false;
+
+                decimal sourcePrice = pivots[sourceIdx].Price;
+
+                // 检查源头点是否为相对高点/波段高点 (向前对比 1~3 个高点中最高，或者与前一个高点对比更高/同级)
+                bool isSourceHighest = true;
+                int lookback = 0;
+                for (int k = sourceIdx - 1; k >= 0 && lookback < 3; k--, lookback++)
+                {
+                    if (sourcePrice < pivots[k].Price)
+                    {
+                        isSourceHighest = false;
+                        break;
+                    }
+                }
+
+                bool isSourceHigherOrEqualPrev = sourceIdx > 0 && sourcePrice >= pivots[sourceIdx - 1].Price;
+
+                return isSourceHighest || isSourceHigherOrEqualPrev || sourceIdx == 0;
+            }
+
+            return false;
+        }
+
+        #endregion
     }
 }
