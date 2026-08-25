@@ -45,7 +45,8 @@ namespace Common.Helper
             int startGlobalIndex = 0,
             bool autoScaleAxes = true,
             IReadOnlyList<TradeSignal>? tradeSignals = null,
-            float lineWidth = 0.8f)
+            float lineWidth = 0.8f,
+            TrendLine? selectedTrendLine = null)
         {
             if (plot == null || klines == null || klines.Count == 0)
             {
@@ -138,11 +139,14 @@ namespace Common.Helper
                 }
             }
 
-            // 5. 绘制趋势线 (三点确认线: 金黄色加粗凸显；触发线: 绿色加粗；活跃阻力: 橙红；活跃支撑: 青色；已击穿: 灰暗色)
+            // 5. 绘制趋势线 (选中线: 红色高亮加粗；趋势通道: 红色线宽0.8f；三点确认线: 金黄色加粗；触发线: 绿色加粗；活跃阻力: 橙红；活跃支撑: 青色；已击穿: 灰暗色)
             int resistanceDrawn = 0;
             int supportDrawn = 0;
             int triggeredDrawn = 0;
             int threePointConfirmedDrawn = 0;
+            int channelLinesDrawn = 0;
+            bool channelLegendSet = false;
+            bool selectedLineDrawn = false;
 
             var thirdPointXs = new List<double>();
             var thirdPointYs = new List<double>();
@@ -180,7 +184,31 @@ namespace Common.Helper
 
                     var linePlot = plot.Add.Line(xStart, yStart, xEnd, yEnd);
 
-                    if (line.IsTriggered)
+                    bool isSelected = selectedTrendLine.HasValue &&
+                                      line.X1 == selectedTrendLine.Value.X1 &&
+                                      line.X2 == selectedTrendLine.Value.X2 &&
+                                      line.Type == selectedTrendLine.Value.Type;
+
+                    if (isSelected)
+                    {
+                        // 🌟 用户点击选中的趋势线: 鲜亮大红色 + 加粗突出显示
+                        linePlot.Color = Color.FromHex("#ef4444"); // Red 500
+                        linePlot.LineWidth = Math.Max(2.5f, lineWidth * 3.5f);
+                        selectedLineDrawn = true;
+                    }
+                    else if (line.IsInChannel)
+                    {
+                        // 🔴 符合条件的趋势通道线条: 红色高亮显示，线宽 0.8f
+                        linePlot.Color = Color.FromHex("#ef4444"); // 鲜亮红色 Red 500
+                        linePlot.LineWidth = 0.8f;
+                        if (!channelLegendSet)
+                        {
+                            linePlot.LegendText = "🔴 趋势通道 (线宽 0.8f)";
+                            channelLegendSet = true;
+                        }
+                        channelLinesDrawn++;
+                    }
+                    else if (line.IsTriggered)
                     {
                         linePlot.Color = Color.FromHex("#22c55e"); // 亮绿色: 触发开仓的趋势线 (加粗突出)
                         linePlot.LineWidth = Math.Max(1.0f, lineWidth * 2.0f);
@@ -237,6 +265,132 @@ namespace Common.Helper
                         supportDrawn++;
                     }
                     drawnTotal++;
+                }
+            }
+
+            // 绘制用户点击选中的趋势线 (如果不在已绘制的前200条列表中，单独绘制红色高亮线与端点标记)
+            if (selectedTrendLine.HasValue)
+            {
+                var sel = selectedTrendLine.Value;
+                int selEndX = sel.CollidedKlineIndex >= 0 ? sel.CollidedKlineIndex : Math.Max(sel.X2, endGlobalIndex);
+
+                if (!selectedLineDrawn && selEndX >= startGlobalIndex && sel.X1 <= endGlobalIndex)
+                {
+                    var selLinePlot = plot.Add.Line(sel.X1, (double)sel.Y1, selEndX, (double)sel.GetPriceAt(selEndX));
+                    selLinePlot.Color = Color.FromHex("#ef4444"); // 鲜亮大红色
+                    selLinePlot.LineWidth = Math.Max(2.5f, lineWidth * 3.5f);
+                }
+
+                // 绘制选中趋势线的端点红色标记
+                var selXs = new List<double>();
+                var selYs = new List<double>();
+                if (sel.X1 >= startGlobalIndex && sel.X1 <= endGlobalIndex)
+                {
+                    selXs.Add(sel.X1);
+                    selYs.Add((double)sel.Y1);
+                }
+                if (sel.X2 >= startGlobalIndex && sel.X2 <= endGlobalIndex)
+                {
+                    selXs.Add(sel.X2);
+                    selYs.Add((double)sel.Y2);
+                }
+                if (sel.IsThreePointConfirmed && sel.X3 >= startGlobalIndex && sel.X3 <= endGlobalIndex)
+                {
+                    selXs.Add(sel.X3);
+                    selYs.Add(sel.Y3 > 0m ? (double)sel.Y3 : (double)sel.GetPriceAt(sel.X3));
+                }
+
+                if (selXs.Count > 0)
+                {
+                    var selScatter = plot.Add.Scatter(selXs.ToArray(), selYs.ToArray());
+                    selScatter.MarkerShape = MarkerShape.FilledCircle;
+                    selScatter.MarkerSize = 7;
+                    selScatter.Color = Color.FromHex("#ef4444"); // 红色端点
+                    selScatter.LineWidth = 0;
+                    selScatter.LegendText = $"🎯 选中趋势线 (#{sel.X1}->#{sel.X2})";
+                }
+
+                // 🌟 若选中的趋势线存在通道，同时高亮显示整个趋势通道 (包括对侧轨道)
+                TrendLine? channelPartner = null;
+                if (trendLines != null && trendLines.Count > 0)
+                {
+                    if (sel.ChannelId > 0)
+                    {
+                        for (int i = 0; i < trendLines.Count; i++)
+                        {
+                            var l = trendLines[i];
+                            if (l.ChannelId == sel.ChannelId && l.Type != sel.Type)
+                            {
+                                channelPartner = l;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!channelPartner.HasValue)
+                    {
+                        for (int i = 0; i < trendLines.Count; i++)
+                        {
+                            var l = trendLines[i];
+                            if (l.Type != sel.Type && l.IsValid)
+                            {
+                                var rLine = sel.IsResistance ? sel : l;
+                                var sLine = sel.IsSupport ? sel : l;
+                                var testChannels = TrendLineHelper.DetectTrendChannels(
+                                    new List<TrendLine> { rLine },
+                                    new List<TrendLine> { sLine },
+                                    endGlobalIndex);
+                                if (testChannels.Count > 0)
+                                {
+                                    channelPartner = l;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (channelPartner.HasValue)
+                {
+                    var partner = channelPartner.Value;
+                    int partnerEndX = partner.CollidedKlineIndex >= 0 ? partner.CollidedKlineIndex : Math.Max(partner.X2, endGlobalIndex);
+
+                    if (partnerEndX >= startGlobalIndex && partner.X1 <= endGlobalIndex)
+                    {
+                        var partnerLinePlot = plot.Add.Line(partner.X1, (double)partner.Y1, partnerEndX, (double)partner.GetPriceAt(partnerEndX));
+                        partnerLinePlot.Color = Color.FromHex("#ef4444"); // 鲜亮大红色
+                        partnerLinePlot.LineWidth = Math.Max(2.0f, lineWidth * 2.8f);
+                    }
+
+                    // 绘制对侧轨道的端点标记
+                    var pXs = new List<double>();
+                    var pYs = new List<double>();
+                    if (partner.X1 >= startGlobalIndex && partner.X1 <= endGlobalIndex)
+                    {
+                        pXs.Add(partner.X1);
+                        pYs.Add((double)partner.Y1);
+                    }
+                    if (partner.X2 >= startGlobalIndex && partner.X2 <= endGlobalIndex)
+                    {
+                        pXs.Add(partner.X2);
+                        pYs.Add((double)partner.Y2);
+                    }
+                    if (partner.IsThreePointConfirmed && partner.X3 >= startGlobalIndex && partner.X3 <= endGlobalIndex)
+                    {
+                        pXs.Add(partner.X3);
+                        pYs.Add(partner.Y3 > 0m ? (double)partner.Y3 : (double)partner.GetPriceAt(partner.X3));
+                    }
+
+                    if (pXs.Count > 0)
+                    {
+                        var pScatter = plot.Add.Scatter(pXs.ToArray(), pYs.ToArray());
+                        pScatter.MarkerShape = MarkerShape.FilledCircle;
+                        pScatter.MarkerSize = 6;
+                        pScatter.Color = Color.FromHex("#f87171"); // 亮红色端点
+                        pScatter.LineWidth = 0;
+                        string partnerType = partner.IsResistance ? "阻力上轨" : "支撑下轨";
+                        pScatter.LegendText = $"🔴 关联通道对轨 ({partnerType} #{partner.X1}->#{partner.X2})";
+                    }
                 }
             }
 
@@ -303,11 +457,12 @@ namespace Common.Helper
 
             // 7. 添加左上角结构化描述摘要卡片 (强制中文字体)
             string timeRange = $"{TimeHelper.FromUnixTimeMilliseconds(klines[0].OpenTime):yyyy-MM-dd HH:mm} ~ {TimeHelper.FromUnixTimeMilliseconds(klines[count - 1].CloseTime):yyyy-MM-dd HH:mm}";
+            string channelSummary = channelLinesDrawn > 0 ? $", 🔴趋势通道={channelLinesDrawn / 2}组" : "";
             string fullSummary = $"【量化结构指标摘要】\n" +
                                  $"• 时间跨度: {timeRange} (UTC+0)\n" +
                                  $"• K线根数: {count:N0} 根 | 价格区间: {klines[0].Close:F2} -> {klines[count - 1].Close:F2}\n" +
                                  $"• 极值高低点: 高点(Peaks)={peaksCount}, 低点(Valleys)={valleysCount}\n" +
-                                 $"• 绘制趋势线: 阻力线={resistanceDrawn}条, 支撑线={supportDrawn}条 (⭐三点共线强线={threePointConfirmedDrawn}条)\n" +
+                                 $"• 绘制趋势线: 阻力线={resistanceDrawn}条, 支撑线={supportDrawn}条 (⭐三点共线={threePointConfirmedDrawn}条{channelSummary})\n" +
                                  $"• 开仓信号: 多单={longSignalsDrawn}笔, 空单={shortSignalsDrawn}笔 (策略: 触碰3-Tick回弹 LineX1X2>=40, LineAge>=4)\n" +
                                  $"• 策略备注: {summaryDescription}";
 

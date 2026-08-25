@@ -262,6 +262,7 @@ namespace Common.Helper
             sb.AppendLine($"                <div class=\"param-item\"><span class=\"param-name\">外包络模式</span><span class=\"param-val\">{(request.AllowInternalPenetration ? "允许内部穿透" : "严格外包络 (禁止穿透)")}</span></div>");
             sb.AppendLine($"                <div class=\"param-item\"><span class=\"param-name\">滑动窗口容量 (MaxKlines)</span><span class=\"param-val\">{request.MaxKlinesCapacity:N0} 根</span></div>");
             sb.AppendLine($"                <div class=\"param-item\"><span class=\"param-name\">识别极值总数</span><span class=\"param-val\">高点 {result.PeaksCount:N0} | 低点 {result.ValleysCount:N0}</span></div>");
+            sb.AppendLine($"                <div class=\"param-item\"><span class=\"param-name\">活跃趋势线与通道</span><span class=\"param-val\">阻力 {result.ActiveResistanceLinesCount} | 支撑 {result.ActiveSupportLinesCount} (🔴通道 {result.ActiveChannelsCount})</span></div>");
             sb.AppendLine("            </div>");
 
             sb.AppendLine("            <div class=\"param-group\">");

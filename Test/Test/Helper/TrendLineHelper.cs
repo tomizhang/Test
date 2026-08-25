@@ -44,19 +44,7 @@ namespace Common.Helper
                 if (span <= 0) continue;
                 if (span > maxSpan) break; // 极值点已按 Index 严格递增排序，超出直接 break
 
-                // 1. 【角度与方向约束】
-                // 由高点生成的趋势线：需要大于等于 0 度 (Y2 >= Y1，价格向上或水平延伸)
-                // 由低点生成的趋势线：需要小于等于 0 度 (Y2 <= Y1，价格向下或水平延伸)
-                if (newPoint.Type == PivotType.Peak && newPoint.Price < pOld.Price)
-                {
-                    continue; // 过滤高点小于 0 度的趋势线
-                }
-                else if (newPoint.Type == PivotType.Valley && newPoint.Price > pOld.Price)
-                {
-                    continue; // 过滤低点大于 0 度的趋势线
-                }
-
-                // 2. 【超高斜率过滤】
+                // 1. 【超高斜率过滤】
                 decimal dy = newPoint.Price - pOld.Price;
                 decimal normalizedK = pOld.Price > 0m ? Math.Abs((dy / pOld.Price) / span * 100m) : 0m;
                 if (maxSlopePctPerBar > 0m && normalizedK > maxSlopePctPerBar)
@@ -262,9 +250,6 @@ namespace Common.Helper
                         int span = p2.Index - p1.Index;
                         if (span <= 0 || span > maxSpan) continue;
 
-                        // 由高点生成的趋势线只保留大于等于 0 度 (Y2 >= Y1)
-                        if (p2.Price < p1.Price) continue;
-
                         // 过滤超高斜率
                         decimal dy = p2.Price - p1.Price;
                         decimal normalizedK = p1.Price > 0m ? Math.Abs((dy / p1.Price) / span * 100m) : 0m;
@@ -288,9 +273,6 @@ namespace Common.Helper
                         var p2 = valleys[j];
                         int span = p2.Index - p1.Index;
                         if (span <= 0 || span > maxSpan) continue;
-
-                        // 由低点生成的趋势线只保留小于等于 0 度 (Y2 <= Y1)
-                        if (p2.Price > p1.Price) continue;
 
                         // 过滤超高斜率
                         decimal dy = p2.Price - p1.Price;
@@ -344,6 +326,221 @@ namespace Common.Helper
                 }
             }
             return false;
+        }
+
+        #endregion
+
+        #region 4. 趋势通道 (Trend Channel) 检测与精细加工
+
+        /// <summary>
+        /// 从满足条件的阻力趋势线与支撑趋势线中精细加工与过滤出高品质趋势通道 (Trend Channels)
+        /// 精细过滤规则：
+        /// 1. 基准线跨度门槛：上轨与下轨自身的跨度均需 >= minLineSpan (默认 30 根)
+        /// 2. 重叠有效跨度：两轨在时间轴上的重叠跨度需 >= minOverlapSpan (默认 30 根)
+        /// 3. 严格平行度：斜率同向，归一化斜率绝对偏差 <= maxSlopeDiffPct (默认 0.08%/bar)，且相对偏差 <= maxRelativeSlopeDiff (默认 18%)
+        /// 4. 等宽平行度校验：起始宽度与终止宽度的比例 >= minWidthRatio (默认 0.70，过滤喇叭形或收敛三角形伪通道)
+        /// 5. 通道有效宽度：平均百分比宽度处于合理区间 [minChannelWidthPct, maxChannelWidthPct] (默认 0.20% ~ 15.0%)
+        /// 6. 趋势整体倾斜：两轨整体斜率具备有效倾斜幅度 >= minOverallSlopePct (默认 0.20%)
+        /// 7. 最优品质去重：按品质得分降序贪心优选，消除重叠冗余通道，确保每组通道清晰权威
+        /// </summary>
+        /// <param name="resistanceLines">阻力趋势线列表 (上轨候选)</param>
+        /// <param name="supportLines">支撑趋势线列表 (下轨候选)</param>
+        /// <param name="currentGlobalIndex">当前最新全局 K 线索引</param>
+        /// <param name="minLineSpan">单根趋势线自身最小跨度 (默认 30 根)</param>
+        /// <param name="minOverlapSpan">两轨在时间轴上最小重叠跨度 (默认 30 根)</param>
+        /// <param name="maxStartXDiff">两轨起点 X1 差值绝对值最大允许值 (默认 30 根)</param>
+        /// <param name="maxSlopeDiffPct">允许的最大绝对斜率差 (%/bar，默认 0.08%/bar)</param>
+        /// <param name="maxRelativeSlopeDiff">允许的最大相对斜率偏差 (默认 0.18 即 18%)</param>
+        /// <param name="minWidthRatio">通道两端宽度一致性比例 (默认 0.70)</param>
+        /// <param name="minChannelWidthPct">最小通道宽度百分比 (默认 0.20%)</param>
+        /// <param name="maxChannelWidthPct">最大通道宽度百分比 (默认 15.0%)</param>
+        /// <param name="minOverallSlopePct">最小整体倾斜百分比 (默认 0.20%)</param>
+        /// <returns>加工出的高品质有效趋势通道列表</returns>
+        public static List<TrendChannel> DetectTrendChannels(
+            List<TrendLine> resistanceLines,
+            List<TrendLine> supportLines,
+            int currentGlobalIndex = -1,
+            int minLineSpan = 30,
+            int minOverlapSpan = 30,
+            int maxStartXDiff = 30,
+            decimal maxSlopeDiffPct = 0.08m,
+            decimal maxRelativeSlopeDiff = 0.18m,
+            decimal minWidthRatio = 0.70m,
+            decimal minChannelWidthPct = 0.20m,
+            decimal maxChannelWidthPct = 15.0m,
+            decimal minOverallSlopePct = 0.20m)
+        {
+            var channels = new List<TrendChannel>();
+            if (resistanceLines == null || resistanceLines.Count == 0 || supportLines == null || supportLines.Count == 0)
+            {
+                return channels;
+            }
+
+            // 先重置所有线条的通道标记
+            for (int i = 0; i < resistanceLines.Count; i++)
+            {
+                var r = resistanceLines[i];
+                r.IsInChannel = false;
+                r.ChannelId = 0;
+                resistanceLines[i] = r;
+            }
+            for (int i = 0; i < supportLines.Count; i++)
+            {
+                var s = supportLines[i];
+                s.IsInChannel = false;
+                s.ChannelId = 0;
+                supportLines[i] = s;
+            }
+
+            var candidatePairs = new List<(int RIndex, int SIndex, double Score, TrendChannel Channel)>();
+
+            // 1. 严格多重精细过滤遍历
+            for (int i = 0; i < resistanceLines.Count; i++)
+            {
+                var r = resistanceLines[i];
+                if (!r.IsValid) continue;
+                if (r.LineX1X2 < minLineSpan) continue; // 过滤微型噪音阻力线
+
+                for (int j = 0; j < supportLines.Count; j++)
+                {
+                    var s = supportLines[j];
+                    if (!s.IsValid) continue;
+                    if (s.LineX1X2 < minLineSpan) continue; // 过滤微型噪音支撑线
+
+                    // 0. 起点对齐约束：两轨起点 X1 差值绝对值 <= maxStartXDiff (初步暂定 30 根 K 线内)
+                    if (Math.Abs(r.X1 - s.X1) > maxStartXDiff)
+                    {
+                        continue;
+                    }
+
+                    // 1. 斜率同向与严格平行度检查
+                    // 若斜率异号 (一正一负) 且绝对值均明显大于 0，说明两线会大幅交叉发散/收敛
+                    if ((r.K > 0.015m && s.K < -0.015m) || (r.K < -0.015m && s.K > 0.015m))
+                    {
+                        continue;
+                    }
+
+                    decimal slopeDiff = Math.Abs(r.K - s.K);
+                    decimal maxAbsK = Math.Max(Math.Abs(r.K), Math.Abs(s.K));
+                    decimal relSlopeDiff = maxAbsK > 0.015m ? slopeDiff / maxAbsK : slopeDiff;
+
+                    if (slopeDiff > maxSlopeDiffPct || relSlopeDiff > maxRelativeSlopeDiff)
+                    {
+                        continue;
+                    }
+
+                    // 2. 整体斜率倾斜幅度门槛
+                    if (Math.Abs(r.OverallSlopePct) < minOverallSlopePct || Math.Abs(s.OverallSlopePct) < minOverallSlopePct)
+                    {
+                        continue;
+                    }
+
+                    // 3. 时间/X 轴有效重叠跨度计算
+                    int rEnd = r.CollidedKlineIndex >= 0 ? r.CollidedKlineIndex : (currentGlobalIndex >= 0 ? currentGlobalIndex : r.X2 + r.LineAge);
+                    int sEnd = s.CollidedKlineIndex >= 0 ? s.CollidedKlineIndex : (currentGlobalIndex >= 0 ? currentGlobalIndex : s.X2 + s.LineAge);
+
+                    int startX = Math.Max(r.X1, s.X1);
+                    int endX = Math.Min(rEnd, sEnd);
+                    int overlapSpan = endX - startX;
+
+                    if (overlapSpan < minOverlapSpan)
+                    {
+                        continue;
+                    }
+
+                    // 4. 上下位置与非相交检查 (阻力线在上，支撑线在下)
+                    decimal rPriceStart = r.GetPriceAt(startX);
+                    decimal sPriceStart = s.GetPriceAt(startX);
+                    decimal rPriceEnd = r.GetPriceAt(endX);
+                    decimal sPriceEnd = s.GetPriceAt(endX);
+
+                    if (rPriceStart <= sPriceStart || rPriceEnd <= sPriceEnd)
+                    {
+                        continue; // 两线相交或支撑线在阻力线上方
+                    }
+
+                    // 5. 通道宽度合理性检查
+                    decimal widthPctStart = sPriceStart > 0m ? (rPriceStart - sPriceStart) / sPriceStart * 100m : 0m;
+                    decimal widthPctEnd = sPriceEnd > 0m ? (rPriceEnd - sPriceEnd) / sPriceEnd * 100m : 0m;
+
+                    if (widthPctStart < minChannelWidthPct || widthPctEnd < minChannelWidthPct)
+                    {
+                        continue; // 通道过窄
+                    }
+
+                    if (widthPctStart > maxChannelWidthPct || widthPctEnd > maxChannelWidthPct)
+                    {
+                        continue; // 通道过宽
+                    }
+
+                    // 6. 等宽平行度校验 (过滤喇叭口和收敛楔形)
+                    decimal minW = Math.Min(widthPctStart, widthPctEnd);
+                    decimal maxW = Math.Max(widthPctStart, widthPctEnd);
+                    decimal widthRatio = maxW > 0m ? minW / maxW : 0m;
+
+                    if (widthRatio < minWidthRatio)
+                    {
+                        continue;
+                    }
+
+                    // 7. 计算通道品质综合得分
+                    double score = (double)overlapSpan * (1.0 - (double)relSlopeDiff) * (double)widthRatio;
+                    if (r.IsThreePointConfirmed) score *= 1.3;
+                    if (s.IsThreePointConfirmed) score *= 1.3;
+                    if (r.CollidedKlineIndex == -1 && s.CollidedKlineIndex == -1) score *= 1.2; // 双轨活跃加分
+
+                    var channel = new TrendChannel
+                    {
+                        UpperLine = r,
+                        LowerLine = s
+                    };
+
+                    candidatePairs.Add((i, j, score, channel));
+                }
+            }
+
+            if (candidatePairs.Count == 0)
+            {
+                return channels;
+            }
+
+            // 2. 按得分降序排序，贪心优选非重叠的权威通道
+            candidatePairs.Sort((a, b) => b.Score.CompareTo(a.Score));
+
+            var usedR = new HashSet<int>();
+            var usedS = new HashSet<int>();
+            int channelIdCounter = 1;
+
+            foreach (var item in candidatePairs)
+            {
+                if (usedR.Contains(item.RIndex) || usedS.Contains(item.SIndex))
+                {
+                    continue; // 消除同一线条的冗余重叠通道，确保清晰
+                }
+
+                usedR.Add(item.RIndex);
+                usedS.Add(item.SIndex);
+
+                int chId = channelIdCounter++;
+                var ch = item.Channel;
+                ch.ChannelId = chId;
+
+                var r = resistanceLines[item.RIndex];
+                r.IsInChannel = true;
+                r.ChannelId = chId;
+                resistanceLines[item.RIndex] = r;
+                ch.UpperLine = r;
+
+                var s = supportLines[item.SIndex];
+                s.IsInChannel = true;
+                s.ChannelId = chId;
+                supportLines[item.SIndex] = s;
+                ch.LowerLine = s;
+
+                channels.Add(ch);
+            }
+
+            return channels;
         }
 
         #endregion

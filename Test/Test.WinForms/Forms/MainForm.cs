@@ -49,6 +49,13 @@ namespace Test.WinForms.Forms
         private long _lastChartSnapshotTicks = 0;
         private System.Windows.Forms.Timer _uiRefreshTimer = null!;
 
+        // 图表渲染态趋势线缓存 (用于点击图表拾取与特征详细日志输出)
+        private readonly object _plottedLinesLock = new object();
+        private List<TrendLine> _currentPlottedLines = new List<TrendLine>();
+        private int _currentPlotStartGlobalIndex = 0;
+        private int _currentPlotEndGlobalIndex = 0;
+        private TrendLine? _selectedTrendLine = null; // 当前用户点击选中的趋势线 (以红色高亮显示)
+
         // UI 控件定义
         private SplitContainer splitMain = null!;
         private SplitContainer splitLeft = null!;
@@ -156,6 +163,9 @@ namespace Test.WinForms.Forms
                 formsPlot.Plot.Axes.AutoScale();
                 formsPlot.Refresh();
             };
+            formsPlot.MouseDown += OnFormsPlotMouseDown;
+            formsPlot.MouseUp += OnFormsPlotMouseUp;
+            formsPlot.MouseMove += OnFormsPlotMouseMove;
             splitLeft.Panel1.Controls.Add(formsPlot);
 
             // ② 左下：日志控制面板与 RichTextBox
@@ -719,6 +729,13 @@ namespace Test.WinForms.Forms
                 {
                     if (!formsPlot.IsDisposed && snap.Klines.Length > 0)
                     {
+                        lock (_plottedLinesLock)
+                        {
+                            _currentPlottedLines = snap.Lines != null ? new List<TrendLine>(snap.Lines) : new List<TrendLine>();
+                            _currentPlotStartGlobalIndex = snap.StartGlobalIndex;
+                            _currentPlotEndGlobalIndex = snap.StartGlobalIndex + snap.Klines.Length - 1;
+                        }
+
                         PlotHelper.BuildPlot(
                             formsPlot.Plot,
                             snap.Klines,
@@ -730,7 +747,8 @@ namespace Test.WinForms.Forms
                             startGlobalIndex: snap.StartGlobalIndex,
                             autoScaleAxes: snap.AutoScale,
                             tradeSignals: snap.TradeSignals,
-                            lineWidth: snap.LineWidth);
+                            lineWidth: snap.LineWidth,
+                            selectedTrendLine: _selectedTrendLine);
 
                         formsPlot.Refresh();
                     }
@@ -1004,6 +1022,13 @@ namespace Test.WinForms.Forms
                     string summary = $"币种: {request.Coin}, 周期: {interval.ToIntervalString()}, 窗口: {request.StartDate:yyyy-MM-dd} ~ {request.EndDate:yyyy-MM-dd}\n" +
                                      $"交易战绩: {_latestResult.TotalTrades} 笔 (胜率: {_latestResult.WinRate:F1}%, 累计收益: {sign}{_latestResult.TotalPnLPct:F2}%) | 耗时: {_latestResult.ElapsedMilliseconds} ms";
 
+                    lock (_plottedLinesLock)
+                    {
+                        _currentPlottedLines = new List<TrendLine>(allLines);
+                        _currentPlotStartGlobalIndex = startGlobal;
+                        _currentPlotEndGlobalIndex = startGlobal + strat.KlineCount - 1;
+                    }
+
                     PlotHelper.BuildPlot(
                         formsPlot.Plot,
                         strat.Klines,
@@ -1015,7 +1040,8 @@ namespace Test.WinForms.Forms
                         startGlobalIndex: startGlobal,
                         autoScaleAxes: true,
                         tradeSignals: strat.TradeSignals,
-                        lineWidth: (float)request.LineWidth);
+                        lineWidth: (float)request.LineWidth,
+                        selectedTrendLine: _selectedTrendLine);
 
                     formsPlot.Refresh();
 
@@ -1162,6 +1188,440 @@ namespace Test.WinForms.Forms
             txtLogs.SelectionColor = color;
             txtLogs.AppendText(message + "\n");
             txtLogs.ScrollToCaret();
+        }
+
+        #endregion
+
+        #region 图表交互与趋势线点击特征输出
+
+        private Point _plotMouseDownPos;
+        private bool _isPlotMouseDown = false;
+
+        private void OnFormsPlotMouseDown(object? sender, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left || e.Button == MouseButtons.Right)
+            {
+                _plotMouseDownPos = e.Location;
+                _isPlotMouseDown = true;
+            }
+        }
+
+        private void OnFormsPlotMouseUp(object? sender, MouseEventArgs e)
+        {
+            if (_isPlotMouseDown)
+            {
+                _isPlotMouseDown = false;
+                int dx = Math.Abs(e.Location.X - _plotMouseDownPos.X);
+                int dy = Math.Abs(e.Location.Y - _plotMouseDownPos.Y);
+
+                // 鼠标微小位移判定为单击 (排除拖拽/缩放交互)
+                if (dx <= 8 && dy <= 8)
+                {
+                    HitTestTrendLine(e.X, e.Y);
+                }
+            }
+        }
+
+        private void OnFormsPlotMouseMove(object? sender, MouseEventArgs e)
+        {
+            if (!_isPlotMouseDown)
+            {
+                bool isNearLine = IsNearAnyTrendLine(e.X, e.Y, 15.0);
+                formsPlot.Cursor = isNearLine ? Cursors.Hand : Cursors.Default;
+            }
+        }
+
+        private List<TrendLine> GetCandidateTrendLines()
+        {
+            var list = new List<TrendLine>();
+
+            lock (_plottedLinesLock)
+            {
+                if (_currentPlottedLines != null && _currentPlottedLines.Count > 0)
+                {
+                    list.AddRange(_currentPlottedLines);
+                    return list;
+                }
+            }
+
+            if (_latestChartSnapshot?.Lines != null && _latestChartSnapshot.Lines.Count > 0)
+            {
+                list.AddRange(_latestChartSnapshot.Lines);
+                return list;
+            }
+
+            if (_latestResult?.Strategy != null)
+            {
+                var strat = _latestResult.Strategy;
+                if (strat.ActiveResistanceLines.Count > 0) list.AddRange(strat.ActiveResistanceLines);
+                if (strat.ActiveSupportLines.Count > 0) list.AddRange(strat.ActiveSupportLines);
+                if (strat.DeletedTrendLines.Count > 0) list.AddRange(strat.DeletedTrendLines);
+            }
+
+            return list;
+        }
+
+        private void HitTestTrendLine(double mouseX, double mouseY)
+        {
+            var candidateLines = GetCandidateTrendLines();
+            if (candidateLines == null || candidateLines.Count == 0) return;
+
+            double minDistance = double.MaxValue;
+            TrendLine? selectedLine = null;
+            double tolerancePixels = 20.0; // 20 像素舒适拾取容差
+
+            var limits = formsPlot.Plot.Axes.GetLimits();
+            double plotLeft = limits.Left;
+            double plotRight = limits.Right;
+
+            ScottPlot.Coordinates mouseCoord;
+            try
+            {
+                mouseCoord = formsPlot.Plot.GetCoordinates(new ScottPlot.Pixel(mouseX, mouseY));
+            }
+            catch
+            {
+                mouseCoord = new ScottPlot.Coordinates(0, 0);
+            }
+
+            for (int i = candidateLines.Count - 1; i >= 0; i--)
+            {
+                var line = candidateLines[i];
+
+                int effectiveEndX;
+                if (line.CollidedKlineIndex >= 0)
+                {
+                    effectiveEndX = line.CollidedKlineIndex;
+                }
+                else
+                {
+                    effectiveEndX = Math.Max(line.X2, (int)Math.Ceiling(plotRight));
+                }
+
+                // 过滤完全不在视口范围内的趋势线
+                if (effectiveEndX < plotLeft - 100 || line.X1 > plotRight + 100)
+                    continue;
+
+                double xStart = line.X1;
+                double xEnd = effectiveEndX;
+                double yStart = (double)line.Y1;
+                double yEnd = (double)line.GetPriceAt(effectiveEndX);
+
+                try
+                {
+                    var pixelA = formsPlot.Plot.GetPixel(new ScottPlot.Coordinates(xStart, yStart));
+                    var pixelB = formsPlot.Plot.GetPixel(new ScottPlot.Coordinates(xEnd, yEnd));
+
+                    double px = mouseX;
+                    double py = mouseY;
+                    double ax = pixelA.X;
+                    double ay = pixelA.Y;
+                    double bx = pixelB.X;
+                    double by = pixelB.Y;
+
+                    double dx = bx - ax;
+                    double dy = by - ay;
+                    double lenSq = dx * dx + dy * dy;
+
+                    double dist;
+                    if (lenSq < 1e-6)
+                    {
+                        dist = Math.Sqrt((px - ax) * (px - ax) + (py - ay) * (py - ay));
+                    }
+                    else
+                    {
+                        double t = Math.Clamp(((px - ax) * dx + (py - ay) * dy) / lenSq, 0.0, 1.0);
+                        double projX = ax + t * dx;
+                        double projY = ay + t * dy;
+                        dist = Math.Sqrt((px - projX) * (px - projX) + (py - projY) * (py - projY));
+                    }
+
+                    // 辅助检查：鼠标位于线段 X 跨度内时的垂直像素差距
+                    if (mouseCoord.X >= line.X1 - 1.0 && mouseCoord.X <= effectiveEndX + 1.0)
+                    {
+                        double linePriceAtMouse = (double)line.Y1 + (double)line.RawK * (mouseCoord.X - line.X1);
+                        var pixelAtMouse = formsPlot.Plot.GetPixel(new ScottPlot.Coordinates(mouseCoord.X, linePriceAtMouse));
+                        double vertDist = Math.Abs(pixelAtMouse.Y - mouseY);
+                        if (vertDist < dist)
+                        {
+                            dist = vertDist;
+                        }
+                    }
+
+                    if (dist < minDistance && dist <= tolerancePixels)
+                    {
+                        minDistance = dist;
+                        selectedLine = line;
+                    }
+                }
+                catch
+                {
+                    // 忽略坐标换算异常
+                }
+            }
+
+            if (selectedLine.HasValue)
+            {
+                _selectedTrendLine = selectedLine.Value;
+                OutputTrendLineDetails(selectedLine.Value);
+
+                // 立即在图表上以鲜亮红色重绘高亮选中的趋势线 (保持当前缩放与视口不变)
+                RedrawCurrentPlot(autoScale: false);
+
+                // 立即强制直接刷新写入至日志框 (免等待 Timer 轮询)
+                while (_logQueue.TryDequeue(out var item))
+                {
+                    AppendLogInternal(item.Message, item.Color);
+                }
+            }
+        }
+
+        private void RedrawCurrentPlot(bool autoScale = false)
+        {
+            try
+            {
+                if (formsPlot.IsDisposed) return;
+
+                // 优先从最新快照重绘
+                var snap = _latestChartSnapshot;
+                if (snap != null && snap.Klines.Length > 0)
+                {
+                    PlotHelper.BuildPlot(
+                        formsPlot.Plot,
+                        snap.Klines,
+                        snap.Peaks,
+                        snap.Valleys,
+                        snap.Lines,
+                        snap.Summary,
+                        title: snap.Title,
+                        startGlobalIndex: snap.StartGlobalIndex,
+                        autoScaleAxes: autoScale,
+                        tradeSignals: snap.TradeSignals,
+                        lineWidth: snap.LineWidth,
+                        selectedTrendLine: _selectedTrendLine);
+
+                    formsPlot.Refresh();
+                    return;
+                }
+
+                // 否则从回测最终结果重绘
+                if (_latestResult?.Strategy != null && _latestResult.Strategy.KlineCount > 0)
+                {
+                    var strat = _latestResult.Strategy;
+                    int startGlobal = Math.Max(0, strat.GlobalBarIndex - strat.KlineCount);
+                    var allLines = new List<TrendLine>();
+                    if (strat.ActiveResistanceLines.Count > 0) allLines.AddRange(strat.ActiveResistanceLines);
+                    if (strat.ActiveSupportLines.Count > 0) allLines.AddRange(strat.ActiveSupportLines);
+                    int delCount = strat.DeletedTrendLines.Count;
+                    int takeDel = Math.Min(100, delCount);
+                    for (int i = delCount - takeDel; i < delCount; i++)
+                    {
+                        allLines.Add(strat.DeletedTrendLines[i]);
+                    }
+
+                    string sign = _latestResult.TotalPnLPct >= 0 ? "+" : "";
+                    string summary = $"币种: {_currentRunningCoin}, 周期: {_currentRunningInterval}\n" +
+                                     $"交易战绩: {_latestResult.TotalTrades} 笔 (胜率: {_latestResult.WinRate:F1}%, 累计收益: {sign}{_latestResult.TotalPnLPct:F2}%)";
+
+                    PlotHelper.BuildPlot(
+                        formsPlot.Plot,
+                        strat.Klines,
+                        strat.Peaks,
+                        strat.Valleys,
+                        allLines,
+                        summary,
+                        title: $"{_currentRunningCoin} {_currentRunningInterval} 趋势线与极值结构折线图 (已选中趋势线)",
+                        startGlobalIndex: startGlobal,
+                        autoScaleAxes: autoScale,
+                        tradeSignals: strat.TradeSignals,
+                        lineWidth: (float)numLineWidth.Value,
+                        selectedTrendLine: _selectedTrendLine);
+
+                    formsPlot.Refresh();
+                }
+            }
+            catch
+            {
+                // 忽略刷新异常
+            }
+        }
+
+        private bool IsNearAnyTrendLine(double mouseX, double mouseY, double tolerancePixels)
+        {
+            var candidateLines = GetCandidateTrendLines();
+            if (candidateLines == null || candidateLines.Count == 0) return false;
+
+            var limits = formsPlot.Plot.Axes.GetLimits();
+            double plotLeft = limits.Left;
+            double plotRight = limits.Right;
+
+            for (int i = candidateLines.Count - 1; i >= 0; i--)
+            {
+                var line = candidateLines[i];
+                int effectiveEndX = line.CollidedKlineIndex >= 0 ? line.CollidedKlineIndex : Math.Max(line.X2, (int)Math.Ceiling(plotRight));
+                if (effectiveEndX < plotLeft - 50 || line.X1 > plotRight + 50) continue;
+
+                try
+                {
+                    var pixelA = formsPlot.Plot.GetPixel(new ScottPlot.Coordinates(line.X1, (double)line.Y1));
+                    var pixelB = formsPlot.Plot.GetPixel(new ScottPlot.Coordinates(effectiveEndX, (double)line.GetPriceAt(effectiveEndX)));
+
+                    double dx = pixelB.X - pixelA.X;
+                    double dy = pixelB.Y - pixelA.Y;
+                    double lenSq = dx * dx + dy * dy;
+                    if (lenSq < 1e-6) continue;
+
+                    double t = Math.Clamp(((mouseX - pixelA.X) * dx + (mouseY - pixelA.Y) * dy) / lenSq, 0.0, 1.0);
+                    double projX = pixelA.X + t * dx;
+                    double projY = pixelA.Y + t * dy;
+                    double dist = Math.Sqrt((mouseX - projX) * (mouseX - projX) + (mouseY - projY) * (mouseY - projY));
+
+                    if (dist <= tolerancePixels) return true;
+                }
+                catch
+                {
+                }
+            }
+            return false;
+        }
+
+        private void OutputTrendLineDetails(TrendLine line)
+        {
+            string typeName = line.IsResistance ? "高点阻力趋势线 (Peak Resistance)" : "低点支撑趋势线 (Valley Support)";
+            string stateStr;
+            Color themeColor;
+
+            if (line.CollidedKlineIndex >= 0)
+            {
+                stateStr = $"已击穿删除 (于 Bar #{line.CollidedKlineIndex} 发生穿透失效)";
+                themeColor = Color.FromArgb(148, 163, 184); // Slate 400
+            }
+            else if (line.IsInChannel)
+            {
+                stateStr = $"活跃 (🔴 趋势通道 - 红色高亮 0.8f, 通道 #{line.ChannelId})";
+                themeColor = Color.FromArgb(239, 68, 68); // Red 500
+            }
+            else if (line.IsTriggered)
+            {
+                stateStr = "活跃 (已触发交易开仓 - 绿色高亮)";
+                themeColor = Color.FromArgb(74, 222, 128); // Green 400
+            }
+            else if (line.IsThreePointConfirmed)
+            {
+                stateStr = "活跃 (3点强确认线 - 金黄高亮)";
+                themeColor = Color.FromArgb(250, 204, 21); // Yellow 400
+            }
+            else
+            {
+                stateStr = "活跃 (有效延长监控中)";
+                themeColor = line.IsResistance ? Color.FromArgb(249, 115, 22) : Color.FromArgb(6, 182, 212); // Orange / Cyan
+            }
+
+            string t1 = line.Time1 != DateTime.MinValue ? line.Time1.ToUtc0String() : "N/A";
+            string t2 = line.Time2 != DateTime.MinValue ? line.Time2.ToUtc0String() : "N/A";
+
+            _logQueue.Enqueue(("\n========================================================", themeColor));
+            _logQueue.Enqueue(($"🎯 [选中趋势线] 【{typeName}】", themeColor));
+            _logQueue.Enqueue(($"  • 运行状态: {stateStr}", Color.FromArgb(241, 245, 249)));
+            if (line.IsInChannel)
+            {
+                _logQueue.Enqueue(($"  • 通道形态: 【🔴 符合条件的趋势通道】属于通道 #{line.ChannelId} (红色高亮 0.8f)", Color.FromArgb(239, 68, 68)));
+            }
+            _logQueue.Enqueue(($"  • 端点 1 (X1, Y1): Bar #{line.X1} (价格: {line.Y1:F4} @ {t1})", Color.FromArgb(241, 245, 249)));
+            _logQueue.Enqueue(($"  • 端点 2 (X2, Y2): Bar #{line.X2} (价格: {line.Y2:F4} @ {t2})", Color.FromArgb(241, 245, 249)));
+
+            if (line.IsThreePointConfirmed && line.X3 >= 0)
+            {
+                _logQueue.Enqueue(($"  • 第3确认点 (X3, Y3): Bar #{line.X3} (价格: {line.Y3:F4}) [⭐ 3点共线确认]", Color.FromArgb(250, 204, 21)));
+            }
+
+            _logQueue.Enqueue(($"  • 跨度指标: 跨度(X1->X2) = {line.LineX1X2} bars, 寿命(X2->当前) = {line.LineAge} bars, 全局总长 = {line.TotalAge} bars", Color.FromArgb(241, 245, 249)));
+            _logQueue.Enqueue(($"  • 斜率指标: 整体斜率 = {line.OverallSlopePct:+0.00;-0.00;0.00}%, 归一化斜率 = {line.K:F4}%/bar, 原始斜率 = {line.RawK:F6} $/bar", Color.FromArgb(241, 245, 249)));
+
+            if (line.CachedCurrentPrice > 0)
+            {
+                _logQueue.Enqueue(($"  • 当前延伸价: {line.CachedCurrentPrice:F4} (总延伸整体斜率: {line.TotalOverallSlopePct:+0.00;-0.00;0.00}%)", Color.FromArgb(241, 245, 249)));
+            }
+
+            if (line.CollidedKlineIndex >= 0)
+            {
+                _logQueue.Enqueue(($"  • 击穿信息: 于 Bar #{line.CollidedKlineIndex} 发生穿透, 延伸跨度 = {line.LineExtensionRange} bars", Color.FromArgb(248, 113, 113)));
+            }
+            else
+            {
+                _logQueue.Enqueue(($"  • 击穿信息: 未被击穿, 持续向右延伸监控 (ExtensionRange = {line.LineExtensionRange})", Color.FromArgb(74, 222, 128)));
+            }
+
+            // 🌟 若存在关联通道，同时输出通道对轨与通道全貌
+            TrendLine? channelPartner = null;
+            if (_currentPlottedLines != null && _currentPlottedLines.Count > 0)
+            {
+                if (line.ChannelId > 0)
+                {
+                    for (int i = 0; i < _currentPlottedLines.Count; i++)
+                    {
+                        var l = _currentPlottedLines[i];
+                        if (l.ChannelId == line.ChannelId && l.Type != line.Type)
+                        {
+                            channelPartner = l;
+                            break;
+                        }
+                    }
+                }
+                else
+                {
+                    for (int i = 0; i < _currentPlottedLines.Count; i++)
+                    {
+                        var l = _currentPlottedLines[i];
+                        if (l.Type != line.Type && l.IsValid)
+                        {
+                            var rLine = line.IsResistance ? line : l;
+                            var sLine = line.IsSupport ? line : l;
+                            var testChannels = TrendLineHelper.DetectTrendChannels(
+                                new List<TrendLine> { rLine },
+                                new List<TrendLine> { sLine },
+                                _currentPlotEndGlobalIndex);
+                            if (testChannels.Count > 0)
+                            {
+                                channelPartner = l;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (channelPartner.HasValue)
+            {
+                var p = channelPartner.Value;
+                string pType = p.IsResistance ? "阻力线上轨 (Peak Upper)" : "支撑线下轨 (Valley Lower)";
+                string pt1 = p.Time1 != DateTime.MinValue ? p.Time1.ToUtc0String() : "N/A";
+                string pt2 = p.Time2 != DateTime.MinValue ? p.Time2.ToUtc0String() : "N/A";
+
+                int startX = Math.Max(line.X1, p.X1);
+                int endX = Math.Min(line.CollidedKlineIndex >= 0 ? line.CollidedKlineIndex : line.X2 + line.LineAge,
+                                    p.CollidedKlineIndex >= 0 ? p.CollidedKlineIndex : p.X2 + p.LineAge);
+                int overlapSpan = Math.Max(0, endX - startX);
+                decimal avgSlope = (line.K + p.K) / 2m;
+                decimal avgOverallSlope = (line.OverallSlopePct + p.OverallSlopePct) / 2m;
+
+                var upper = line.IsResistance ? line : p;
+                var lower = line.IsSupport ? line : p;
+                decimal widthStart = lower.GetPriceAt(startX) > 0 ? (upper.GetPriceAt(startX) - lower.GetPriceAt(startX)) / lower.GetPriceAt(startX) * 100m : 0m;
+                decimal widthEnd = lower.GetPriceAt(endX) > 0 ? (upper.GetPriceAt(endX) - lower.GetPriceAt(endX)) / lower.GetPriceAt(endX) * 100m : 0m;
+
+                _logQueue.Enqueue(("\n--------------------------------------------------------", Color.FromArgb(239, 68, 68)));
+                _logQueue.Enqueue(($"🔴 [关联趋势通道详情] (双轨同时显示高亮)", Color.FromArgb(239, 68, 68)));
+                _logQueue.Enqueue(($"  • 通道特征: 有效重叠跨度 = {overlapSpan} bars (Bar #{startX} -> #{endX})", Color.FromArgb(241, 245, 249)));
+                _logQueue.Enqueue(($"  • 斜率指标: 通道平均归一化斜率 = {avgSlope:F4}%/bar (整体斜率: {avgOverallSlope:+0.00;-0.00;0.00}%)", Color.FromArgb(241, 245, 249)));
+                _logQueue.Enqueue(($"  • 宽度指标: 起始宽度 = {widthStart:F2}%, 终止宽度 = {widthEnd:F2}%, 平均宽度 = {((widthStart + widthEnd) / 2m):F2}%", Color.FromArgb(241, 245, 249)));
+                _logQueue.Enqueue(($"  • 配对通道轨: 【{pType}】", Color.FromArgb(250, 204, 21)));
+                _logQueue.Enqueue(($"    ↳ 端点 1: Bar #{p.X1} (价格: {p.Y1:F4} @ {pt1})", Color.FromArgb(241, 245, 249)));
+                _logQueue.Enqueue(($"    ↳ 端点 2: Bar #{p.X2} (价格: {p.Y2:F4} @ {pt2}) | 归一化斜率 = {p.K:F4}%/bar", Color.FromArgb(241, 245, 249)));
+                _logQueue.Enqueue(("--------------------------------------------------------", Color.FromArgb(239, 68, 68)));
+            }
+
+            _logQueue.Enqueue(("========================================================", themeColor));
         }
 
         #endregion

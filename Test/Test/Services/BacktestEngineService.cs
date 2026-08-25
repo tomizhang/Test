@@ -273,6 +273,7 @@ namespace Common.Services
                             totalTicks: dataReader.TotalTicksLoaded,
                             activeR: strategy.ActiveResistanceLines.Count,
                             activeS: strategy.ActiveSupportLines.Count,
+                            activeChannels: strategy.ActiveTrendChannelsCount,
                             deletedCount: strategy.DeletedTrendLinesCount,
                             longSignals: strategy.LongSignalsCount,
                             shortSignals: strategy.ShortSignalsCount,
@@ -319,6 +320,7 @@ namespace Common.Services
                 result.ValleysCount = strategy.Valleys.Count;
                 result.ActiveResistanceLinesCount = strategy.ActiveResistanceLines.Count;
                 result.ActiveSupportLinesCount = strategy.ActiveSupportLines.Count;
+                result.ActiveChannelsCount = strategy.ActiveTrendChannelsCount;
                 result.DeletedTrendLinesCount = strategy.DeletedTrendLinesCount;
                 result.HistoricalTrendLinesCount = strategy.HistoricalTrendLinesCount;
                 result.LongSignalsCount = strategy.LongSignalsCount;
@@ -373,6 +375,7 @@ namespace Common.Services
                     totalTicks: currentTickIndex,
                     activeR: strategy.ActiveResistanceLines.Count,
                     activeS: strategy.ActiveSupportLines.Count,
+                    activeChannels: strategy.ActiveTrendChannelsCount,
                     deletedCount: strategy.DeletedTrendLinesCount,
                     longSignals: strategy.LongSignalsCount,
                     shortSignals: strategy.ShortSignalsCount,
@@ -417,6 +420,7 @@ namespace Common.Services
             long totalTicks = 0,
             int activeR = 0,
             int activeS = 0,
+            int activeChannels = 0,
             int deletedCount = 0,
             int longSignals = 0,
             int shortSignals = 0,
@@ -435,6 +439,7 @@ namespace Common.Services
                 TotalTicks = totalTicks,
                 ActiveResistanceCount = activeR,
                 ActiveSupportCount = activeS,
+                ActiveChannelsCount = activeChannels,
                 DeletedLinesCount = deletedCount,
                 LongSignalsCount = longSignals,
                 ShortSignalsCount = shortSignals,

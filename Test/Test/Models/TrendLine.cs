@@ -139,6 +139,16 @@ namespace Common.Models
         public decimal CachedCurrentPrice { get; set; }
 
         /// <summary>
+        /// 🔴 是否属于符合条件的趋势通道 (Trend Channel，红色 0.8f 高亮显示)
+        /// </summary>
+        public bool IsInChannel { get; set; }
+
+        /// <summary>
+        /// 所属趋势通道唯一标识 ID (若不属于通道则为 0)
+        /// </summary>
+        public int ChannelId { get; set; }
+
+        /// <summary>
         /// 趋势线类型 (高点阻力线 / 低点支撑线)
         /// </summary>
         public PivotType Type { get; set; }

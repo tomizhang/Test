@@ -216,6 +216,7 @@ namespace Common.Models
         public long TotalTicks { get; set; }
         public int ActiveResistanceCount { get; set; }
         public int ActiveSupportCount { get; set; }
+        public int ActiveChannelsCount { get; set; }
         public int DeletedLinesCount { get; set; }
         public int LongSignalsCount { get; set; }
         public int ShortSignalsCount { get; set; }
@@ -260,6 +261,7 @@ namespace Common.Models
         public int ValleysCount { get; set; }
         public int ActiveResistanceLinesCount { get; set; }
         public int ActiveSupportLinesCount { get; set; }
+        public int ActiveChannelsCount { get; set; }
         public int DeletedTrendLinesCount { get; set; }
         public int HistoricalTrendLinesCount { get; set; }
 

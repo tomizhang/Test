@@ -70,6 +70,13 @@ namespace Test.Strategy
         // 8. 趋势线最大允许斜率 (%/bar)，过滤超高斜率与异常噪音趋势线 (默认 2.0%/bar)
         public decimal MaxSlopePctPerBar { get; set; } = 2.0m;
 
+        // 9. 趋势通道精细过滤参数 (默认基准线跨度>=30, 重叠跨度>=30, 起点X1差值<=30, 允许斜率偏差<=0.08%/bar, 相对偏差<=18%)
+        public int MinChannelLineSpan { get; set; } = 30;
+        public int MinChannelOverlapSpan { get; set; } = 30;
+        public int MaxChannelStartXDiff { get; set; } = 30;
+        public decimal MaxChannelSlopeDiffPct { get; set; } = 0.08m;
+        public decimal MaxChannelRelativeSlopeDiff { get; set; } = 0.18m;
+
         // 全局单调递增 K 线序列号计数器 (0, 1, 2, ... 500,000)
         private int _globalBarIndex = 0;
         public int GlobalBarIndex => _globalBarIndex;
@@ -88,6 +95,10 @@ namespace Test.Strategy
         // 当前存量的活跃阻力线与支撑线 (未被穿透的有效趋势线)
         public List<TrendLine> ActiveResistanceLines { get; } = new List<TrendLine>(300);
         public List<TrendLine> ActiveSupportLines { get; } = new List<TrendLine>(300);
+
+        // 当前活跃的趋势通道列表 (由平行的阻力线与支撑线加工构成，红色 0.8f 高亮显示)
+        public List<TrendChannel> ActiveTrendChannels { get; } = new List<TrendChannel>(100);
+        public int ActiveTrendChannelsCount => ActiveTrendChannels.Count;
 
         // ⚡ 极速边界短路缓存 (99% 的 Tick 零耗时跳过)
         private decimal _minActiveResistancePrice = decimal.MaxValue;
@@ -415,7 +426,7 @@ namespace Test.Strategy
                         int lineAge = currentGlobalIndex - probe.Line.X2;
                         string slModeStr = EnableTickStopLoss ? "5-Tick微止损" : "固定止损";
                         decimal overallSlopePct = probe.Line.Y1 > 0m ? (probe.Line.CachedCurrentPrice - probe.Line.Y1) / probe.Line.Y1 * 100m : 0m;
-                        string reason = $"【3点高点阻力线触碰开空】#{probe.Line.X1}->#{probe.Line.X2}->#{probe.Line.X3} | 整体斜率=+{overallSlopePct:F2}% (≥{MinSignalOverallSlopePct:F2}%), 跨度={probe.Line.LineX1X2}, 寿命={lineAge} | 触碰价:{probe.TouchPrice:F2} (0.001%附近) -> 3-Tick反向回弹价:{tick.Price:F2} | 止盈:{tpPrice:F2} (+{TakeProfitPct:F1}%), {slModeStr}:{slPrice:F2} (-{slPct:F3}%)";
+                        string reason = $"【3点高点阻力线触碰开空】#{probe.Line.X1}->#{probe.Line.X2}->#{probe.Line.X3} | 整体斜率={overallSlopePct:F2}% (|K整体|≥{MinSignalOverallSlopePct:F2}%), 跨度={probe.Line.LineX1X2}, 寿命={lineAge} | 触碰价:{probe.TouchPrice:F2} (0.001%附近) -> 3-Tick反向回弹价:{tick.Price:F2} | 止盈:{tpPrice:F2} (+{TakeProfitPct:F1}%), {slModeStr}:{slPrice:F2} (-{slPct:F3}%)";
 
                         var signal = new TradeSignal
                         {
@@ -585,9 +596,10 @@ namespace Test.Strategy
                     {
                         int lineAge = currentGlobalIndex - line.X2;
                         decimal overallSlopePct = line.Y1 > 0m ? (linePrice - line.Y1) / line.Y1 * 100m : 0m;
+                        decimal absOverallSlopePct = Math.Abs(overallSlopePct);
 
-                        // 检查是否满足策略准入条件: LineX1X2 >= 40 且 LineAge >= 4 且 整体斜率 >= MinSignalOverallSlopePct
-                        if (line.LineX1X2 >= MinSignalLineX1X2 && lineAge >= MinSignalLineAge && overallSlopePct >= MinSignalOverallSlopePct)
+                        // 检查是否满足策略准入条件: LineX1X2 >= 40 且 LineAge >= 4 且 |整体斜率| >= MinSignalOverallSlopePct
+                        if (line.LineX1X2 >= MinSignalLineX1X2 && lineAge >= MinSignalLineAge && absOverallSlopePct >= MinSignalOverallSlopePct)
                         {
                             if (!IsLineInProbes(line))
                             {
@@ -743,7 +755,7 @@ namespace Test.Strategy
                 LeftLen,
                 RightLen);
 
-            // 3. 【第 2 层: O(M) 增量趋势线生成 (零堆对象分配直装模式，高点只保留>=0度，低点只保留<=0度，过滤超高斜率)】
+            // 3. 【第 2 层: O(M) 增量趋势线生成 (零堆对象分配直装模式，高点与低点全角度趋势线生成，过滤超高斜率)】
             if (hasPeak)
             {
                 TrendLineHelper.GenerateIncrementalTrendLines(
@@ -849,7 +861,8 @@ namespace Test.Strategy
                         ? (kline.Close > expectedPrice * 1.001m)
                         : (kline.Close > expectedPrice || kline.High > expectedPrice);
 
-                    if (isPenetrated)
+                    // 🌟 配对的趋势通道线先不删除，保持通道结构完整
+                    if (isPenetrated && !line.IsInChannel)
                     {
                         line.CollidedKlineIndex = currentGlobalIndex;
                         line.LineExtensionRange = currentGlobalIndex - line.X2;
@@ -897,7 +910,8 @@ namespace Test.Strategy
                         ? (kline.Close < expectedPrice * 0.999m)
                         : (kline.Close < expectedPrice || kline.Low < expectedPrice);
 
-                    if (isPenetrated)
+                    // 🌟 配对的趋势通道线先不删除，保持通道结构完整
+                    if (isPenetrated && !line.IsInChannel)
                     {
                         line.CollidedKlineIndex = currentGlobalIndex;
                         line.LineExtensionRange = currentGlobalIndex - line.X2;
@@ -913,8 +927,24 @@ namespace Test.Strategy
                 }
             }
 
-            // 5. 适度清理超龄的非活跃趋势线 (保持活跃集合紧凑高效)
+            // 5. 适度清理超龄的非活跃趋势线 (保持活跃集合紧凑高效，通道线不删除)
             PruneInactiveTrendLines(currentGlobalIndex);
+
+            // 5.5 【第 4 层: 精细加工识别符合条件的趋势通道 (红色 0.8f 高亮显示)】
+            ActiveTrendChannels.Clear();
+            var detectedChannels = TrendLineHelper.DetectTrendChannels(
+                ActiveResistanceLines,
+                ActiveSupportLines,
+                currentGlobalIndex,
+                minLineSpan: MinChannelLineSpan,
+                minOverlapSpan: MinChannelOverlapSpan,
+                maxStartXDiff: MaxChannelStartXDiff,
+                maxSlopeDiffPct: MaxChannelSlopeDiffPct,
+                maxRelativeSlopeDiff: MaxChannelRelativeSlopeDiff);
+            if (detectedChannels.Count > 0)
+            {
+                ActiveTrendChannels.AddRange(detectedChannels);
+            }
 
             // 6. ⚡ 极速短路边界更新：刷新阻力线最低价与支撑线最高价
             UpdateActivePriceBoundaries();
@@ -1054,10 +1084,10 @@ namespace Test.Strategy
         /// </summary>
         private void PruneInactiveTrendLines(int currentGlobalIndex)
         {
-            // 活跃线控制在设定最大跨度寿命范围内，保持活跃集合紧凑高效
+            // 活跃线控制在设定最大跨度寿命范围内，保持活跃集合紧凑高效 (已配对为通道的趋势线先不删除)
             int maxActiveAge = Math.Max(150, MaxSpan * 2);
-            ActiveResistanceLines.RemoveAll(line => currentGlobalIndex - line.X2 > maxActiveAge);
-            ActiveSupportLines.RemoveAll(line => currentGlobalIndex - line.X2 > maxActiveAge);
+            ActiveResistanceLines.RemoveAll(line => !line.IsInChannel && currentGlobalIndex - line.X2 > maxActiveAge);
+            ActiveSupportLines.RemoveAll(line => !line.IsInChannel && currentGlobalIndex - line.X2 > maxActiveAge);
 
             int minRetainedIndex = currentGlobalIndex - MaxKlinesCapacity;
             if (minRetainedIndex > 0)
@@ -1100,7 +1130,7 @@ namespace Test.Strategy
                    $"GlobalBars: {_globalBarIndex}, Window: {_klines.Count}/{MaxKlinesCapacity} | " +
                    $"交易统计: 完成={CompletedTrades.Count}笔 (胜率={WinRate:F1}%, 盈亏={TotalPnLPct:F2}%) | " +
                    $"开仓信号: 多 {LongSignalsCount} | 空 {ShortSignalsCount} (总计 {TotalSignalsCount}) | " +
-                   $"活跃阻力={ActiveResistanceLines.Count}, 支撑={ActiveSupportLines.Count}";
+                   $"活跃阻力={ActiveResistanceLines.Count}, 支撑={ActiveSupportLines.Count}, 通道={ActiveTrendChannels.Count}";
         }
 
         /// <summary>
@@ -1114,6 +1144,7 @@ namespace Test.Strategy
             _valleys.Clear();
             ActiveResistanceLines.Clear();
             ActiveSupportLines.Clear();
+            ActiveTrendChannels.Clear();
             _deletedTrendLines.Clear();
             _historicalTrendLines.Clear();
             _activeTouchProbes.Clear();
