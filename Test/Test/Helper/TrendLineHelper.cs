@@ -562,15 +562,23 @@ namespace Common.Helper
         /// <param name="line">待判定的趋势线</param>
         /// <param name="pivots">同向极值点历史列表 (Peaks 或 Valleys)</param>
         /// <param name="currentGlobalIndex">发生穿透时的当前全局 K 线索引</param>
+        /// <param name="minOriginIndex">前一个相反方向/前一批次紫色基准点截止索引 (line.X1 必须大于此索引)</param>
         /// <param name="minTotalAge">源头至击穿点的最小波段总跨度 (默认 15 根)</param>
         /// <returns>是否为特殊趋势线</returns>
         public static bool IsSpecialTrendLineConditionMet(
             TrendLine line,
             IReadOnlyList<PivotPoint> pivots,
             int currentGlobalIndex,
+            int minOriginIndex = -1,
             int minTotalAge = 15)
         {
             if (!line.IsValid) return false;
+
+            // 🌟 前批次基准点隔离：若当前源头 X1 位于前一个被判定的紫色基准点批次及之前，不再参与计算
+            if (minOriginIndex >= 0 && line.X1 <= minOriginIndex)
+            {
+                return false;
+            }
 
             int totalAge = currentGlobalIndex - line.X1;
             if (totalAge < minTotalAge)

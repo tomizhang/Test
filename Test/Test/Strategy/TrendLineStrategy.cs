@@ -86,6 +86,10 @@ namespace Test.Strategy
         // 10. 特殊趋势线判定参数 (基于相对高低点波段起点识别，默认最小波段总存续时长 >= 15)
         public int MinSpecialTrendLineTotalAge { get; set; } = 15;
 
+        // 🟣 特殊趋势线波段基准点跟踪 (隔离前一个批次及之前的旧基准点)
+        private int _lastSpecialValleyOriginIndex = -1; // 上一个被确认为上升紫色趋势线源头的低点基准点索引
+        private int _lastSpecialPeakOriginIndex = -1;   // 上一个被确认为下降紫色趋势线源头的高点基准点索引
+
         // 全局单调递增 K 线序列号计数器 (0, 1, 2, ... 500,000)
         private int _globalBarIndex = 0;
         public int GlobalBarIndex => _globalBarIndex;
@@ -888,10 +892,11 @@ namespace Test.Strategy
 
                     if (isPenetrated)
                     {
-                        // 🟣 检查是否符合“特殊趋势线”结构特征 (源于相对高点/下跌波段起点向下延伸被向上突破)
-                        if (TrendLineHelper.IsSpecialTrendLineConditionMet(line, _peaks, currentGlobalIndex, minTotalAge: MinSpecialTrendLineTotalAge))
+                        // 🟣 检查是否符合“特殊趋势线”结构特征 (源于相对高点/下跌波段起点向下延伸被向上突破，且源头必须位于前一个低点紫色基准点之后)
+                        if (TrendLineHelper.IsSpecialTrendLineConditionMet(line, _peaks, currentGlobalIndex, minOriginIndex: _lastSpecialValleyOriginIndex, minTotalAge: MinSpecialTrendLineTotalAge))
                         {
                             line.IsSpecialTrendLine = true;
+                            _lastSpecialPeakOriginIndex = Math.Max(_lastSpecialPeakOriginIndex, line.X1);
                         }
                     }
 
@@ -946,10 +951,11 @@ namespace Test.Strategy
 
                     if (isPenetrated)
                     {
-                        // 🟣 检查是否符合“特殊趋势线”结构特征 (源于相对低点/上涨波段起点向上延伸被向下击穿)
-                        if (TrendLineHelper.IsSpecialTrendLineConditionMet(line, _valleys, currentGlobalIndex, minTotalAge: MinSpecialTrendLineTotalAge))
+                        // 🟣 检查是否符合“特殊趋势线”结构特征 (源于相对低点/上涨波段起点向上延伸被向下击穿，且源头必须位于前一个高点紫色基准点之后)
+                        if (TrendLineHelper.IsSpecialTrendLineConditionMet(line, _valleys, currentGlobalIndex, minOriginIndex: _lastSpecialPeakOriginIndex, minTotalAge: MinSpecialTrendLineTotalAge))
                         {
                             line.IsSpecialTrendLine = true;
+                            _lastSpecialValleyOriginIndex = Math.Max(_lastSpecialValleyOriginIndex, line.X1);
                         }
                     }
 
@@ -1187,6 +1193,8 @@ namespace Test.Strategy
             _peaks.Clear();
             _valleys.Clear();
             _zigZagTracker.Reset();
+            _lastSpecialValleyOriginIndex = -1;
+            _lastSpecialPeakOriginIndex = -1;
             ActiveResistanceLines.Clear();
             ActiveSupportLines.Clear();
             ActiveTrendChannels.Clear();
