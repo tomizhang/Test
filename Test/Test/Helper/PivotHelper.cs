@@ -4,6 +4,22 @@ using System.Collections.Generic;
 namespace Common.Helper
 {
     /// <summary>
+    /// 极值高低点计算算法类型
+    /// </summary>
+    public enum PivotAlgorithmType
+    {
+        /// <summary>
+        /// 经典双侧分形对比法 (Fractal: 左右对称 K 线窗口对比)
+        /// </summary>
+        Fractal = 0,
+
+        /// <summary>
+        /// ZigZag 之字转向算法 (基于最小百分比反转回撤识别宏观波段高低点)
+        /// </summary>
+        ZigZag = 1
+    }
+
+    /// <summary>
     /// 极值类型 (波峰 / 波谷)
     /// </summary>
     public enum PivotType
@@ -331,5 +347,198 @@ namespace Common.Helper
         }
 
         #endregion
+
+        #region 4. ZigZag 之字转向算法 (增量流式识别与全量批处理)
+
+        /// <summary>
+        /// ZigZag 之字转向全量计算波峰与波谷 (基于最小百分比反转回撤，高点严格取 High，低点严格取 Low)
+        /// </summary>
+        /// <param name="klines">K 线序列</param>
+        /// <param name="deviationPct">最小反转百分比 (默认 1.0%)</param>
+        /// <param name="depth">最小 K 线间隔深度 (默认 5)</param>
+        /// <param name="startGlobalIndex">起始全局索引</param>
+        public static (List<PivotPoint> Peaks, List<PivotPoint> Valleys) CalculateZigZagPeaks(
+            IReadOnlyList<RawKline> klines,
+            decimal deviationPct = 1.0m,
+            int depth = 5,
+            int startGlobalIndex = 0)
+        {
+            var peaks = new List<PivotPoint>();
+            var valleys = new List<PivotPoint>();
+
+            if (klines == null || klines.Count == 0)
+            {
+                return (peaks, valleys);
+            }
+
+            var tracker = new ZigZagTracker();
+            for (int i = 0; i < klines.Count; i++)
+            {
+                var (hasPeak, hasValley, peak, valley) = tracker.ProcessKline(klines[i], startGlobalIndex + i, deviationPct, depth);
+                if (hasPeak) peaks.Add(peak);
+                if (hasValley) valleys.Add(valley);
+            }
+
+            return (peaks, valleys);
+        }
+
+        #endregion
+    }
+
+    /// <summary>
+    /// 高性能增量式 ZigZag 极值追踪状态机 (O(1) 逐根 K 线流式运算，零内存分配)
+    /// 核心机制：
+    /// - 上升浪阶段：持续追踪最高 High，若创更高价则动态更新候选波峰；若自候选高点回撤超过 Deviation% 且 K 线数达到 Depth，则确立波峰并转向下跌浪。
+    /// - 下跌浪阶段：持续追踪最低 Low，若创更低价则动态更新候选波谷；若自候选低点反弹超过 Deviation% 且 K 线数达到 Depth，则确立波谷并转向上升浪。
+    /// </summary>
+    public class ZigZagTracker
+    {
+        private int _direction = 0; // +1: 向上寻找波峰中; -1: 向下寻找波谷中; 0: 未初始化
+        private PivotPoint _candidate;
+        private int _barsSinceCandidate = 0;
+
+        /// <summary>
+        /// 当前确认方向 (+1: 上升浪; -1: 下跌浪)
+        /// </summary>
+        public int Direction => _direction;
+
+        /// <summary>
+        /// 当前正在追踪的候选极值点
+        /// </summary>
+        public PivotPoint CandidatePivot => _candidate;
+
+        /// <summary>
+        /// 重置状态机
+        /// </summary>
+        public void Reset()
+        {
+            _direction = 0;
+            _candidate = default;
+            _barsSinceCandidate = 0;
+        }
+
+        /// <summary>
+        /// 处理单根新 K 线输入，判断是否触发了极值点确认
+        /// </summary>
+        /// <param name="kline">当前 K 线</param>
+        /// <param name="globalIndex">当前 K 线的全局单调下标</param>
+        /// <param name="deviationPct">最小反转幅度百分比 (如 1.0 代表 1.0%)</param>
+        /// <param name="depth">最小 K 线跨度深度 (如 5 根)</param>
+        /// <returns>是否有确认的高点或低点产生</returns>
+        public (bool hasPeak, bool hasValley, PivotPoint peak, PivotPoint valley) ProcessKline(
+            RawKline kline,
+            int globalIndex,
+            decimal deviationPct = 1.0m,
+            int depth = 5)
+        {
+            PivotPoint peak = default;
+            PivotPoint valley = default;
+            bool hasPeak = false;
+            bool hasValley = false;
+
+            if (_direction == 0)
+            {
+                // 初始化第一个候选点 (默认以第一根 K 线的 High 作为起始波峰候选)
+                _candidate = new PivotPoint
+                {
+                    Index = globalIndex,
+                    Price = kline.High,
+                    Time = TimeHelper.FromUnixTimeMilliseconds(kline.OpenTime),
+                    TimestampMs = kline.OpenTime,
+                    Type = PivotType.Peak,
+                    IsFractalConfirmed = true
+                };
+                _direction = 1; // 初始假设向上搜寻波峰
+                _barsSinceCandidate = 0;
+                return (false, false, peak, valley);
+            }
+
+            _barsSinceCandidate++;
+
+            if (_direction == 1) // 向上寻找波峰阶段
+            {
+                // 1. 若当前 K 线创出更高的高点 -> 动态向上迁移候选波峰
+                if (kline.High >= _candidate.Price)
+                {
+                    _candidate = new PivotPoint
+                    {
+                        Index = globalIndex,
+                        Price = kline.High,
+                        Time = TimeHelper.FromUnixTimeMilliseconds(kline.OpenTime),
+                        TimestampMs = kline.OpenTime,
+                        Type = PivotType.Peak,
+                        IsFractalConfirmed = true
+                    };
+                    _barsSinceCandidate = 0;
+                }
+                else
+                {
+                    // 2. 检查自候选高点的回撤幅度是否达到反转阈值 (Deviation %)
+                    decimal pullbackPct = _candidate.Price > 0m ? (_candidate.Price - kline.Low) / _candidate.Price * 100m : 0m;
+                    if (pullbackPct >= deviationPct && _barsSinceCandidate >= depth)
+                    {
+                        // 🌟 确立波峰 (Peak)!
+                        hasPeak = true;
+                        peak = _candidate;
+
+                        // 转向：开始向下寻找波谷 (Valley)，以当前 K 线的 Low 初始化波谷候选
+                        _direction = -1;
+                        _candidate = new PivotPoint
+                        {
+                            Index = globalIndex,
+                            Price = kline.Low,
+                            Time = TimeHelper.FromUnixTimeMilliseconds(kline.OpenTime),
+                            TimestampMs = kline.OpenTime,
+                            Type = PivotType.Valley,
+                            IsFractalConfirmed = true
+                        };
+                        _barsSinceCandidate = 0;
+                    }
+                }
+            }
+            else if (_direction == -1) // 向下寻找波谷阶段
+            {
+                // 1. 若当前 K 线创出更低的低点 -> 动态向下迁移候选波谷
+                if (kline.Low <= _candidate.Price)
+                {
+                    _candidate = new PivotPoint
+                    {
+                        Index = globalIndex,
+                        Price = kline.Low,
+                        Time = TimeHelper.FromUnixTimeMilliseconds(kline.OpenTime),
+                        TimestampMs = kline.OpenTime,
+                        Type = PivotType.Valley,
+                        IsFractalConfirmed = true
+                    };
+                    _barsSinceCandidate = 0;
+                }
+                else
+                {
+                    // 2. 检查自候选低点的反弹幅度是否达到反转阈值 (Deviation %)
+                    decimal reboundPct = _candidate.Price > 0m ? (kline.High - _candidate.Price) / _candidate.Price * 100m : 0m;
+                    if (reboundPct >= deviationPct && _barsSinceCandidate >= depth)
+                    {
+                        // 🌟 确立波谷 (Valley)!
+                        hasValley = true;
+                        valley = _candidate;
+
+                        // 转向：开始向上寻找波峰 (Peak)，以当前 K 线的 High 初始化波峰候选
+                        _direction = 1;
+                        _candidate = new PivotPoint
+                        {
+                            Index = globalIndex,
+                            Price = kline.High,
+                            Time = TimeHelper.FromUnixTimeMilliseconds(kline.OpenTime),
+                            TimestampMs = kline.OpenTime,
+                            Type = PivotType.Peak,
+                            IsFractalConfirmed = true
+                        };
+                        _barsSinceCandidate = 0;
+                    }
+                }
+            }
+
+            return (hasPeak, hasValley, peak, valley);
+        }
     }
 }

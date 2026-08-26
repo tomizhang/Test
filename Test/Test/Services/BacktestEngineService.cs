@@ -95,6 +95,9 @@ namespace Common.Services
                     minTrendLines: request.MinTrendLinesCapacity,
                     maxDeletedLines: request.MaxDeletedTrendLinesCapacity)
                 {
+                    PivotAlgorithm = request.PivotAlgorithm,
+                    ZigZagDeviationPct = request.ZigZagDeviationPct,
+                    ZigZagDepth = request.ZigZagDepth,
                     LeftLen = request.LeftLen,
                     RightLen = request.RightLen,
                     MaxSpan = request.MaxSpan,

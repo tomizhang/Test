@@ -257,7 +257,10 @@ namespace Common.Helper
 
             sb.AppendLine("            <div class=\"param-group\">");
             sb.AppendLine("                <div style=\"font-weight: 700; color: #c084fc; margin-bottom: 8px;\">📐 趋势线与极值形态参数</div>");
-            sb.AppendLine($"                <div class=\"param-item\"><span class=\"param-name\">极值点判定对比 (左右)</span><span class=\"param-val\">左 {request.LeftLen} 根 / 右 {request.RightLen} 根</span></div>");
+            string algoInfo = request.PivotAlgorithm == PivotAlgorithmType.ZigZag
+                ? $"ZigZag之字转向 (反转 {request.ZigZagDeviationPct:F2}%, 深度 {request.ZigZagDepth})"
+                : $"经典分形对比 (左 {request.LeftLen} / 右 {request.RightLen})";
+            sb.AppendLine($"                <div class=\"param-item\"><span class=\"param-name\">极值计算算法</span><span class=\"param-val text-purple\">{algoInfo}</span></div>");
             sb.AppendLine($"                <div class=\"param-item\"><span class=\"param-name\">趋势线最大配对跨度 (MaxSpan)</span><span class=\"param-val\">{request.MaxSpan} 根</span></div>");
             sb.AppendLine($"                <div class=\"param-item\"><span class=\"param-name\">外包络模式</span><span class=\"param-val\">{(request.AllowInternalPenetration ? "允许内部穿透" : "严格外包络 (禁止穿透)")}</span></div>");
             sb.AppendLine($"                <div class=\"param-item\"><span class=\"param-name\">滑动窗口容量 (MaxKlines)</span><span class=\"param-val\">{request.MaxKlinesCapacity:N0} 根</span></div>");

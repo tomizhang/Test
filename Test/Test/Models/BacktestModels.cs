@@ -142,6 +142,21 @@ namespace Common.Models
         public int MinTrendLinesCapacity { get; set; } = 1000;
         public int MaxDeletedTrendLinesCapacity { get; set; } = 1000;
 
+        /// <summary>
+        /// 极值高低点计算算法类型 (默认分形法 Fractal)
+        /// </summary>
+        public PivotAlgorithmType PivotAlgorithm { get; set; } = PivotAlgorithmType.Fractal;
+
+        /// <summary>
+        /// ZigZag 最小反转幅度百分比 (%) (默认 1.0%)
+        /// </summary>
+        public decimal ZigZagDeviationPct { get; set; } = 1.0m;
+
+        /// <summary>
+        /// ZigZag 最小 K 线间隔深度 (默认 5)
+        /// </summary>
+        public int ZigZagDepth { get; set; } = 5;
+
         public int LeftLen { get; set; } = 5;
         public int RightLen { get; set; } = 5;
         public int MaxSpan { get; set; } = 100;

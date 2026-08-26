@@ -45,6 +45,12 @@ namespace Test.Strategy
         // 3. 已删除（被穿透）趋势线列表容量配置 (保留 1000 长度)
         public int MaxDeletedTrendLinesCapacity { get; set; } = 1000;
 
+        // 4. 极值高低点计算算法类型与参数 (分形法 vs ZigZag 之字转向法)
+        public PivotAlgorithmType PivotAlgorithm { get; set; } = PivotAlgorithmType.Fractal;
+        public decimal ZigZagDeviationPct { get; set; } = 1.0m; // ZigZag 最小反转幅度 (%) (默认 1.0%)
+        public int ZigZagDepth { get; set; } = 5;              // ZigZag 最小 K 线间隔深度 (默认 5)
+        private readonly ZigZagTracker _zigZagTracker = new ZigZagTracker();
+
         // 4. 极值与趋势线计算参数配置
         public int LeftLen { get; set; } = 5;               // 波峰波谷左侧对比根数
         public int RightLen { get; set; } = 5;              // 波峰波谷右侧对比根数
@@ -750,13 +756,29 @@ namespace Test.Strategy
             // 1. 滑动窗口维护：追加新 K 线 (环形缓冲区 O(1) 纯数组写入，零内存拷贝与零 GC 压力)
             _klines.Add(kline);
 
-            // 2. 【第 1 层: O(1) 增量极值判定 (严格分形 10 步对比)】
-            int candidateGlobalIndex = currentGlobalIndex - RightLen;
-            var (hasPeak, hasValley, newPeak, newValley) = PivotHelper.TryDetectIncrementalPivot(
-                _klines,
-                candidateGlobalIndex,
-                LeftLen,
-                RightLen);
+            // 2. 【第 1 层: 增量极值判定 (支持经典分形对比法 与 ZigZag 之字转向算法)】
+            bool hasPeak = false;
+            bool hasValley = false;
+            PivotPoint newPeak = default;
+            PivotPoint newValley = default;
+
+            if (PivotAlgorithm == PivotAlgorithmType.Fractal)
+            {
+                int candidateGlobalIndex = currentGlobalIndex - RightLen;
+                (hasPeak, hasValley, newPeak, newValley) = PivotHelper.TryDetectIncrementalPivot(
+                    _klines,
+                    candidateGlobalIndex,
+                    LeftLen,
+                    RightLen);
+            }
+            else if (PivotAlgorithm == PivotAlgorithmType.ZigZag)
+            {
+                (hasPeak, hasValley, newPeak, newValley) = _zigZagTracker.ProcessKline(
+                    kline,
+                    currentGlobalIndex,
+                    deviationPct: ZigZagDeviationPct,
+                    depth: ZigZagDepth);
+            }
 
             // 3. 【第 2 层: O(M) 增量趋势线生成 (零堆对象分配直装模式，高点与低点全角度趋势线生成，过滤超高斜率)】
             if (hasPeak)
@@ -1164,6 +1186,7 @@ namespace Test.Strategy
             _klines.Clear();
             _peaks.Clear();
             _valleys.Clear();
+            _zigZagTracker.Reset();
             ActiveResistanceLines.Clear();
             ActiveSupportLines.Clear();
             ActiveTrendChannels.Clear();
