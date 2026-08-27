@@ -863,6 +863,12 @@ namespace Test.Strategy
                 var line = ActiveResistanceLines[i];
                 if (currentGlobalIndex > line.X2)
                 {
+                    // 若已记录击穿截止点，直接保持既有状态
+                    if (line.CollidedKlineIndex >= 0)
+                    {
+                        continue;
+                    }
+
                     line.LineAge = currentGlobalIndex - line.X2;
                     decimal expectedPrice = line.GetPriceAt(currentGlobalIndex);
                     line.CachedCurrentPrice = expectedPrice;
@@ -892,6 +898,9 @@ namespace Test.Strategy
 
                     if (isPenetrated)
                     {
+                        line.CollidedKlineIndex = currentGlobalIndex;
+                        line.LineExtensionRange = currentGlobalIndex - line.X2;
+
                         // 🟣 检查是否符合“特殊趋势线”结构特征 (源于相对高点/下跌波段起点向下延伸被向上突破，且源头必须位于前一个低点紫色基准点之后)
                         if (TrendLineHelper.IsSpecialTrendLineConditionMet(line, _peaks, currentGlobalIndex, minOriginIndex: _lastSpecialValleyOriginIndex, minTotalAge: MinSpecialTrendLineTotalAge))
                         {
@@ -900,18 +909,15 @@ namespace Test.Strategy
                         }
                     }
 
-                    // 🌟 配对的趋势通道线先不删除，保持通道结构完整
-                    if (isPenetrated && !line.IsInChannel)
+                    // 🌟 配对的趋势通道线与紫色特殊趋势线先不删除，保持结构完整
+                    if (isPenetrated && !line.IsInChannel && !line.IsSpecialTrendLine)
                     {
-                        line.CollidedKlineIndex = currentGlobalIndex;
-                        line.LineExtensionRange = currentGlobalIndex - line.X2;
                         ActiveResistanceLines.RemoveAt(i);
                         AddToDeletedTrendLines(line);
                         OnTrendLinePenetrated?.Invoke(line, LatestTick, "KLINE_RESISTANCE_PENETRATED");
                     }
                     else
                     {
-                        line.LineExtensionRange = currentGlobalIndex - line.X2;
                         ActiveResistanceLines[i] = line;
                     }
                 }
@@ -922,6 +928,12 @@ namespace Test.Strategy
                 var line = ActiveSupportLines[i];
                 if (currentGlobalIndex > line.X2)
                 {
+                    // 若已记录击穿截止点，直接保持既有状态
+                    if (line.CollidedKlineIndex >= 0)
+                    {
+                        continue;
+                    }
+
                     line.LineAge = currentGlobalIndex - line.X2;
                     decimal expectedPrice = line.GetPriceAt(currentGlobalIndex);
                     line.CachedCurrentPrice = expectedPrice;
@@ -951,6 +963,9 @@ namespace Test.Strategy
 
                     if (isPenetrated)
                     {
+                        line.CollidedKlineIndex = currentGlobalIndex;
+                        line.LineExtensionRange = currentGlobalIndex - line.X2;
+
                         // 🟣 检查是否符合“特殊趋势线”结构特征 (源于相对低点/上涨波段起点向上延伸被向下击穿，且源头必须位于前一个高点紫色基准点之后)
                         if (TrendLineHelper.IsSpecialTrendLineConditionMet(line, _valleys, currentGlobalIndex, minOriginIndex: _lastSpecialPeakOriginIndex, minTotalAge: MinSpecialTrendLineTotalAge))
                         {
@@ -959,24 +974,21 @@ namespace Test.Strategy
                         }
                     }
 
-                    // 🌟 配对的趋势通道线先不删除，保持通道结构完整
-                    if (isPenetrated && !line.IsInChannel)
+                    // 🌟 配对的趋势通道线与紫色特殊趋势线先不删除，保持结构完整
+                    if (isPenetrated && !line.IsInChannel && !line.IsSpecialTrendLine)
                     {
-                        line.CollidedKlineIndex = currentGlobalIndex;
-                        line.LineExtensionRange = currentGlobalIndex - line.X2;
                         ActiveSupportLines.RemoveAt(i);
                         AddToDeletedTrendLines(line);
                         OnTrendLinePenetrated?.Invoke(line, LatestTick, "KLINE_SUPPORT_PENETRATED");
                     }
                     else
                     {
-                        line.LineExtensionRange = currentGlobalIndex - line.X2;
                         ActiveSupportLines[i] = line;
                     }
                 }
             }
 
-            // 5. 适度清理超龄的非活跃趋势线 (保持活跃集合紧凑高效，通道线不删除)
+            // 5. 适度清理超龄的非活跃趋势线 (保持活跃集合紧凑高效，通道线与紫色特殊趋势线不删除)
             PruneInactiveTrendLines(currentGlobalIndex);
 
             // 5.5 【第 4 层: 精细加工识别符合条件的趋势通道 (红色 0.8f 高亮显示)】
@@ -1134,10 +1146,10 @@ namespace Test.Strategy
         /// </summary>
         private void PruneInactiveTrendLines(int currentGlobalIndex)
         {
-            // 活跃线控制在设定最大跨度寿命范围内，保持活跃集合紧凑高效 (已配对为通道的趋势线先不删除)
+            // 活跃线控制在设定最大跨度寿命范围内，保持活跃集合紧凑高效 (已配对为通道的趋势线与紫色特殊趋势线不删除)
             int maxActiveAge = Math.Max(150, MaxSpan * 2);
-            ActiveResistanceLines.RemoveAll(line => !line.IsInChannel && currentGlobalIndex - line.X2 > maxActiveAge);
-            ActiveSupportLines.RemoveAll(line => !line.IsInChannel && currentGlobalIndex - line.X2 > maxActiveAge);
+            ActiveResistanceLines.RemoveAll(line => !line.IsInChannel && !line.IsSpecialTrendLine && currentGlobalIndex - line.X2 > maxActiveAge);
+            ActiveSupportLines.RemoveAll(line => !line.IsInChannel && !line.IsSpecialTrendLine && currentGlobalIndex - line.X2 > maxActiveAge);
 
             int minRetainedIndex = currentGlobalIndex - MaxKlinesCapacity;
             if (minRetainedIndex > 0)

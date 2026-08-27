@@ -163,8 +163,8 @@ namespace Common.Helper
                     var line = trendLines[i];
 
                     // 计算趋势线延伸终点：
-                    // 1. 若为已被击穿/删除的趋势线 (CollidedKlineIndex >= 0)，则严格延长至发生击穿时的 K 线位置终止，绝不往后多画
-                    // 2. 若为活跃趋势线 (未发生击穿 CollidedKlineIndex == -1)，则向右延长至当前图表最右端 (endGlobalIndex)
+                    // 1. 若为已被击穿的趋势线 (包括紫色特殊趋势线与普通击穿线，CollidedKlineIndex >= 0)，则延长至发生穿透时的 K 线位置严格终止
+                    // 2. 若为未发生击穿的活跃趋势线 (CollidedKlineIndex == -1)，则向右延长至当前图表最右端 (endGlobalIndex)
                     int effectiveEndX;
                     if (line.CollidedKlineIndex >= 0)
                     {

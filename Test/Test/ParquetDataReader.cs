@@ -21,7 +21,7 @@ namespace Common
     public readonly struct RawKline
     {
         public long OpenTime { get; init; }           // 开盘时间 (毫秒时间戳)
-        public decimal Open { get; init; }            // 开盘价
+        public decimal Open { get; init; }            // 开盘价                   
         public decimal High { get; init; }            // 最高价
         public decimal Low { get; init; }             // 最低价
         public decimal Close { get; init; }           // 收盘价
