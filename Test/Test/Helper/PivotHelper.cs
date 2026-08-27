@@ -98,6 +98,17 @@ namespace Common.Helper
         /// </summary>
         public bool IsFractalConfirmed { get; set; }
 
+        private int _level;
+
+        /// <summary>
+        /// 极值点等级：1=一级(K线直接生成), 2=二级(一级点位计算), 3=三级(二级点位计算)
+        /// </summary>
+        public int Level
+        {
+            get => _level <= 0 ? 1 : _level;
+            set => _level = value;
+        }
+
         #region UI/日志按需格式化
 
         public string FormattedTime => Time.ToUtc0String();
@@ -107,7 +118,7 @@ namespace Common.Helper
         public override string ToString()
         {
             string symbol = IsPeak ? "▲高点(High)" : "▼低点(Low)";
-            return $"[{FormattedTime} ({TimestampMs}ms)] {symbol} #{Index} 价格:{Price:F2} 分形确认:{IsFractalConfirmed}";
+            return $"[{FormattedTime} ({TimestampMs}ms)] {symbol}(L{Level}) #{Index} 价格:{Price:F2} 分形确认:{IsFractalConfirmed}";
         }
     }
 
@@ -380,6 +391,116 @@ namespace Common.Helper
             }
 
             return (peaks, valleys);
+        }
+
+        #endregion
+
+        #region 5. 多等级高低点计算算法 (Multi-Level Pivot Generation)
+
+        /// <summary>
+        /// 基于上一级的高低点序列作为输入，计算下一级的高阶极值点 (Level N+1)
+        /// 规则：
+        /// - 高点 (Peak)：若当前高点价格大于等于其左右两翼相邻的高点，则确认为更高级别的波峰 (Level 2 / Level 3)
+        /// - 低点 (Valley)：若当前低点价格小于等于其左右两翼相邻的低点，则确认为更高级别的波谷 (Level 2 / Level 3)
+        /// </summary>
+        public static List<PivotPoint> CalculateHigherLevelPivots(
+            IReadOnlyList<PivotPoint> lowerLevelPivots,
+            int targetLevel,
+            int window = 1)
+        {
+            var higherPivots = new List<PivotPoint>();
+            if (lowerLevelPivots == null || lowerLevelPivots.Count < window * 2 + 1)
+            {
+                return higherPivots;
+            }
+
+            for (int i = window; i < lowerLevelPivots.Count - window; i++)
+            {
+                var candidate = lowerLevelPivots[i];
+                bool isExtrema = true;
+
+                if (candidate.IsPeak)
+                {
+                    for (int j = i - window; j <= i + window; j++)
+                    {
+                        if (j == i) continue;
+                        if (lowerLevelPivots[j].Price > candidate.Price)
+                        {
+                            isExtrema = false;
+                            break;
+                        }
+                    }
+                }
+                else if (candidate.IsValley)
+                {
+                    for (int j = i - window; j <= i + window; j++)
+                    {
+                        if (j == i) continue;
+                        if (lowerLevelPivots[j].Price < candidate.Price)
+                        {
+                            isExtrema = false;
+                            break;
+                        }
+                    }
+                }
+
+                if (isExtrema)
+                {
+                    var p = candidate;
+                    p.Level = targetLevel;
+                    higherPivots.Add(p);
+                }
+            }
+
+            return higherPivots;
+        }
+
+        /// <summary>
+        /// 计算完整的 3 级高低点 (Level 1: K线原始生成, Level 2: 一级点位计算, Level 3: 二级点位计算)
+        /// </summary>
+        public static (List<PivotPoint> PeaksL1, List<PivotPoint> PeaksL2, List<PivotPoint> PeaksL3,
+                       List<PivotPoint> ValleysL1, List<PivotPoint> ValleysL2, List<PivotPoint> ValleysL3)
+            CalculateMultiLevelPeaks(
+                IReadOnlyList<RawKline> klines,
+                PivotAlgorithmType algorithm = PivotAlgorithmType.Fractal,
+                int leftLen = 5,
+                int rightLen = 5,
+                decimal zigZagDeviationPct = 1.0m,
+                int zigZagDepth = 5,
+                int startGlobalIndex = 0)
+        {
+            List<PivotPoint> peaksL1, valleysL1;
+
+            if (algorithm == PivotAlgorithmType.ZigZag)
+            {
+                (peaksL1, valleysL1) = CalculateZigZagPeaks(klines, zigZagDeviationPct, zigZagDepth, startGlobalIndex);
+            }
+            else
+            {
+                (peaksL1, valleysL1) = CalculatePeaks(klines, leftLen, rightLen, startGlobalIndex);
+            }
+
+            for (int i = 0; i < peaksL1.Count; i++)
+            {
+                var p = peaksL1[i];
+                p.Level = 1;
+                peaksL1[i] = p;
+            }
+
+            for (int i = 0; i < valleysL1.Count; i++)
+            {
+                var v = valleysL1[i];
+                v.Level = 1;
+                valleysL1[i] = v;
+            }
+
+            var peaksL2 = CalculateHigherLevelPivots(peaksL1, targetLevel: 2, window: 1);
+            var valleysL2 = CalculateHigherLevelPivots(valleysL1, targetLevel: 2, window: 1);
+
+            var peaksL3 = CalculateHigherLevelPivots(peaksL2, targetLevel: 3, window: 1);
+            var valleysL3 = CalculateHigherLevelPivots(valleysL2, targetLevel: 3, window: 1);
+
+            return (peaksL1, peaksL2, peaksL3, valleysL1, valleysL2, valleysL3);
         }
 
         #endregion

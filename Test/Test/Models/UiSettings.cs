@@ -14,6 +14,7 @@ namespace Common.Models
         public DateTime EndDate { get; set; } = new DateTime(2025, 1, 5);
 
         // 2. 趋势线与开仓策略参数
+        public int TradeStrategy { get; set; } = 0; // 0: TouchRebound, 1: PurpleBreakout, 2: Combined
         public int PivotAlgorithm { get; set; } = 0; // 0: Fractal, 1: ZigZag
         public decimal ZigZagDeviationPct { get; set; } = 1.0m;
         public int ZigZagDepth { get; set; } = 5;

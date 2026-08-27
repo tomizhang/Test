@@ -74,6 +74,7 @@ namespace Test.WinForms.Forms
         private DateTimePicker dtpEnd = null!;
 
         private GroupBox grpStrategy = null!;
+        private ComboBox cboTradeStrategy = null!;
         private ComboBox cboPivotAlgorithm = null!;
         private NumericUpDown numZigZagDeviation = null!;
         private NumericUpDown numZigZagDepth = null!;
@@ -278,13 +279,30 @@ namespace Test.WinForms.Forms
             panelRight.Controls.Add(grpData);
             top += grpData.Height + 10;
 
-            // Group 2: 趋势线策略参数 (增加 极值算法下拉选择、ZigZag反转幅度/深度、开启交易开关、1.5% 止盈、0.5% 止损、跨度>=40、寿命>=4、60s 冷却)
-            grpStrategy = CreateGroupBox("2. 极值算法与策略参数", top, 645);
+            // Group 2: 趋势线策略参数 (增加 交易策略下拉选择、极值算法下拉选择、ZigZag反转幅度/深度、开启交易开关、1.5% 止盈、0.5% 止损、跨度>=40、寿命>=4、60s 冷却)
+            grpStrategy = CreateGroupBox("2. 策略模式与参数配置", top, 675);
             {
-                var lblAlgorithm = CreateLabel("极值计算算法:", 15, 25);
-                cboPivotAlgorithm = new ComboBox
+                var lblStrategy = CreateLabel("交易执行策略:", 15, 25);
+                cboTradeStrategy = new ComboBox
                 {
                     Location = new Point(130, 22),
+                    Width = 210,
+                    DropDownStyle = ComboBoxStyle.DropDownList,
+                    BackColor = Color.FromArgb(30, 41, 59),
+                    ForeColor = Color.FromArgb(56, 189, 248),
+                    Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold)
+                };
+                cboTradeStrategy.Items.AddRange(new object[] {
+                    "经典趋势线触碰回弹策略",
+                    "紫色特殊趋势线穿透策略",
+                    "双策略组合 (触碰+穿透)"
+                });
+                cboTradeStrategy.SelectedIndex = 0;
+
+                var lblAlgorithm = CreateLabel("极值计算算法:", 15, 53);
+                cboPivotAlgorithm = new ComboBox
+                {
+                    Location = new Point(130, 50),
                     Width = 210,
                     DropDownStyle = ComboBoxStyle.DropDownList,
                     BackColor = Color.FromArgb(30, 41, 59),
@@ -294,18 +312,18 @@ namespace Test.WinForms.Forms
                 cboPivotAlgorithm.Items.AddRange(new object[] { "分形对比法 (Fractal)", "ZigZag之字转向法 (ZigZag)" });
                 cboPivotAlgorithm.SelectedIndex = 0;
 
-                var lblLeft = CreateLabel("分形左侧对比:", 15, 53);
-                numLeftLen = new NumericUpDown { Location = new Point(130, 50), Width = 210, Minimum = 1, Maximum = 100, Value = 5 };
+                var lblLeft = CreateLabel("分形左侧对比:", 15, 81);
+                numLeftLen = new NumericUpDown { Location = new Point(130, 78), Width = 210, Minimum = 1, Maximum = 100, Value = 5 };
 
-                var lblRight = CreateLabel("分形右侧对比:", 15, 81);
-                numRightLen = new NumericUpDown { Location = new Point(130, 78), Width = 210, Minimum = 1, Maximum = 100, Value = 5 };
+                var lblRight = CreateLabel("分形右侧对比:", 15, 109);
+                numRightLen = new NumericUpDown { Location = new Point(130, 106), Width = 210, Minimum = 1, Maximum = 100, Value = 5 };
 
-                var lblZigZagDev = CreateLabel("ZigZag反转幅度%:", 15, 109);
-                numZigZagDeviation = new NumericUpDown { Location = new Point(130, 106), Width = 210, Minimum = 0.1m, Maximum = 50.0m, DecimalPlaces = 2, Increment = 0.1m, Value = 1.00m, Enabled = false };
+                var lblZigZagDev = CreateLabel("ZigZag反转幅度%:", 15, 137);
+                numZigZagDeviation = new NumericUpDown { Location = new Point(130, 134), Width = 210, Minimum = 0.1m, Maximum = 50.0m, DecimalPlaces = 2, Increment = 0.1m, Value = 1.00m, Enabled = false };
                 numZigZagDeviation.ForeColor = Color.FromArgb(232, 121, 249); // Fuchsia 400
 
-                var lblZigZagDepth = CreateLabel("ZigZag最小深度:", 15, 137);
-                numZigZagDepth = new NumericUpDown { Location = new Point(130, 134), Width = 210, Minimum = 1, Maximum = 100, Value = 5, Enabled = false };
+                var lblZigZagDepth = CreateLabel("ZigZag最小深度:", 15, 165);
+                numZigZagDepth = new NumericUpDown { Location = new Point(130, 162), Width = 210, Minimum = 1, Maximum = 100, Value = 5, Enabled = false };
                 numZigZagDepth.ForeColor = Color.FromArgb(232, 121, 249);
 
                 cboPivotAlgorithm.SelectedIndexChanged += (s, e) =>
@@ -317,44 +335,44 @@ namespace Test.WinForms.Forms
                     numRightLen.Enabled = !isZigZag;
                 };
 
-                var lblMaxK = CreateLabel("K线滑动窗口:", 15, 165);
-                numMaxKlines = new NumericUpDown { Location = new Point(130, 162), Width = 210, Minimum = 100, Maximum = 100000, Value = 2000 };
+                var lblMaxK = CreateLabel("K线滑动窗口:", 15, 193);
+                numMaxKlines = new NumericUpDown { Location = new Point(130, 190), Width = 210, Minimum = 100, Maximum = 100000, Value = 2000 };
 
-                var lblMinT = CreateLabel("历史趋势线库:", 15, 193);
-                numMinTrendLines = new NumericUpDown { Location = new Point(130, 190), Width = 210, Minimum = 100, Maximum = 50000, Value = 1000 };
+                var lblMinT = CreateLabel("历史趋势线库:", 15, 221);
+                numMinTrendLines = new NumericUpDown { Location = new Point(130, 218), Width = 210, Minimum = 100, Maximum = 50000, Value = 1000 };
 
-                var lblSpan = CreateLabel("最大配对跨度:", 15, 221);
-                numMaxSpan = new NumericUpDown { Location = new Point(130, 218), Width = 210, Minimum = 10, Maximum = 2000, Value = 100 };
+                var lblSpan = CreateLabel("最大配对跨度:", 15, 249);
+                numMaxSpan = new NumericUpDown { Location = new Point(130, 246), Width = 210, Minimum = 10, Maximum = 2000, Value = 100 };
 
-                var lblSignalSpan = CreateLabel("开仓跨度≥(X1X2):", 15, 249);
-                numMinSignalSpan = new NumericUpDown { Location = new Point(130, 246), Width = 210, Minimum = 1, Maximum = 500, Value = 40 };
+                var lblSignalSpan = CreateLabel("开仓跨度≥(X1X2):", 15, 277);
+                numMinSignalSpan = new NumericUpDown { Location = new Point(130, 274), Width = 210, Minimum = 1, Maximum = 500, Value = 40 };
 
-                var lblSignalAge = CreateLabel("开仓寿命≥(Age):", 15, 277);
-                numMinSignalAge = new NumericUpDown { Location = new Point(130, 274), Width = 210, Minimum = 1, Maximum = 100, Value = 4 };
+                var lblSignalAge = CreateLabel("开仓寿命≥(Age):", 15, 305);
+                numMinSignalAge = new NumericUpDown { Location = new Point(130, 302), Width = 210, Minimum = 1, Maximum = 100, Value = 4 };
 
-                var lblMinSlope = CreateLabel("开仓整体斜率≥(%):", 15, 305);
-                numMinSlope = new NumericUpDown { Location = new Point(130, 302), Width = 210, Minimum = 0.00m, Maximum = 50.00m, DecimalPlaces = 2, Increment = 0.10m, Value = 0.50m };
+                var lblMinSlope = CreateLabel("开仓整体斜率≥(%):", 15, 333);
+                numMinSlope = new NumericUpDown { Location = new Point(130, 330), Width = 210, Minimum = 0.00m, Maximum = 50.00m, DecimalPlaces = 2, Increment = 0.10m, Value = 0.50m };
                 numMinSlope.ForeColor = Color.FromArgb(250, 204, 21); // Yellow 400
 
-                var lblCooldown = CreateLabel("触发冷却(秒):", 15, 333);
-                numCooldown = new NumericUpDown { Location = new Point(130, 330), Width = 210, Minimum = 0, Maximum = 3600, Value = 60 };
+                var lblCooldown = CreateLabel("触发冷却(秒):", 15, 361);
+                numCooldown = new NumericUpDown { Location = new Point(130, 358), Width = 210, Minimum = 0, Maximum = 3600, Value = 60 };
 
-                var lblTP = CreateLabel("止盈比例 (%):", 15, 361);
-                numTakeProfit = new NumericUpDown { Location = new Point(130, 358), Width = 210, Minimum = 0.1m, Maximum = 100m, DecimalPlaces = 2, Increment = 0.1m, Value = 1.50m };
+                var lblTP = CreateLabel("止盈比例 (%):", 15, 389);
+                numTakeProfit = new NumericUpDown { Location = new Point(130, 386), Width = 210, Minimum = 0.1m, Maximum = 100m, DecimalPlaces = 2, Increment = 0.1m, Value = 1.50m };
                 numTakeProfit.ForeColor = Color.FromArgb(74, 222, 128); // Green
 
-                var lblSL = CreateLabel("止损比例 (%):", 15, 389);
-                numStopLoss = new NumericUpDown { Location = new Point(130, 386), Width = 210, Minimum = 0.1m, Maximum = 100m, DecimalPlaces = 2, Increment = 0.1m, Value = 0.50m };
+                var lblSL = CreateLabel("止损比例 (%):", 15, 417);
+                numStopLoss = new NumericUpDown { Location = new Point(130, 414), Width = 210, Minimum = 0.1m, Maximum = 100m, DecimalPlaces = 2, Increment = 0.1m, Value = 0.50m };
                 numStopLoss.ForeColor = Color.FromArgb(244, 63, 94); // Red
 
-                var lblLineWidth = CreateLabel("趋势线线宽 (px):", 15, 417);
-                numLineWidth = new NumericUpDown { Location = new Point(130, 414), Width = 210, Minimum = 0.1m, Maximum = 10.0m, DecimalPlaces = 1, Increment = 0.1m, Value = 0.8m };
+                var lblLineWidth = CreateLabel("趋势线线宽 (px):", 15, 445);
+                numLineWidth = new NumericUpDown { Location = new Point(130, 442), Width = 210, Minimum = 0.1m, Maximum = 10.0m, DecimalPlaces = 1, Increment = 0.1m, Value = 0.8m };
                 numLineWidth.ForeColor = Color.FromArgb(56, 189, 248); // Sky Blue
 
                 chkEnableTrading = new CheckBox
                 {
-                    Text = "开启策略交易 (触碰回弹开仓/止盈止损)",
-                    Location = new Point(15, 444),
+                    Text = "开启策略交易 (触碰回弹/紫色穿透/止盈止损)",
+                    Location = new Point(15, 472),
                     Width = 320,
                     Checked = true,
                     Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold),
@@ -364,32 +382,33 @@ namespace Test.WinForms.Forms
                 chkEnableTickStopLoss = new CheckBox
                 {
                     Text = "以 Tick 级别止损 (5-Tick 点位 / 取消为固定止损)",
-                    Location = new Point(15, 469),
+                    Location = new Point(15, 497),
                     Width = 320,
                     Checked = true
                 };
 
-                chkStrictEnvelope = new CheckBox { Text = "严格外包络 (禁止内部穿透)", Location = new Point(15, 494), Width = 320, Checked = true };
+                chkStrictEnvelope = new CheckBox { Text = "严格外包络 (禁止内部穿透)", Location = new Point(15, 522), Width = 320, Checked = true };
 
-                chkRealtimeChart = new CheckBox { Text = "实时推送图表走势 (UI 定时刷新)", Location = new Point(15, 519), Width = 320, Checked = true };
+                chkRealtimeChart = new CheckBox { Text = "实时推送图表走势 (UI 定时刷新)", Location = new Point(15, 547), Width = 320, Checked = true };
                 chkRealtimeChart.CheckedChanged += (s, e) => _isRealtimeChartEnabled = chkRealtimeChart.Checked;
 
-                chkAutoScale = new CheckBox { Text = "回放时自动调节 X/Y 轴 (Auto-Scale)", Location = new Point(15, 544), Width = 320, Checked = true };
+                chkAutoScale = new CheckBox { Text = "回放时自动调节 X/Y 轴 (Auto-Scale)", Location = new Point(15, 572), Width = 320, Checked = true };
                 chkAutoScale.CheckedChanged += (s, e) => _isAutoScaleEnabled = chkAutoScale.Checked;
 
-                chkEnableUiLogs = new CheckBox { Text = "输出界面实时日志 (取消勾选可防卡顿并提速)", Location = new Point(15, 569), Width = 320, Checked = true };
+                chkEnableUiLogs = new CheckBox { Text = "输出界面实时日志 (取消勾选可防卡顿并提速)", Location = new Point(15, 597), Width = 320, Checked = true };
                 chkEnableUiLogs.CheckedChanged += (s, e) => _isUiLogEnabled = chkEnableUiLogs.Checked;
 
                 var lblStrategyNote = new Label
                 {
-                    Text = "🎯 极值: 可选分形/ZigZag | 3点线 0.001% 触碰 + 3-Tick 回弹开仓",
-                    Location = new Point(15, 596),
+                    Text = "🎯 策略: 触碰回弹 / 紫色穿透(1m穿透跌破开多/突破开空)",
+                    Location = new Point(15, 624),
                     Size = new Size(325, 36),
                     ForeColor = Color.FromArgb(74, 222, 128), // Green 400
                     Font = new Font("Microsoft YaHei", 8F)
                 };
 
                 grpStrategy.Controls.AddRange(new Control[] {
+                    lblStrategy, cboTradeStrategy,
                     lblAlgorithm, cboPivotAlgorithm,
                     lblLeft, numLeftLen, lblRight, numRightLen,
                     lblZigZagDev, numZigZagDeviation, lblZigZagDepth, numZigZagDepth,
@@ -402,7 +421,7 @@ namespace Test.WinForms.Forms
                     chkRealtimeChart, chkAutoScale, chkEnableUiLogs, lblStrategyNote
                 });
             }
-            grpStrategy.Height = 645;
+            grpStrategy.Height = 675;
             panelRight.Controls.Add(grpStrategy);
             top += grpStrategy.Height + 10;
 
@@ -617,6 +636,7 @@ namespace Test.WinForms.Forms
             if (settings.EndDate >= dtpEnd.MinDate && settings.EndDate <= dtpEnd.MaxDate)
                 dtpEnd.Value = settings.EndDate;
 
+            cboTradeStrategy.SelectedIndex = Math.Clamp(settings.TradeStrategy, 0, 2);
             cboPivotAlgorithm.SelectedIndex = Math.Clamp(settings.PivotAlgorithm, 0, 1);
             numZigZagDeviation.Value = Math.Clamp(settings.ZigZagDeviationPct > 0 ? settings.ZigZagDeviationPct : 1.0m, numZigZagDeviation.Minimum, numZigZagDeviation.Maximum);
             numZigZagDepth.Value = Math.Clamp(settings.ZigZagDepth > 0 ? settings.ZigZagDepth : 5, numZigZagDepth.Minimum, numZigZagDepth.Maximum);
@@ -691,6 +711,7 @@ namespace Test.WinForms.Forms
                     Interval = cboInterval.SelectedItem?.ToString() ?? cboInterval.Text,
                     StartDate = dtpStart.Value.Date,
                     EndDate = dtpEnd.Value.Date,
+                    TradeStrategy = cboTradeStrategy.SelectedIndex,
                     PivotAlgorithm = cboPivotAlgorithm.SelectedIndex,
                     ZigZagDeviationPct = numZigZagDeviation.Value,
                     ZigZagDepth = (int)numZigZagDepth.Value,
@@ -898,7 +919,7 @@ namespace Test.WinForms.Forms
                         string sign = strategy.TotalPnLPct >= 0 ? "+" : "";
                         string realtimeSummary = $"实时回测推进中: {coin} {intervalStr} | 当前 K 线: #{index:D4} (最新收: {kline.Close:F2})\n" +
                                                  $"交易战绩: {strategy.CompletedTrades.Count}笔 (胜率:{strategy.WinRate:F1}%, 盈亏:{sign}{strategy.TotalPnLPct:F2}%) | 开仓信号: {strategy.TotalSignalsCount}笔\n" +
-                                                 $"识别极值: 高点={peaksSnapshot.Length}, 低点={valleysSnapshot.Length} | 活跃阻力={strategy.ActiveResistanceLines.Count}, 支撑={strategy.ActiveSupportLines.Count}";
+                                                 $"识别极值: 高(L1:{strategy.PeaksL1.Count}/L2:{strategy.PeaksL2.Count}/L3:{strategy.PeaksL3.Count}) | 低(L1:{strategy.ValleysL1.Count}/L2:{strategy.ValleysL2.Count}/L3:{strategy.ValleysL3.Count}) | 活跃阻力={strategy.ActiveResistanceLines.Count}, 支撑={strategy.ActiveSupportLines.Count}";
 
                         _latestChartSnapshot = new ChartSnapshot
                         {
@@ -1013,6 +1034,7 @@ namespace Test.WinForms.Forms
                 StartDate = dtpStart.Value.Date,
                 EndDate = dtpEnd.Value.Date,
                 Interval = interval,
+                TradeStrategy = (TradeStrategyType)cboTradeStrategy.SelectedIndex,
                 PivotAlgorithm = (PivotAlgorithmType)cboPivotAlgorithm.SelectedIndex,
                 ZigZagDeviationPct = numZigZagDeviation.Value,
                 ZigZagDepth = (int)numZigZagDepth.Value,
@@ -1047,12 +1069,20 @@ namespace Test.WinForms.Forms
                 ? $"【ZigZag之字转向】(反转幅度: {request.ZigZagDeviationPct:F2}%, 最小深度: {request.ZigZagDepth})"
                 : $"【经典分形对比】(左侧: {request.LeftLen}根, 右侧: {request.RightLen}根)";
 
-            string tradeModeStr = request.EnableTrading ? "已开启 (3点线 0.001%触碰 / 3-Tick反向回弹开仓)" : "已关闭 (仅纯结构与趋势线分析)";
+            string stratDesc = request.TradeStrategy switch
+            {
+                TradeStrategyType.PurpleBreakout => "🟣 紫色特殊趋势线穿透策略 (1m收盘跌破开空 / 突破开多)",
+                TradeStrategyType.Combined => "⚡ 双策略组合 (3点线触碰回弹 + 紫色趋势线穿透)",
+                _ => "🎯 经典趋势线触碰回弹策略 (3点线 0.001%触碰 / 3-Tick反弹开仓)"
+            };
+
+            string tradeModeStr = request.EnableTrading ? $"已开启 - {stratDesc}" : "已关闭 (仅纯结构与趋势线分析)";
             string slModeDesc = request.EnableTickStopLoss ? "5-Tick 级别微止损" : $"固定比例止损 (-{request.StopLossPct:F2}%)";
             _logQueue.Enqueue(("\n========================================================", Color.FromArgb(56, 189, 248)));
             _logQueue.Enqueue(($"[启动回测] 目标: {request.Coin}, 周期: {interval.ToIntervalString()}, 窗口: {request.StartDate:yyyy-MM-dd} ~ {request.EndDate:yyyy-MM-dd}", Color.FromArgb(56, 189, 248)));
+            _logQueue.Enqueue(($"[交易策略] {stratDesc}", Color.FromArgb(56, 189, 248)));
             _logQueue.Enqueue(($"[极值算法] {algoDesc}", Color.FromArgb(232, 121, 249)));
-            _logQueue.Enqueue(($"[策略模式] 交易开关: {tradeModeStr} | 止损模式: {slModeDesc} | 3点线 0.001%触碰 + 3-Tick反向回弹入场 | 开仓整体斜率≥{request.MinSignalOverallSlopePct:F2}% | 线宽: {request.LineWidth:F1}px | 止盈: +{request.TakeProfitPct:F2}% | 冷却: {request.SignalCooldownSeconds}s", Color.FromArgb(250, 204, 21)));
+            _logQueue.Enqueue(($"[策略模式] 交易开关: {tradeModeStr} | 止损模式: {slModeDesc} | 开仓整体斜率≥{request.MinSignalOverallSlopePct:F2}% | 线宽: {request.LineWidth:F1}px | 止盈: +{request.TakeProfitPct:F2}% | 冷却: {request.SignalCooldownSeconds}s", Color.FromArgb(250, 204, 21)));
             _logQueue.Enqueue(("========================================================", Color.FromArgb(56, 189, 248)));
 
             try
@@ -1109,7 +1139,7 @@ namespace Test.WinForms.Forms
                     lblStatThroughput.Text = $"吞吐速率: {_latestResult.TicksPerSecond:N0} ticks/s";
                     lblStatTrades.Text = $"交易战绩: 完成 {_latestResult.TotalTrades} 笔 | 胜率: {_latestResult.WinRate:F1}% | 盈亏: {sign}{_latestResult.TotalPnLPct:F2}%";
                     lblStatSignals.Text = $"开仓信号: 多单 {strat.LongSignalsCount} | 空单 {strat.ShortSignalsCount} (总计 {strat.TotalSignalsCount})";
-                    lblStatPeaksValleys.Text = $"识别极值: 高点 {strat.Peaks.Count} | 低点 {strat.Valleys.Count}";
+                    lblStatPeaksValleys.Text = $"识别极值: 高(L1:{strat.PeaksL1.Count}/L2:{strat.PeaksL2.Count}/L3:{strat.PeaksL3.Count}) | 低(L1:{strat.ValleysL1.Count}/L2:{strat.ValleysL2.Count}/L3:{strat.ValleysL3.Count})";
                     lblStatActiveLines.Text = $"活跃趋势线: 阻力 {strat.ActiveResistanceLines.Count} | 支撑 {strat.ActiveSupportLines.Count}";
                     lblStatDeletedLines.Text = $"已击穿删除: {strat.DeletedTrendLinesCount} 条";
 

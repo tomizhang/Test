@@ -248,6 +248,13 @@ namespace Common.Helper
 
             sb.AppendLine("            <div class=\"param-group\">");
             sb.AppendLine("                <div style=\"font-weight: 700; color: #38bdf8; margin-bottom: 8px;\">🎯 开仓与止盈止损设置</div>");
+            string stratName = request.TradeStrategy switch
+            {
+                TradeStrategyType.PurpleBreakout => "🟣 紫色特殊趋势线穿透策略 (1m收盘突破)",
+                TradeStrategyType.Combined => "⚡ 双策略组合 (触碰回弹 + 紫色穿透)",
+                _ => "🎯 经典趋势线触碰回弹策略 (3点线 + 3-Tick回弹)"
+            };
+            sb.AppendLine($"                <div class=\"param-item\"><span class=\"param-name\">交易执行策略</span><span class=\"param-val text-cyan\">{stratName}</span></div>");
             sb.AppendLine($"                <div class=\"param-item\"><span class=\"param-name\">止盈目标 (Take Profit)</span><span class=\"param-val text-green\">+{request.TakeProfitPct:F2}%</span></div>");
             sb.AppendLine($"                <div class=\"param-item\"><span class=\"param-name\">止损限制 (Stop Loss)</span><span class=\"param-val text-red\">-{request.StopLossPct:F2}%</span></div>");
             sb.AppendLine($"                <div class=\"param-item\"><span class=\"param-name\">信号开仓冷却</span><span class=\"param-val\">{request.SignalCooldownSeconds} 秒</span></div>");

@@ -84,58 +84,136 @@ namespace Common.Helper
             priceLine.Color = Color.FromHex("#38bdf8"); // 天空蓝 Sky 400
             priceLine.LegendText = $"价格收盘折线 ({count:N0}根)";
 
-            // 4. 绘制高低点极值标记 (波峰▲最高价 High, 波谷▼最低价 Low, 大小 4)
-            int peaksCount = 0;
+            // 4. 绘制高低点极值标记 (分 3 个等级：L1 小/浅淡色，L2 中/鲜亮色，L3 大/深浓色；大小逐渐增加，颜色浓度递增)
+            int peaksL1Count = 0, peaksL2Count = 0, peaksL3Count = 0;
+            var p1Xs = new List<double>(); var p1Ys = new List<double>();
+            var p2Xs = new List<double>(); var p2Ys = new List<double>();
+            var p3Xs = new List<double>(); var p3Ys = new List<double>();
+
             if (peaks != null && peaks.Count > 0)
             {
-                var peakXs = new List<double>();
-                var peakYs = new List<double>();
-
                 foreach (var p in peaks)
                 {
                     if (p.Index >= startGlobalIndex && p.Index <= endGlobalIndex)
                     {
-                        peakXs.Add(p.Index);
-                        peakYs.Add((double)p.Price);
-                        peaksCount++;
+                        if (p.Level == 3)
+                        {
+                            p3Xs.Add(p.Index);
+                            p3Ys.Add((double)p.Price);
+                            peaksL3Count++;
+                        }
+                        else if (p.Level == 2)
+                        {
+                            p2Xs.Add(p.Index);
+                            p2Ys.Add((double)p.Price);
+                            peaksL2Count++;
+                        }
+                        else
+                        {
+                            p1Xs.Add(p.Index);
+                            p1Ys.Add((double)p.Price);
+                            peaksL1Count++;
+                        }
                     }
                 }
 
-                if (peakXs.Count > 0)
+                // 一级高点 (L1): 大小 4, 浅粉红色 (低浓度)
+                if (p1Xs.Count > 0)
                 {
-                    var peakScatter = plot.Add.Scatter(peakXs.ToArray(), peakYs.ToArray());
-                    peakScatter.MarkerShape = MarkerShape.FilledTriangleUp;
-                    peakScatter.MarkerSize = 4;
-                    peakScatter.Color = Color.FromHex("#ef4444"); // 红色高点
-                    peakScatter.LineWidth = 0;
-                    peakScatter.LegendText = $"波峰高点 ({peaksCount})";
+                    var p1Scatter = plot.Add.Scatter(p1Xs.ToArray(), p1Ys.ToArray());
+                    p1Scatter.MarkerShape = MarkerShape.FilledTriangleUp;
+                    p1Scatter.MarkerSize = 4;
+                    p1Scatter.Color = Color.FromHex("#fca5a5").WithAlpha(0.65);
+                    p1Scatter.LineWidth = 0;
+                    p1Scatter.LegendText = $"一级高点 L1 ({peaksL1Count})";
+                }
+
+                // 二级高点 (L2): 大小 7, 鲜亮大红 (中浓度)
+                if (p2Xs.Count > 0)
+                {
+                    var p2Scatter = plot.Add.Scatter(p2Xs.ToArray(), p2Ys.ToArray());
+                    p2Scatter.MarkerShape = MarkerShape.FilledTriangleUp;
+                    p2Scatter.MarkerSize = 7;
+                    p2Scatter.Color = Color.FromHex("#ef4444");
+                    p2Scatter.LineWidth = 0;
+                    p2Scatter.LegendText = $"二级高点 L2 ({peaksL2Count})";
+                }
+
+                // 三级高点 (L3): 大小 11, 深浓大红 (高浓度)
+                if (p3Xs.Count > 0)
+                {
+                    var p3Scatter = plot.Add.Scatter(p3Xs.ToArray(), p3Ys.ToArray());
+                    p3Scatter.MarkerShape = MarkerShape.FilledTriangleUp;
+                    p3Scatter.MarkerSize = 11;
+                    p3Scatter.Color = Color.FromHex("#991b1b");
+                    p3Scatter.LineWidth = 0;
+                    p3Scatter.LegendText = $"三级高点 L3 ({peaksL3Count})";
                 }
             }
 
-            int valleysCount = 0;
+            int valleysL1Count = 0, valleysL2Count = 0, valleysL3Count = 0;
+            var v1Xs = new List<double>(); var v1Ys = new List<double>();
+            var v2Xs = new List<double>(); var v2Ys = new List<double>();
+            var v3Xs = new List<double>(); var v3Ys = new List<double>();
+
             if (valleys != null && valleys.Count > 0)
             {
-                var valleyXs = new List<double>();
-                var valleyYs = new List<double>();
-
                 foreach (var v in valleys)
                 {
                     if (v.Index >= startGlobalIndex && v.Index <= endGlobalIndex)
                     {
-                        valleyXs.Add(v.Index);
-                        valleyYs.Add((double)v.Price);
-                        valleysCount++;
+                        if (v.Level == 3)
+                        {
+                            v3Xs.Add(v.Index);
+                            v3Ys.Add((double)v.Price);
+                            valleysL3Count++;
+                        }
+                        else if (v.Level == 2)
+                        {
+                            v2Xs.Add(v.Index);
+                            v2Ys.Add((double)v.Price);
+                            valleysL2Count++;
+                        }
+                        else
+                        {
+                            v1Xs.Add(v.Index);
+                            v1Ys.Add((double)v.Price);
+                            valleysL1Count++;
+                        }
                     }
                 }
 
-                if (valleyXs.Count > 0)
+                // 一级低点 (L1): 大小 4, 浅青绿色 (低浓度)
+                if (v1Xs.Count > 0)
                 {
-                    var valleyScatter = plot.Add.Scatter(valleyXs.ToArray(), valleyYs.ToArray());
-                    valleyScatter.MarkerShape = MarkerShape.FilledTriangleDown;
-                    valleyScatter.MarkerSize = 4;
-                    valleyScatter.Color = Color.FromHex("#22c55e"); // 绿色低点
-                    valleyScatter.LineWidth = 0;
-                    valleyScatter.LegendText = $"波谷低点 ({valleysCount})";
+                    var v1Scatter = plot.Add.Scatter(v1Xs.ToArray(), v1Ys.ToArray());
+                    v1Scatter.MarkerShape = MarkerShape.FilledTriangleDown;
+                    v1Scatter.MarkerSize = 4;
+                    v1Scatter.Color = Color.FromHex("#86efac").WithAlpha(0.65);
+                    v1Scatter.LineWidth = 0;
+                    v1Scatter.LegendText = $"一级低点 L1 ({valleysL1Count})";
+                }
+
+                // 二级低点 (L2): 大小 7, 鲜亮翠绿 (中浓度)
+                if (v2Xs.Count > 0)
+                {
+                    var v2Scatter = plot.Add.Scatter(v2Xs.ToArray(), v2Ys.ToArray());
+                    v2Scatter.MarkerShape = MarkerShape.FilledTriangleDown;
+                    v2Scatter.MarkerSize = 7;
+                    v2Scatter.Color = Color.FromHex("#22c55e");
+                    v2Scatter.LineWidth = 0;
+                    v2Scatter.LegendText = $"二级低点 L2 ({valleysL2Count})";
+                }
+
+                // 三级低点 (L3): 大小 11, 深浓翡翠绿 (高浓度)
+                if (v3Xs.Count > 0)
+                {
+                    var v3Scatter = plot.Add.Scatter(v3Xs.ToArray(), v3Ys.ToArray());
+                    v3Scatter.MarkerShape = MarkerShape.FilledTriangleDown;
+                    v3Scatter.MarkerSize = 11;
+                    v3Scatter.Color = Color.FromHex("#15803d");
+                    v3Scatter.LineWidth = 0;
+                    v3Scatter.LegendText = $"三级低点 L3 ({valleysL3Count})";
                 }
             }
 
@@ -200,24 +278,24 @@ namespace Common.Helper
                     }
                     else if (line.IsInChannel)
                     {
-                        // 🔴 符合条件的趋势通道线条: 红色高亮显示，线宽 0.8f
+                        // 趋势通道线条: 红色高亮显示，线宽 0.8f
                         linePlot.Color = Color.FromHex("#ef4444"); // 鲜亮红色 Red 500
                         linePlot.LineWidth = 0.8f;
                         if (!channelLegendSet)
                         {
-                            linePlot.LegendText = "🔴 趋势通道 (线宽 0.8f)";
+                            linePlot.LegendText = "趋势通道 (线宽 0.8f)";
                             channelLegendSet = true;
                         }
                         channelLinesDrawn++;
                     }
                     else if (line.IsSpecialTrendLine)
                     {
-                        // 🟣 特殊结构突破趋势线: 紫色高亮显示，线宽 0.8f
+                        // 特殊结构突破趋势线: 紫色高亮显示，线宽 0.8f
                         linePlot.Color = Color.FromHex("#a855f7"); // Purple 500
                         linePlot.LineWidth = 0.8f;
                         if (!specialLegendSet)
                         {
-                            linePlot.LegendText = "🟣 特殊趋势线 (线宽 0.8f)";
+                            linePlot.LegendText = "特殊趋势线 (线宽 0.8f)";
                             specialLegendSet = true;
                         }
                         specialLinesDrawn++;
@@ -321,7 +399,7 @@ namespace Common.Helper
                     selScatter.MarkerSize = 7;
                     selScatter.Color = Color.FromHex("#ef4444"); // 红色端点
                     selScatter.LineWidth = 0;
-                    selScatter.LegendText = $"🎯 选中趋势线 (#{sel.X1}->#{sel.X2})";
+                    selScatter.LegendText = $"选中趋势线 (#{sel.X1}->#{sel.X2})";
                 }
 
                 // 🌟 若选中的趋势线存在通道，同时高亮显示整个趋势通道 (包括对侧轨道)
@@ -403,7 +481,7 @@ namespace Common.Helper
                         pScatter.Color = Color.FromHex("#f87171"); // 亮红色端点
                         pScatter.LineWidth = 0;
                         string partnerType = partner.IsResistance ? "阻力上轨" : "支撑下轨";
-                        pScatter.LegendText = $"🔴 关联通道对轨 ({partnerType} #{partner.X1}->#{partner.X2})";
+                        pScatter.LegendText = $"关联通道对轨 ({partnerType} #{partner.X1}->#{partner.X2})";
                     }
                 }
             }
@@ -416,7 +494,7 @@ namespace Common.Helper
                 starScatter.MarkerSize = 4;
                 starScatter.Color = Color.FromHex("#fbbf24"); // 金黄色第3点标记
                 starScatter.LineWidth = 0;
-                starScatter.LegendText = $"⭐ 三点确认 ({thirdPointXs.Count})";
+                starScatter.LegendText = $"三点确认 ({thirdPointXs.Count})";
             }
 
             // 6. 绘制交易信号标记 (多单: 紫色菱形◆, 空单: 粉红色方形■)
@@ -455,7 +533,7 @@ namespace Common.Helper
                     buyScatter.MarkerSize = 7;
                     buyScatter.Color = Color.FromHex("#a855f7"); // 紫色开多标记
                     buyScatter.LineWidth = 0;
-                    buyScatter.LegendText = $"🟢 开多信号 ({longSignalsDrawn})";
+                    buyScatter.LegendText = $"开多信号 ({longSignalsDrawn})";
                 }
 
                 if (sellXs.Count > 0)
@@ -465,19 +543,23 @@ namespace Common.Helper
                     sellScatter.MarkerSize = 6;
                     sellScatter.Color = Color.FromHex("#f43f5e"); // 玫红开空标记
                     sellScatter.LineWidth = 0;
-                    sellScatter.LegendText = $"🔴 开空信号 ({shortSignalsDrawn})";
+                    sellScatter.LegendText = $"开空信号 ({shortSignalsDrawn})";
                 }
             }
 
             // 7. 添加左上角结构化描述摘要卡片 (强制中文字体)
             string timeRange = $"{TimeHelper.FromUnixTimeMilliseconds(klines[0].OpenTime):yyyy-MM-dd HH:mm} ~ {TimeHelper.FromUnixTimeMilliseconds(klines[count - 1].CloseTime):yyyy-MM-dd HH:mm}";
-            string channelSummary = channelLinesDrawn > 0 ? $", 🔴趋势通道={channelLinesDrawn / 2}组" : "";
-            string specialSummary = specialLinesDrawn > 0 ? $", 🟣特殊趋势线={specialLinesDrawn}条" : "";
+            string channelSummary = channelLinesDrawn > 0 ? $", 趋势通道={channelLinesDrawn / 2}组" : "";
+            string specialSummary = specialLinesDrawn > 0 ? $", 特殊趋势线={specialLinesDrawn}条" : "";
+            int totalPeaks = peaksL1Count + peaksL2Count + peaksL3Count;
+            int totalValleys = valleysL1Count + valleysL2Count + valleysL3Count;
+            string peaksSummary = $"高点={totalPeaks} (L1:{peaksL1Count}/L2:{peaksL2Count}/L3:{peaksL3Count})";
+            string valleysSummary = $"低点={totalValleys} (L1:{valleysL1Count}/L2:{valleysL2Count}/L3:{valleysL3Count})";
             string fullSummary = $"【量化结构指标摘要】\n" +
                                  $"• 时间跨度: {timeRange} (UTC+0)\n" +
                                  $"• K线根数: {count:N0} 根 | 价格区间: {klines[0].Close:F2} -> {klines[count - 1].Close:F2}\n" +
-                                 $"• 极值高低点: 高点(Peaks)={peaksCount}, 低点(Valleys)={valleysCount}\n" +
-                                 $"• 绘制趋势线: 阻力线={resistanceDrawn}条, 支撑线={supportDrawn}条 (⭐三点共线={threePointConfirmedDrawn}条{channelSummary}{specialSummary})\n" +
+                                 $"• 极值高低点: {peaksSummary}, {valleysSummary}\n" +
+                                 $"• 绘制趋势线: 阻力线={resistanceDrawn}条, 支撑线={supportDrawn}条 (三点共线={threePointConfirmedDrawn}条{channelSummary}{specialSummary})\n" +
                                  $"• 开仓信号: 多单={longSignalsDrawn}笔, 空单={shortSignalsDrawn}笔 (策略: 触碰3-Tick回弹 LineX1X2>=40, LineAge>=4)\n" +
                                  $"• 策略备注: {summaryDescription}";
 
@@ -490,7 +572,7 @@ namespace Common.Helper
             annotation.LabelStyle.BorderWidth = 1.5f;
             annotation.LabelStyle.ShadowColor = Colors.Transparent;
 
-            // 8. 设置标题、坐标轴标签与图例
+            // 8. 设置标题、坐标轴标签与图例 (右上角图例字体设为白色)
             plot.Title(title, size: 16);
             plot.Axes.Title.Label.FontName = chineseFont;
             plot.Axes.Title.Label.ForeColor = Color.FromHex("#f8fafc");
@@ -507,7 +589,9 @@ namespace Common.Helper
 
             plot.ShowLegend(Alignment.UpperRight);
             plot.Legend.FontName = chineseFont;
-            plot.Legend.BackgroundColor = Color.FromHex("#0f172a").WithAlpha(0.85);
+            plot.Legend.FontColor = Color.FromHex("#ffffff"); // 🌟 右上角图例字体颜色设为纯白
+            plot.Legend.FontSize = 12;
+            plot.Legend.BackgroundColor = Color.FromHex("#0f172a").WithAlpha(0.90);
             plot.Legend.OutlineColor = Color.FromHex("#475569");
 
             // 9. 自动调节 X/Y 轴坐标与留白呼吸边距 (Auto-Scale)

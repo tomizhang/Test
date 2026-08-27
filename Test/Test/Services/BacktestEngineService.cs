@@ -109,6 +109,7 @@ namespace Common.Services
                     TakeProfitPct = request.TakeProfitPct,
                     StopLossPct = request.StopLossPct,
                     EnableTrading = request.EnableTrading,
+                    TradeStrategy = request.TradeStrategy,
                     EnableTickStopLoss = request.EnableTickStopLoss,
                     MaxSlopePctPerBar = request.MaxSlopePctPerBar
                 };

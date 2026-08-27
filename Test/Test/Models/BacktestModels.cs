@@ -48,6 +48,27 @@ namespace Common.Models
     }
 
     /// <summary>
+    /// 回测交易策略类型模式
+    /// </summary>
+    public enum TradeStrategyType
+    {
+        /// <summary>
+        /// 经典趋势线触碰回弹策略 (3点线 0.001% 触碰 + 3-Tick 连续反向回弹开仓)
+        /// </summary>
+        TouchRebound = 0,
+
+        /// <summary>
+        /// 紫色特殊趋势线穿透策略 (从上穿过跌破开空，从下穿过突破开多，1分钟K线收盘确认)
+        /// </summary>
+        PurpleBreakout = 1,
+
+        /// <summary>
+        /// 双策略组合 (同时启用触碰回弹与紫色穿透策略)
+        /// </summary>
+        Combined = 2
+    }
+
+    /// <summary>
     /// 趋势线触碰回弹触发的交易开仓信号
     /// </summary>
     public struct TradeSignal
@@ -186,6 +207,11 @@ namespace Common.Models
         /// 是否开启策略交易 (触碰回弹开仓与止盈止损) (默认 true)
         /// </summary>
         public bool EnableTrading { get; set; } = true;
+
+        /// <summary>
+        /// 回测交易策略类型模式 (默认触碰回弹策略)
+        /// </summary>
+        public TradeStrategyType TradeStrategy { get; set; } = TradeStrategyType.TouchRebound;
 
         /// <summary>
         /// 是否开启 Tick 级别微止损 (5-Tick 价格点位 / 若为 false 则使用固定 StopLossPct 比例止损) (默认 true)

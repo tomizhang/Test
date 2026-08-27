@@ -22,6 +22,18 @@ namespace Test.Strategy
     }
 
     /// <summary>
+    /// 紫色特殊趋势线穿透跟踪探针 (用于在 OnTick 中跟踪穿透时间并判定是否满足持续 1 分钟 / 60 秒开仓)
+    /// </summary>
+    public class PurpleBreakoutProbe
+    {
+        public TrendLine Line;
+        public decimal PenetrationPrice;
+        public long FirstPenetratedTimeMs; // 首次穿透时间戳 (毫秒)
+        public int PenetratedGlobalIndex;  // 首次穿透时的全局 K 线序号
+        public bool IsResistance => Line.IsResistance; // true: 阻力线 (向下延伸，向上突破 -> 反向开空) ; false: 支撑线 (向上延伸，向下跌破 -> 反向开多)
+    }
+
+    /// <summary>
     /// 高性能三层增量趋势线与回弹交易策略 (Multi-Layer Incremental TrendLine Strategy)
     /// 核心极速架构：
     /// 1. 准入过滤：仅当趋势线满足 LineX1X2 >= 40 (跨度>=40) 且 LineAge >= 4 (延伸寿命>=4) 时触发触碰监控
@@ -69,8 +81,9 @@ namespace Test.Strategy
         public decimal TakeProfitPct { get; set; } = 1.5m;  // 止盈比例 (%)
         public decimal StopLossPct { get; set; } = 0.5m;    // 止损比例 (%)
 
-        // 7. 是否开启策略交易与 Tick 级别止损
+        // 7. 是否开启策略交易与交易策略模式、Tick 级别止损
         public bool EnableTrading { get; set; } = true;
+        public TradeStrategyType TradeStrategy { get; set; } = TradeStrategyType.TouchRebound;
         public bool EnableTickStopLoss { get; set; } = true; // 是否开启 Tick 级别微止损 (5-Tick 点位 / false 为固定比例止损)
 
         // 8. 趋势线最大允许斜率 (%/bar)，过滤超高斜率与异常噪音趋势线 (默认 2.0%/bar)
@@ -99,11 +112,46 @@ namespace Test.Strategy
         public IReadOnlyList<RawKline> Klines => _klines;
         public int KlineCount => _klines.Count;
 
-        // 历史已确认的所有波峰与波谷列表 (按全局单调索引递增)
-        private readonly List<PivotPoint> _peaks = new List<PivotPoint>(500);
-        private readonly List<PivotPoint> _valleys = new List<PivotPoint>(500);
-        public IReadOnlyList<PivotPoint> Peaks => _peaks;
-        public IReadOnlyList<PivotPoint> Valleys => _valleys;
+        // 历史已确认的所有 3 级波峰与波谷列表
+        private readonly List<PivotPoint> _peaksL1 = new List<PivotPoint>(500);
+        private readonly List<PivotPoint> _peaksL2 = new List<PivotPoint>(200);
+        private readonly List<PivotPoint> _peaksL3 = new List<PivotPoint>(100);
+
+        private readonly List<PivotPoint> _valleysL1 = new List<PivotPoint>(500);
+        private readonly List<PivotPoint> _valleysL2 = new List<PivotPoint>(200);
+        private readonly List<PivotPoint> _valleysL3 = new List<PivotPoint>(100);
+
+        public IReadOnlyList<PivotPoint> PeaksL1 => _peaksL1;
+        public IReadOnlyList<PivotPoint> PeaksL2 => _peaksL2;
+        public IReadOnlyList<PivotPoint> PeaksL3 => _peaksL3;
+
+        public IReadOnlyList<PivotPoint> ValleysL1 => _valleysL1;
+        public IReadOnlyList<PivotPoint> ValleysL2 => _valleysL2;
+        public IReadOnlyList<PivotPoint> ValleysL3 => _valleysL3;
+
+        public IReadOnlyList<PivotPoint> Peaks
+        {
+            get
+            {
+                var list = new List<PivotPoint>(_peaksL1.Count + _peaksL2.Count + _peaksL3.Count);
+                list.AddRange(_peaksL1);
+                list.AddRange(_peaksL2);
+                list.AddRange(_peaksL3);
+                return list;
+            }
+        }
+
+        public IReadOnlyList<PivotPoint> Valleys
+        {
+            get
+            {
+                var list = new List<PivotPoint>(_valleysL1.Count + _valleysL2.Count + _valleysL3.Count);
+                list.AddRange(_valleysL1);
+                list.AddRange(_valleysL2);
+                list.AddRange(_valleysL3);
+                return list;
+            }
+        }
 
         // 当前存量的活跃阻力线与支撑线 (未被穿透的有效趋势线)
         public List<TrendLine> ActiveResistanceLines { get; } = new List<TrendLine>(300);
@@ -119,6 +167,9 @@ namespace Test.Strategy
 
         // 正在跟踪的触碰回弹探针集合
         private readonly List<TouchProbe> _activeTouchProbes = new List<TouchProbe>(8);
+
+        // 正在跟踪的紫色特殊趋势线穿透探针集合 (在 OnTick 中判定是否满足持续 1 分钟 / 60 秒开仓)
+        private readonly List<PurpleBreakoutProbe> _activePurpleBreakoutProbes = new List<PurpleBreakoutProbe>(16);
 
         // 交易信号记录集合
         public List<TradeSignal> TradeSignals { get; } = new List<TradeSignal>(1000);
@@ -349,35 +400,161 @@ namespace Test.Strategy
             }
 
             // ====================================================================
-            // 步骤 0.5: 单持仓互斥检查 与 交易开启开关检查
+            // 步骤 0.5: 交易开启开关检查
             // ====================================================================
             if (!EnableTrading)
             {
-                if (_activeTouchProbes.Count > 0)
-                {
-                    _activeTouchProbes.Clear();
-                }
+                if (_activeTouchProbes.Count > 0) _activeTouchProbes.Clear();
+                if (_activePurpleBreakoutProbes.Count > 0) _activePurpleBreakoutProbes.Clear();
                 return; // 未开启交易时仅计算趋势线与收盘演进，不执行开仓判定
             }
 
-            if (ActivePositions.Count > 0)
+            // ====================================================================
+            // 步骤 0.8: 紫色特殊趋势线穿透 1 分钟 (60秒) 确认开仓判定 (在 OnTick 中高精度逐笔判定，反向开仓)
+            // ====================================================================
+            if (_activePurpleBreakoutProbes.Count > 0)
             {
-                if (_activeTouchProbes.Count > 0)
+                for (int i = _activePurpleBreakoutProbes.Count - 1; i >= 0; i--)
                 {
-                    _activeTouchProbes.Clear();
+                    var probe = _activePurpleBreakoutProbes[i];
+                    decimal linePrice = probe.Line.CachedCurrentPrice > 0m ? probe.Line.CachedCurrentPrice : probe.Line.GetPriceAt(currentGlobalIndex);
+
+                    if (probe.IsResistance)
+                    {
+                        // 阻力线 (向下延伸)：自下向上穿透突破满 1 分钟 -> 反向开空 (Sell / Short)
+                        // 若价格明显跌回趋势线下方 (跌回 < linePrice * 0.999m)，说明突破未能维持
+                        if (tick.Price < linePrice * 0.999m)
+                        {
+                            _activePurpleBreakoutProbes.RemoveAt(i);
+                            continue;
+                        }
+
+                        // 检查是否已满足 1 分钟 (60 秒 / 60,000 毫秒) 的穿透时间确认
+                        if (tick.Time - probe.FirstPenetratedTimeMs >= 60000L)
+                        {
+                            if (EnableTrading && ActivePositions.Count == 0 && (TradeStrategy == TradeStrategyType.PurpleBreakout || TradeStrategy == TradeStrategyType.Combined))
+                            {
+                                if (_lastTriggerTimestampMs == 0 || (tick.Time - _lastTriggerTimestampMs) >= cooldownMs)
+                                {
+                                    decimal entryPrice = tick.Price;
+                                    decimal tpPrice = entryPrice * (1.0m - TakeProfitPct / 100.0m);
+                                    decimal slPrice = entryPrice * (1.0m + StopLossPct / 100.0m);
+
+                                    var signal = new TradeSignal
+                                    {
+                                        SignalId = TradeSignals.Count + 1,
+                                        GlobalBarIndex = currentGlobalIndex,
+                                        TimestampMs = tick.Time,
+                                        Side = TradeSide.Sell,
+                                        Price = entryPrice,
+                                        TriggerLine = probe.Line,
+                                        TicksSinceTouch = 0,
+                                        Reason = $"[OnTick穿透满1分钟开空] 突破紫色压力线 #{probe.Line.X1}->#{probe.Line.X2} (跨度:{probe.Line.LineX1X2}, 斜率:{probe.Line.OverallSlopePct:F2}%)"
+                                    };
+
+                                    TradeSignals.Add(signal);
+                                    ShortSignalsCount++;
+                                    _lastTriggerTimestampMs = tick.Time;
+                                    probe.Line.IsTriggered = true;
+                                    MarkTrendLineTriggered(probe.Line);
+                                    OnTradeSignalGenerated?.Invoke(signal);
+
+                                    var pos = new Position
+                                    {
+                                        PositionId = CompletedTrades.Count + ActivePositions.Count + 1,
+                                        Side = TradeSide.Sell,
+                                        EntryTimestampMs = tick.Time,
+                                        EntryPrice = entryPrice,
+                                        EntryGlobalBarIndex = currentGlobalIndex,
+                                        TakeProfitPrice = tpPrice,
+                                        StopLossPrice = slPrice,
+                                        HighestPriceSinceEntry = entryPrice,
+                                        LowestPriceSinceEntry = entryPrice,
+                                        TriggerLine = probe.Line,
+                                        StrategyReason = signal.Reason
+                                    };
+                                    ActivePositions.Add(pos);
+                                    OnPositionOpened?.Invoke(pos);
+                                }
+                            }
+                            _activePurpleBreakoutProbes.RemoveAt(i);
+                        }
+                    }
+                    else
+                    {
+                        // 支撑线 (向上延伸)：自上向下跌破击穿满 1 分钟 -> 反向开多 (Buy / Long)
+                        // 若价格明显涨回趋势线上方 (涨回 > linePrice * 1.001m)，说明跌破未能维持
+                        if (tick.Price > linePrice * 1.001m)
+                        {
+                            _activePurpleBreakoutProbes.RemoveAt(i);
+                            continue;
+                        }
+
+                        // 检查是否已满足 1 分钟 (60 秒 / 60,000 毫秒) 的穿透时间确认
+                        if (tick.Time - probe.FirstPenetratedTimeMs >= 60000L)
+                        {
+                            if (EnableTrading && ActivePositions.Count == 0 && (TradeStrategy == TradeStrategyType.PurpleBreakout || TradeStrategy == TradeStrategyType.Combined))
+                            {
+                                if (_lastTriggerTimestampMs == 0 || (tick.Time - _lastTriggerTimestampMs) >= cooldownMs)
+                                {
+                                    decimal entryPrice = tick.Price;
+                                    decimal tpPrice = entryPrice * (1.0m + TakeProfitPct / 100.0m);
+                                    decimal slPrice = entryPrice * (1.0m - StopLossPct / 100.0m);
+
+                                    var signal = new TradeSignal
+                                    {
+                                        SignalId = TradeSignals.Count + 1,
+                                        GlobalBarIndex = currentGlobalIndex,
+                                        TimestampMs = tick.Time,
+                                        Side = TradeSide.Buy,
+                                        Price = entryPrice,
+                                        TriggerLine = probe.Line,
+                                        TicksSinceTouch = 0,
+                                        Reason = $"[OnTick穿透满1分钟开多] 跌破紫色支撑线 #{probe.Line.X1}->#{probe.Line.X2} (跨度:{probe.Line.LineX1X2}, 斜率:{probe.Line.OverallSlopePct:F2}%)"
+                                    };
+
+                                    TradeSignals.Add(signal);
+                                    LongSignalsCount++;
+                                    _lastTriggerTimestampMs = tick.Time;
+                                    probe.Line.IsTriggered = true;
+                                    MarkTrendLineTriggered(probe.Line);
+                                    OnTradeSignalGenerated?.Invoke(signal);
+
+                                    var pos = new Position
+                                    {
+                                        PositionId = CompletedTrades.Count + ActivePositions.Count + 1,
+                                        Side = TradeSide.Buy,
+                                        EntryTimestampMs = tick.Time,
+                                        EntryPrice = entryPrice,
+                                        EntryGlobalBarIndex = currentGlobalIndex,
+                                        TakeProfitPrice = tpPrice,
+                                        StopLossPrice = slPrice,
+                                        HighestPriceSinceEntry = entryPrice,
+                                        LowestPriceSinceEntry = entryPrice,
+                                        TriggerLine = probe.Line,
+                                        StrategyReason = signal.Reason
+                                    };
+                                    ActivePositions.Add(pos);
+                                    OnPositionOpened?.Invoke(pos);
+                                }
+                            }
+                            _activePurpleBreakoutProbes.RemoveAt(i);
+                        }
+                    }
                 }
-                return;
             }
 
             // ====================================================================
-            // 步骤 1: 处理已有的触碰探针，检查是否出现 3 个 Tick 连续反向回弹入场
+            // 步骤 1: 处理已有的触碰探针，检查是否出现 3 个 Tick 连续反向回弹入场 (仅触碰回弹策略)
             // ====================================================================
-            for (int i = _activeTouchProbes.Count - 1; i >= 0; i--)
+            if (ActivePositions.Count == 0 && TradeStrategy != TradeStrategyType.PurpleBreakout && _activeTouchProbes.Count > 0)
             {
-                var probe = _activeTouchProbes[i];
-                probe.TicksSinceTouch++;
+                for (int i = _activeTouchProbes.Count - 1; i >= 0; i--)
+                {
+                    var probe = _activeTouchProbes[i];
+                    probe.TicksSinceTouch++;
 
-                decimal linePrice = probe.Line.CachedCurrentPrice;
+                    decimal linePrice = probe.Line.CachedCurrentPrice;
 
                 if (probe.IsResistance)
                 {
@@ -588,19 +765,47 @@ namespace Test.Strategy
                     }
                 }
             }
+            }
 
             // ====================================================================
-            // 步骤 2: 检测 3 点活跃阻力线 (高点趋势线) - 到达 0.001% 附近
+            // 步骤 2: 活跃阻力线 (高点趋势线) 触碰检测与紫色穿透跟踪
             // ====================================================================
             if (tick.Price >= _minActiveResistancePrice)
             {
                 for (int i = ActiveResistanceLines.Count - 1; i >= 0; i--)
                 {
                     var line = ActiveResistanceLines[i];
-                    if (!line.IsThreePointConfirmed) continue; // 🌟 仅 3 点趋势线参与开仓交易
-
-                    decimal linePrice = line.CachedCurrentPrice;
+                    decimal linePrice = line.CachedCurrentPrice > 0m ? line.CachedCurrentPrice : line.GetPriceAt(currentGlobalIndex);
                     if (linePrice <= 0m) continue;
+
+                    // 🟣 紫色特殊趋势线穿透检测 (向上突破阻力线)
+                    if (tick.Price > linePrice)
+                    {
+                        if (line.CollidedKlineIndex < 0)
+                        {
+                            line.CollidedKlineIndex = currentGlobalIndex;
+                            line.LineExtensionRange = currentGlobalIndex - line.X2;
+                            if (TrendLineHelper.IsSpecialTrendLineConditionMet(line, _peaksL1, currentGlobalIndex, minOriginIndex: _lastSpecialValleyOriginIndex, minTotalAge: MinSpecialTrendLineTotalAge))
+                            {
+                                line.IsSpecialTrendLine = true;
+                                _lastSpecialPeakOriginIndex = Math.Max(_lastSpecialPeakOriginIndex, line.X1);
+                            }
+                            ActiveResistanceLines[i] = line;
+                        }
+
+                        if (line.IsSpecialTrendLine && !IsLineInPurpleProbes(line))
+                        {
+                            _activePurpleBreakoutProbes.Add(new PurpleBreakoutProbe
+                            {
+                                Line = line,
+                                PenetrationPrice = tick.Price,
+                                FirstPenetratedTimeMs = tick.Time,
+                                PenetratedGlobalIndex = currentGlobalIndex
+                            });
+                        }
+                    }
+
+                    if (TradeStrategy == TradeStrategyType.PurpleBreakout || ActivePositions.Count > 0 || !line.IsThreePointConfirmed) continue; // 仅在启用触碰策略且无持仓时跟踪 3 点触碰回弹
 
                     decimal diffPct = Math.Abs(tick.Price - linePrice) / linePrice * 100m;
 
@@ -632,17 +837,44 @@ namespace Test.Strategy
             }
 
             // ====================================================================
-            // 步骤 3: 检测 3 点活跃支撑线 (低点趋势线) - 到达 0.001% 附近
+            // 步骤 3: 活跃支撑线 (低点趋势线) 触碰检测与紫色穿透跟踪
             // ====================================================================
             if (tick.Price <= _maxActiveSupportPrice)
             {
                 for (int i = ActiveSupportLines.Count - 1; i >= 0; i--)
                 {
                     var line = ActiveSupportLines[i];
-                    if (!line.IsThreePointConfirmed) continue; // 🌟 仅 3 点趋势线参与开仓交易
-
-                    decimal linePrice = line.CachedCurrentPrice;
+                    decimal linePrice = line.CachedCurrentPrice > 0m ? line.CachedCurrentPrice : line.GetPriceAt(currentGlobalIndex);
                     if (linePrice <= 0m) continue;
+
+                    // 🟣 紫色特殊趋势线穿透检测 (向下击穿支撑线)
+                    if (tick.Price < linePrice)
+                    {
+                        if (line.CollidedKlineIndex < 0)
+                        {
+                            line.CollidedKlineIndex = currentGlobalIndex;
+                            line.LineExtensionRange = currentGlobalIndex - line.X2;
+                            if (TrendLineHelper.IsSpecialTrendLineConditionMet(line, _valleysL1, currentGlobalIndex, minOriginIndex: _lastSpecialPeakOriginIndex, minTotalAge: MinSpecialTrendLineTotalAge))
+                            {
+                                line.IsSpecialTrendLine = true;
+                                _lastSpecialValleyOriginIndex = Math.Max(_lastSpecialValleyOriginIndex, line.X1);
+                            }
+                            ActiveSupportLines[i] = line;
+                        }
+
+                        if (line.IsSpecialTrendLine && !IsLineInPurpleProbes(line))
+                        {
+                            _activePurpleBreakoutProbes.Add(new PurpleBreakoutProbe
+                            {
+                                Line = line,
+                                PenetrationPrice = tick.Price,
+                                FirstPenetratedTimeMs = tick.Time,
+                                PenetratedGlobalIndex = currentGlobalIndex
+                            });
+                        }
+                    }
+
+                    if (TradeStrategy == TradeStrategyType.PurpleBreakout || ActivePositions.Count > 0 || !line.IsThreePointConfirmed) continue; // 仅在启用触碰策略且无持仓时跟踪 3 点触碰回弹
 
                     decimal diffPct = Math.Abs(tick.Price - linePrice) / linePrice * 100m;
 
@@ -678,6 +910,17 @@ namespace Test.Strategy
             for (int i = 0; i < _activeTouchProbes.Count; i++)
             {
                 var p = _activeTouchProbes[i].Line;
+                if (p.X1 == line.X1 && p.X2 == line.X2 && p.Type == line.Type)
+                    return true;
+            }
+            return false;
+        }
+
+        private bool IsLineInPurpleProbes(TrendLine line)
+        {
+            for (int i = 0; i < _activePurpleBreakoutProbes.Count; i++)
+            {
+                var p = _activePurpleBreakoutProbes[i].Line;
                 if (p.X1 == line.X1 && p.X2 == line.X2 && p.Type == line.Type)
                     return true;
             }
@@ -787,9 +1030,11 @@ namespace Test.Strategy
             // 3. 【第 2 层: O(M) 增量趋势线生成 (零堆对象分配直装模式，高点与低点全角度趋势线生成，过滤超高斜率)】
             if (hasPeak)
             {
+                newPeak.Level = 1;
+
                 TrendLineHelper.GenerateIncrementalTrendLines(
                     newPeak,
-                    _peaks,
+                    _peaksL1,
                     _klines,
                     currentGlobalIndex,
                     ActiveResistanceLines,
@@ -817,15 +1062,44 @@ namespace Test.Strategy
                     }
                 }
 
-                _peaks.Add(newPeak);
+                _peaksL1.Add(newPeak);
+
+                // 🌟 第 2 级高点运算：以第 1 级高点序列为输入，当倒数第 2 个点高于其左右两侧时确认为第 2 级高点
+                if (_peaksL1.Count >= 3)
+                {
+                    int pCandIdx = _peaksL1.Count - 2;
+                    var candPeak = _peaksL1[pCandIdx];
+                    if (candPeak.Price >= _peaksL1[pCandIdx - 1].Price && candPeak.Price >= _peaksL1[pCandIdx + 1].Price)
+                    {
+                        var peakL2 = candPeak;
+                        peakL2.Level = 2;
+                        _peaksL2.Add(peakL2);
+
+                        // 🌟 第 3 级高点运算：以第 2 级高点序列为输入，当倒数第 2 个点高于其左右两侧时确认为第 3 级高点
+                        if (_peaksL2.Count >= 3)
+                        {
+                            int p2CandIdx = _peaksL2.Count - 2;
+                            var cand2Peak = _peaksL2[p2CandIdx];
+                            if (cand2Peak.Price >= _peaksL2[p2CandIdx - 1].Price && cand2Peak.Price >= _peaksL2[p2CandIdx + 1].Price)
+                            {
+                                var peakL3 = cand2Peak;
+                                peakL3.Level = 3;
+                                _peaksL3.Add(peakL3);
+                            }
+                        }
+                    }
+                }
+
                 PruneHistoryCapacity();
             }
 
             if (hasValley)
             {
+                newValley.Level = 1;
+
                 TrendLineHelper.GenerateIncrementalTrendLines(
                     newValley,
-                    _valleys,
+                    _valleysL1,
                     _klines,
                     currentGlobalIndex,
                     ActiveSupportLines,
@@ -853,7 +1127,34 @@ namespace Test.Strategy
                     }
                 }
 
-                _valleys.Add(newValley);
+                _valleysL1.Add(newValley);
+
+                // 🌟 第 2 级低点运算：以第 1 级低点序列为输入，当倒数第 2 个点低于其左右两侧时确认为第 2 级低点
+                if (_valleysL1.Count >= 3)
+                {
+                    int vCandIdx = _valleysL1.Count - 2;
+                    var candValley = _valleysL1[vCandIdx];
+                    if (candValley.Price <= _valleysL1[vCandIdx - 1].Price && candValley.Price <= _valleysL1[vCandIdx + 1].Price)
+                    {
+                        var valleyL2 = candValley;
+                        valleyL2.Level = 2;
+                        _valleysL2.Add(valleyL2);
+
+                        // 🌟 第 3 级低点运算：以第 2 级低点序列为输入，当倒数第 2 个点低于其左右两侧时确认为第 3 级低点
+                        if (_valleysL2.Count >= 3)
+                        {
+                            int v2CandIdx = _valleysL2.Count - 2;
+                            var cand2Valley = _valleysL2[v2CandIdx];
+                            if (cand2Valley.Price <= _valleysL2[v2CandIdx - 1].Price && cand2Valley.Price <= _valleysL2[v2CandIdx + 1].Price)
+                            {
+                                var valleyL3 = cand2Valley;
+                                valleyL3.Level = 3;
+                                _valleysL3.Add(valleyL3);
+                            }
+                        }
+                    }
+                }
+
                 PruneHistoryCapacity();
             }
 
@@ -902,10 +1203,21 @@ namespace Test.Strategy
                         line.LineExtensionRange = currentGlobalIndex - line.X2;
 
                         // 🟣 检查是否符合“特殊趋势线”结构特征 (源于相对高点/下跌波段起点向下延伸被向上突破，且源头必须位于前一个低点紫色基准点之后)
-                        if (TrendLineHelper.IsSpecialTrendLineConditionMet(line, _peaks, currentGlobalIndex, minOriginIndex: _lastSpecialValleyOriginIndex, minTotalAge: MinSpecialTrendLineTotalAge))
+                        if (TrendLineHelper.IsSpecialTrendLineConditionMet(line, _peaksL1, currentGlobalIndex, minOriginIndex: _lastSpecialValleyOriginIndex, minTotalAge: MinSpecialTrendLineTotalAge))
                         {
                             line.IsSpecialTrendLine = true;
                             _lastSpecialPeakOriginIndex = Math.Max(_lastSpecialPeakOriginIndex, line.X1);
+
+                            if (!IsLineInPurpleProbes(line))
+                            {
+                                _activePurpleBreakoutProbes.Add(new PurpleBreakoutProbe
+                                {
+                                    Line = line,
+                                    PenetrationPrice = kline.Close,
+                                    FirstPenetratedTimeMs = kline.CloseTime,
+                                    PenetratedGlobalIndex = currentGlobalIndex
+                                });
+                            }
                         }
                     }
 
@@ -967,10 +1279,21 @@ namespace Test.Strategy
                         line.LineExtensionRange = currentGlobalIndex - line.X2;
 
                         // 🟣 检查是否符合“特殊趋势线”结构特征 (源于相对低点/上涨波段起点向上延伸被向下击穿，且源头必须位于前一个高点紫色基准点之后)
-                        if (TrendLineHelper.IsSpecialTrendLineConditionMet(line, _valleys, currentGlobalIndex, minOriginIndex: _lastSpecialPeakOriginIndex, minTotalAge: MinSpecialTrendLineTotalAge))
+                        if (TrendLineHelper.IsSpecialTrendLineConditionMet(line, _valleysL1, currentGlobalIndex, minOriginIndex: _lastSpecialPeakOriginIndex, minTotalAge: MinSpecialTrendLineTotalAge))
                         {
                             line.IsSpecialTrendLine = true;
                             _lastSpecialValleyOriginIndex = Math.Max(_lastSpecialValleyOriginIndex, line.X1);
+
+                            if (!IsLineInPurpleProbes(line))
+                            {
+                                _activePurpleBreakoutProbes.Add(new PurpleBreakoutProbe
+                                {
+                                    Line = line,
+                                    PenetrationPrice = kline.Close,
+                                    FirstPenetratedTimeMs = kline.CloseTime,
+                                    PenetratedGlobalIndex = currentGlobalIndex
+                                });
+                            }
                         }
                     }
 
@@ -1154,8 +1477,12 @@ namespace Test.Strategy
             int minRetainedIndex = currentGlobalIndex - MaxKlinesCapacity;
             if (minRetainedIndex > 0)
             {
-                _peaks.RemoveAll(p => p.Index < minRetainedIndex);
-                _valleys.RemoveAll(v => v.Index < minRetainedIndex);
+                _peaksL1.RemoveAll(p => p.Index < minRetainedIndex);
+                _peaksL2.RemoveAll(p => p.Index < minRetainedIndex);
+                _peaksL3.RemoveAll(p => p.Index < minRetainedIndex);
+                _valleysL1.RemoveAll(v => v.Index < minRetainedIndex);
+                _valleysL2.RemoveAll(v => v.Index < minRetainedIndex);
+                _valleysL3.RemoveAll(v => v.Index < minRetainedIndex);
             }
         }
 
@@ -1169,8 +1496,8 @@ namespace Test.Strategy
 
             return PlotHelper.PlotTrendLineChart(
                 _klines,
-                _peaks,
-                _valleys,
+                Peaks,
+                Valleys,
                 ActiveResistanceLines,
                 ActiveSupportLines,
                 summaryDescription,
@@ -1192,6 +1519,7 @@ namespace Test.Strategy
                    $"GlobalBars: {_globalBarIndex}, Window: {_klines.Count}/{MaxKlinesCapacity} | " +
                    $"交易统计: 完成={CompletedTrades.Count}笔 (胜率={WinRate:F1}%, 盈亏={TotalPnLPct:F2}%) | " +
                    $"开仓信号: 多 {LongSignalsCount} | 空 {ShortSignalsCount} (总计 {TotalSignalsCount}) | " +
+                   $"极值点: 高(L1:{_peaksL1.Count}/L2:{_peaksL2.Count}/L3:{_peaksL3.Count}) | 低(L1:{_valleysL1.Count}/L2:{_valleysL2.Count}/L3:{_valleysL3.Count}) | " +
                    $"活跃阻力={ActiveResistanceLines.Count}, 支撑={ActiveSupportLines.Count}, 通道={ActiveTrendChannels.Count}";
         }
 
@@ -1202,8 +1530,12 @@ namespace Test.Strategy
         {
             _globalBarIndex = 0;
             _klines.Clear();
-            _peaks.Clear();
-            _valleys.Clear();
+            _peaksL1.Clear();
+            _peaksL2.Clear();
+            _peaksL3.Clear();
+            _valleysL1.Clear();
+            _valleysL2.Clear();
+            _valleysL3.Clear();
             _zigZagTracker.Reset();
             _lastSpecialValleyOriginIndex = -1;
             _lastSpecialPeakOriginIndex = -1;
@@ -1213,6 +1545,7 @@ namespace Test.Strategy
             _deletedTrendLines.Clear();
             _historicalTrendLines.Clear();
             _activeTouchProbes.Clear();
+            _activePurpleBreakoutProbes.Clear();
             TradeSignals.Clear();
             ActivePositions.Clear();
             CompletedTrades.Clear();
