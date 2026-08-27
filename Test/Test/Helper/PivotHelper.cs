@@ -662,4 +662,198 @@ namespace Common.Helper
             return (hasPeak, hasValley, peak, valley);
         }
     }
+
+    /// <summary>
+    /// 高性能微观 1 分钟 K 线流式聚合器 (从逐笔 Tick 中实时合成 1m K 线，零 GC 压力)
+    /// </summary>
+    public class MicroKlineAggregator
+    {
+        private long _currentMinuteTimestamp = -1;
+        private decimal _open, _high, _low, _close, _volume;
+        private long _openTime, _closeTime;
+        private int _tradeCount;
+        private bool _hasData = false;
+
+        public void Reset()
+        {
+            _currentMinuteTimestamp = -1;
+            _hasData = false;
+            _tradeCount = 0;
+            _volume = 0m;
+        }
+
+        /// <summary>
+        /// 输入 Tick，若跨越 1 分钟边界则闭合并返回刚刚完成的 1m K 线
+        /// </summary>
+        public bool TryProcessTick(RawTick tick, out RawKline completed1mKline)
+        {
+            completed1mKline = default;
+            long minuteTs = (tick.Time / 60000L) * 60000L;
+
+            if (_currentMinuteTimestamp == -1)
+            {
+                _currentMinuteTimestamp = minuteTs;
+                _open = tick.Price;
+                _high = tick.Price;
+                _low = tick.Price;
+                _close = tick.Price;
+                _volume = tick.Qty;
+                _openTime = minuteTs;
+                _closeTime = minuteTs + 59999L;
+                _tradeCount = 1;
+                _hasData = true;
+                return false;
+            }
+
+            if (minuteTs > _currentMinuteTimestamp)
+            {
+                // 1 分钟 K 线周期完结
+                if (_hasData)
+                {
+                    completed1mKline = new RawKline
+                    {
+                        OpenTime = _openTime,
+                        CloseTime = _closeTime,
+                        Open = _open,
+                        High = _high,
+                        Low = _low,
+                        Close = _close,
+                        Volume = _volume,
+                        TradeCount = _tradeCount
+                    };
+                }
+
+                // 开启下一根 1m K 线
+                _currentMinuteTimestamp = minuteTs;
+                _open = tick.Price;
+                _high = tick.Price;
+                _low = tick.Price;
+                _close = tick.Price;
+                _volume = tick.Qty;
+                _openTime = minuteTs;
+                _closeTime = minuteTs + 59999L;
+                _tradeCount = 1;
+                _hasData = true;
+
+                return true;
+            }
+
+            // 更新当前 1m K 线的 High / Low / Close / Volume
+            if (tick.Price > _high) _high = tick.Price;
+            if (tick.Price < _low) _low = tick.Price;
+            _close = tick.Price;
+            _volume += tick.Qty;
+            _tradeCount++;
+
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 微观嵌套加速器 (用于借助 1m 微观 K 线或 Tick 流，毫秒级快速确认宏观 Level 2 / Level 3 高低点)
+    /// </summary>
+    public class MicroNestedAccelerator
+    {
+        private readonly List<RawKline> _recentMicroKlines = new List<RawKline>(60);
+        private readonly ZigZagTracker _microZigZag = new ZigZagTracker();
+        private readonly List<PivotPoint> _microPeaks = new List<PivotPoint>(30);
+        private readonly List<PivotPoint> _microValleys = new List<PivotPoint>(30);
+        private int _microIndex = 0;
+
+        public void Reset()
+        {
+            _recentMicroKlines.Clear();
+            _microZigZag.Reset();
+            _microPeaks.Clear();
+            _microValleys.Clear();
+            _microIndex = 0;
+        }
+
+        /// <summary>
+        /// 推送微观 1m K 线并更新微观波段结构
+        /// </summary>
+        public void OnMicroKline(RawKline kline)
+        {
+            _recentMicroKlines.Add(kline);
+            if (_recentMicroKlines.Count > 60) _recentMicroKlines.RemoveAt(0);
+
+            var (hasPeak, hasValley, peak, valley) = _microZigZag.ProcessKline(kline, _microIndex++, deviationPct: 0.3m, depth: 2);
+            if (hasPeak)
+            {
+                _microPeaks.Add(peak);
+                if (_microPeaks.Count > 30) _microPeaks.RemoveAt(0);
+            }
+            if (hasValley)
+            {
+                _microValleys.Add(valley);
+                if (_microValleys.Count > 30) _microValleys.RemoveAt(0);
+            }
+        }
+
+        /// <summary>
+        /// 检查候选宏观高点是否已由微观结构加速确立为 Level 2 或 Level 3
+        /// </summary>
+        public (bool promoteToL2, bool promoteToL3) EvaluateMacroPeakAcceleration(PivotPoint macroPeak, decimal currentPrice, long currentTimestampMs)
+        {
+            if (macroPeak.Price <= 0m) return (false, false);
+
+            decimal dropPct = (macroPeak.Price - currentPrice) / macroPeak.Price * 100m;
+
+            // 1. 幅度加速：若自宏观高点回落超过 0.5%，加速为 L2；若回落超过 1.0%，加速为 L3
+            bool toL2 = dropPct >= 0.50m;
+            bool toL3 = dropPct >= 1.00m;
+
+            // 2. 微观波段形态加速：检查宏观高点时间之后的微观高低点序列
+            int microLowerHighs = 0;
+            for (int i = _microPeaks.Count - 1; i >= 0; i--)
+            {
+                var mp = _microPeaks[i];
+                if (mp.TimestampMs >= macroPeak.TimestampMs)
+                {
+                    if (mp.Price < macroPeak.Price * 0.9995m)
+                    {
+                        microLowerHighs++;
+                    }
+                }
+            }
+
+            if (microLowerHighs >= 1 && dropPct >= 0.25m) toL2 = true;
+            if (microLowerHighs >= 2 && dropPct >= 0.40m) toL3 = true;
+
+            return (toL2, toL3);
+        }
+
+        /// <summary>
+        /// 检查候选宏观低点是否已由微观结构加速确立为 Level 2 或 Level 3
+        /// </summary>
+        public (bool promoteToL2, bool promoteToL3) EvaluateMacroValleyAcceleration(PivotPoint macroValley, decimal currentPrice, long currentTimestampMs)
+        {
+            if (macroValley.Price <= 0m) return (false, false);
+
+            decimal reboundPct = (currentPrice - macroValley.Price) / macroValley.Price * 100m;
+
+            // 1. 幅度加速：若自宏观低点反弹超过 0.5%，加速为 L2；若反弹超过 1.0%，加速为 L3
+            bool toL2 = reboundPct >= 0.50m;
+            bool toL3 = reboundPct >= 1.00m;
+
+            // 2. 微观波段形态加速：检查宏观低点时间之后的微观高低点序列
+            int microHigherLows = 0;
+            for (int i = _microValleys.Count - 1; i >= 0; i--)
+            {
+                var mv = _microValleys[i];
+                if (mv.TimestampMs >= macroValley.TimestampMs)
+                {
+                    if (mv.Price > macroValley.Price * 1.0005m)
+                    {
+                        microHigherLows++;
+                    }
+                }
+            }
+
+            if (microHigherLows >= 1 && reboundPct >= 0.25m) toL2 = true;
+            if (microHigherLows >= 2 && reboundPct >= 0.40m) toL3 = true;
+
+            return (toL2, toL3);
+        }
+    }
 }

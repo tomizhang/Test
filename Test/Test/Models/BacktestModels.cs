@@ -63,9 +63,14 @@ namespace Common.Models
         PurpleBreakout = 1,
 
         /// <summary>
-        /// 双策略组合 (同时启用触碰回弹与紫色穿透策略)
+        /// 宏观 Level 3 假突破猎杀策略 (SFP / 2B 假突破反转：刺破前高L3后1m微观顶分型跌回开空，刺破前低L3后1m微观底分型反抽开多)
         /// </summary>
-        Combined = 2
+        Level3FalseBreakout = 2,
+
+        /// <summary>
+        /// 多策略组合模式 (同时启用触碰回弹、紫色穿透与宏观L3假突破猎杀策略)
+        /// </summary>
+        Combined = 3
     }
 
     /// <summary>

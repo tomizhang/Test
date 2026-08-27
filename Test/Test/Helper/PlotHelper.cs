@@ -560,7 +560,7 @@ namespace Common.Helper
                                  $"• K线根数: {count:N0} 根 | 价格区间: {klines[0].Close:F2} -> {klines[count - 1].Close:F2}\n" +
                                  $"• 极值高低点: {peaksSummary}, {valleysSummary}\n" +
                                  $"• 绘制趋势线: 阻力线={resistanceDrawn}条, 支撑线={supportDrawn}条 (三点共线={threePointConfirmedDrawn}条{channelSummary}{specialSummary})\n" +
-                                 $"• 开仓信号: 多单={longSignalsDrawn}笔, 空单={shortSignalsDrawn}笔 (策略: 触碰3-Tick回弹 LineX1X2>=40, LineAge>=4)\n" +
+                                 $"• 开仓信号: 多单={longSignalsDrawn}笔, 空单={shortSignalsDrawn}笔 (总计 {longSignalsDrawn + shortSignalsDrawn} 笔)\n" +
                                  $"• 策略备注: {summaryDescription}";
 
             var annotation = plot.Add.Annotation(fullSummary, Alignment.UpperLeft);

@@ -295,7 +295,8 @@ namespace Test.WinForms.Forms
                 cboTradeStrategy.Items.AddRange(new object[] {
                     "经典趋势线触碰回弹策略",
                     "紫色特殊趋势线穿透策略",
-                    "双策略组合 (触碰+穿透)"
+                    "宏观Level3假突破猎杀策略 (SFP)",
+                    "多策略组合模式 (触碰+穿透+SFP)"
                 });
                 cboTradeStrategy.SelectedIndex = 0;
 
@@ -1072,7 +1073,8 @@ namespace Test.WinForms.Forms
             string stratDesc = request.TradeStrategy switch
             {
                 TradeStrategyType.PurpleBreakout => "🟣 紫色特殊趋势线穿透策略 (1m收盘跌破开空 / 突破开多)",
-                TradeStrategyType.Combined => "⚡ 双策略组合 (3点线触碰回弹 + 紫色趋势线穿透)",
+                TradeStrategyType.Level3FalseBreakout => "🎯 宏观Level 3假突破猎杀策略 (SFP / 刺破L3诱多诱空后反转开仓)",
+                TradeStrategyType.Combined => "⚡ 多策略组合模式 (触碰回弹 + 紫色穿透 + 宏观L3假突破)",
                 _ => "🎯 经典趋势线触碰回弹策略 (3点线 0.001%触碰 / 3-Tick反弹开仓)"
             };
 

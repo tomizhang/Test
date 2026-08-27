@@ -34,6 +34,19 @@ namespace Test.Strategy
     }
 
     /// <summary>
+    /// 宏观 Level 3 假突破 (SFP / 2B) 跟踪探针 (用于跟踪刺破前高/前低后的假突破回落/反抽入场)
+    /// </summary>
+    public class FalseBreakoutProbe
+    {
+        public PivotPoint MacroPivot;          // 被刺破的宏观 Level 3 极值点
+        public decimal ExtremePrice;           // 刺破过程中达到的最极致价格 (最高价 PokeHigh / 最低价 PokeLow)
+        public long FirstBreakoutTimeMs;       // 首次刺破时间戳 (毫秒)
+        public int BreakoutGlobalIndex;        // 首次刺破时的全局 K 线序号
+        public int ReboundTicks;               // 跌回/拉回后的连续确认 Tick 数
+        public bool IsPeak => MacroPivot.Type == PivotType.Peak; // true: 刺破前高 -> 假突破跌回开空; false: 刺破前低 -> 假跌破拉回开多
+    }
+
+    /// <summary>
     /// 高性能三层增量趋势线与回弹交易策略 (Multi-Layer Incremental TrendLine Strategy)
     /// 核心极速架构：
     /// 1. 准入过滤：仅当趋势线满足 LineX1X2 >= 40 (跨度>=40) 且 LineAge >= 4 (延伸寿命>=4) 时触发触碰监控
@@ -171,6 +184,9 @@ namespace Test.Strategy
         // 正在跟踪的紫色特殊趋势线穿透探针集合 (在 OnTick 中判定是否满足持续 1 分钟 / 60 秒开仓)
         private readonly List<PurpleBreakoutProbe> _activePurpleBreakoutProbes = new List<PurpleBreakoutProbe>(16);
 
+        // 正在跟踪的宏观 Level 3 假突破 (SFP) 探针集合
+        private readonly List<FalseBreakoutProbe> _activeSfpProbes = new List<FalseBreakoutProbe>(16);
+
         // 交易信号记录集合
         public List<TradeSignal> TradeSignals { get; } = new List<TradeSignal>(1000);
         public int LongSignalsCount { get; private set; } = 0;
@@ -209,6 +225,19 @@ namespace Test.Strategy
 
         // 逐笔 Tick 处理状态与价格去重缓存
         private decimal _lastProcessedTickPrice = decimal.MinValue;
+
+        // 🌟 方案 4：小周期微观嵌套加速器 (用于借助 1m 微观 K 线/Tick 流毫秒级加速确立宏观 Level 2 / Level 3 高低点)
+        private readonly MicroKlineAggregator _microAggregator = new MicroKlineAggregator();
+        private readonly MicroNestedAccelerator _microAccelerator = new MicroNestedAccelerator();
+
+        private static bool ContainsPivotIndex(List<PivotPoint> list, int index)
+        {
+            for (int i = list.Count - 1; i >= 0; i--)
+            {
+                if (list[i].Index == index) return true;
+            }
+            return false;
+        }
 
         // 最近 Tick 价格滑动环形缓冲区 (用于 5-Tick 极小微止损回溯)
         private const int RecentTickBufferSize = 32;
@@ -303,6 +332,63 @@ namespace Test.Strategy
 
             int currentGlobalIndex = Math.Max(0, _globalBarIndex);
             long cooldownMs = (long)SignalCooldownSeconds * 1000L;
+
+            // ====================================================================
+            // 🌟 方案 4: 小周期微观嵌套加速 (Micro-Structure Nested Acceleration)
+            // 借助逐笔 Tick 聚合出 1m 微观 K 线并毫秒级加速宏观 Level 2 / Level 3 极值点确认
+            // ====================================================================
+            if (_microAggregator.TryProcessTick(tick, out var micro1mKline))
+            {
+                _microAccelerator.OnMicroKline(micro1mKline);
+            }
+
+            if (_peaksL1.Count > 0)
+            {
+                int checkStart = Math.Max(0, _peaksL1.Count - 6);
+                for (int i = _peaksL1.Count - 1; i >= checkStart; i--)
+                {
+                    var p = _peaksL1[i];
+                    var (toL2, toL3) = _microAccelerator.EvaluateMacroPeakAcceleration(p, tick.Price, tick.Time);
+
+                    if (toL2 && !ContainsPivotIndex(_peaksL2, p.Index))
+                    {
+                        var p2 = p;
+                        p2.Level = 2;
+                        _peaksL2.Add(p2);
+                    }
+
+                    if (toL3 && !ContainsPivotIndex(_peaksL3, p.Index))
+                    {
+                        var p3 = p;
+                        p3.Level = 3;
+                        _peaksL3.Add(p3);
+                    }
+                }
+            }
+
+            if (_valleysL1.Count > 0)
+            {
+                int checkStart = Math.Max(0, _valleysL1.Count - 6);
+                for (int i = _valleysL1.Count - 1; i >= checkStart; i--)
+                {
+                    var v = _valleysL1[i];
+                    var (toL2, toL3) = _microAccelerator.EvaluateMacroValleyAcceleration(v, tick.Price, tick.Time);
+
+                    if (toL2 && !ContainsPivotIndex(_valleysL2, v.Index))
+                    {
+                        var v2 = v;
+                        v2.Level = 2;
+                        _valleysL2.Add(v2);
+                    }
+
+                    if (toL3 && !ContainsPivotIndex(_valleysL3, v.Index))
+                    {
+                        var v3 = v;
+                        v3.Level = 3;
+                        _valleysL3.Add(v3);
+                    }
+                }
+            }
 
             // ====================================================================
             // 步骤 0: 实时监控当前持仓仓位，执行 0.5% 止损 与 1.5% 止盈 自动平仓
@@ -545,9 +631,228 @@ namespace Test.Strategy
             }
 
             // ====================================================================
-            // 步骤 1: 处理已有的触碰探针，检查是否出现 3 个 Tick 连续反向回弹入场 (仅触碰回弹策略)
+            // 步骤 0.9: 宏观 Level 3 假突破流动性猎杀策略 (SFP / 2B False Breakout Reversal)
             // ====================================================================
-            if (ActivePositions.Count == 0 && TradeStrategy != TradeStrategyType.PurpleBreakout && _activeTouchProbes.Count > 0)
+            bool enableSfp = (TradeStrategy == TradeStrategyType.Level3FalseBreakout || TradeStrategy == TradeStrategyType.Combined);
+            if (EnableTrading && enableSfp)
+            {
+                // 1. 扫描最近宏观 Level 3 高点 (用于做空假突破)
+                if (_peaksL3.Count > 0)
+                {
+                    int startCheck = Math.Max(0, _peaksL3.Count - 4);
+                    for (int pIdx = _peaksL3.Count - 1; pIdx >= startCheck; pIdx--)
+                    {
+                        var l3Peak = _peaksL3[pIdx];
+                        if (currentGlobalIndex <= l3Peak.Index) continue;
+
+                        // 当价格刺破前高 Level 3 (0.0001% ~ 1.2% 以内) -> 记录/更新刺破探针
+                        if (tick.Price > l3Peak.Price && tick.Price <= l3Peak.Price * 1.012m)
+                        {
+                            var existing = _activeSfpProbes.Find(p => p.IsPeak && p.MacroPivot.Index == l3Peak.Index);
+                            if (existing != null)
+                            {
+                                if (tick.Price > existing.ExtremePrice) existing.ExtremePrice = tick.Price;
+                            }
+                            else
+                            {
+                                _activeSfpProbes.Add(new FalseBreakoutProbe
+                                {
+                                    MacroPivot = l3Peak,
+                                    ExtremePrice = tick.Price,
+                                    FirstBreakoutTimeMs = tick.Time,
+                                    BreakoutGlobalIndex = currentGlobalIndex,
+                                    ReboundTicks = 0
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // 2. 扫描最近宏观 Level 3 低点 (用于做多假跌破)
+                if (_valleysL3.Count > 0)
+                {
+                    int startCheck = Math.Max(0, _valleysL3.Count - 4);
+                    for (int vIdx = _valleysL3.Count - 1; vIdx >= startCheck; vIdx--)
+                    {
+                        var l3Valley = _valleysL3[vIdx];
+                        if (currentGlobalIndex <= l3Valley.Index) continue;
+
+                        // 当价格刺破前低 Level 3 (0.0001% ~ 1.2% 以内) -> 记录/更新刺破探针
+                        if (tick.Price < l3Valley.Price && tick.Price >= l3Valley.Price * 0.988m)
+                        {
+                            var existing = _activeSfpProbes.Find(p => !p.IsPeak && p.MacroPivot.Index == l3Valley.Index);
+                            if (existing != null)
+                            {
+                                if (tick.Price < existing.ExtremePrice) existing.ExtremePrice = tick.Price;
+                            }
+                            else
+                            {
+                                _activeSfpProbes.Add(new FalseBreakoutProbe
+                                {
+                                    MacroPivot = l3Valley,
+                                    ExtremePrice = tick.Price,
+                                    FirstBreakoutTimeMs = tick.Time,
+                                    BreakoutGlobalIndex = currentGlobalIndex,
+                                    ReboundTicks = 0
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // 3. 检查活跃 SFP 探针的跌回/拉回与开仓触发
+                if (_activeSfpProbes.Count > 0 && ActivePositions.Count == 0)
+                {
+                    for (int i = _activeSfpProbes.Count - 1; i >= 0; i--)
+                    {
+                        var sfp = _activeSfpProbes[i];
+
+                        // 超时/偏离过大失效 (超过 60 秒或偏离超过 1.5%)
+                        if (tick.Time - sfp.FirstBreakoutTimeMs > 60000L || 
+                            (sfp.IsPeak && tick.Price > sfp.MacroPivot.Price * 1.015m) || 
+                            (!sfp.IsPeak && tick.Price < sfp.MacroPivot.Price * 0.985m))
+                        {
+                            _activeSfpProbes.RemoveAt(i);
+                            continue;
+                        }
+
+                        // A. 刺破前高 Level 3 后跌回 -> 假突破做空 (Short)
+                        if (sfp.IsPeak)
+                        {
+                            if (tick.Price < sfp.MacroPivot.Price)
+                            {
+                                sfp.ReboundTicks++;
+                                if (sfp.ReboundTicks >= 2) // 连续 2 个 Tick 确认在 Level 3 之下
+                                {
+                                    // 检查冷却
+                                    if (_lastTriggerTimestampMs == 0 || (tick.Time - _lastTriggerTimestampMs) >= cooldownMs)
+                                    {
+                                        decimal tpPrice = tick.Price * (1m - TakeProfitPct / 100m);
+                                        // 止损设在刺破最高价 PokeHigh 之上 5 个 Tick
+                                        decimal slPrice = sfp.ExtremePrice * 1.0005m;
+                                        decimal maxSlPrice = tick.Price * (1m + StopLossPct / 100m);
+                                        if (slPrice > maxSlPrice) slPrice = maxSlPrice;
+
+                                        decimal slPct = (slPrice - tick.Price) / tick.Price * 100m;
+                                        string reason = $"【宏观Level 3假突破猎杀开空(SFP)】刺破前高L3(#{sfp.MacroPivot.Index} @ {sfp.MacroPivot.Price:F2}) -> 触及最高:{sfp.ExtremePrice:F2} -> 跌回L3收阴价:{tick.Price:F2} | 止盈:{tpPrice:F2} (+{TakeProfitPct:F1}%), 极窄止损:{slPrice:F2} (-{slPct:F3}%)";
+
+                                        var signal = new TradeSignal
+                                        {
+                                            SignalId = TradeSignals.Count + 1,
+                                            GlobalBarIndex = currentGlobalIndex,
+                                            TimestampMs = tick.Time,
+                                            Side = TradeSide.Sell,
+                                            Price = tick.Price,
+                                            TriggerLine = default,
+                                            TicksSinceTouch = sfp.ReboundTicks,
+                                            Reason = reason
+                                        };
+
+                                        TradeSignals.Add(signal);
+                                        ShortSignalsCount++;
+                                        _lastTriggerTimestampMs = tick.Time;
+                                        OnTradeSignalGenerated?.Invoke(signal);
+
+                                        var pos = new Position
+                                        {
+                                            PositionId = CompletedTrades.Count + ActivePositions.Count + 1,
+                                            Side = TradeSide.Sell,
+                                            EntryTimestampMs = tick.Time,
+                                            EntryPrice = tick.Price,
+                                            EntryGlobalBarIndex = currentGlobalIndex,
+                                            TakeProfitPrice = tpPrice,
+                                            StopLossPrice = slPrice,
+                                            HighestPriceSinceEntry = tick.Price,
+                                            LowestPriceSinceEntry = tick.Price,
+                                            TriggerLine = default,
+                                            StrategyReason = reason
+                                        };
+                                        ActivePositions.Add(pos);
+                                        OnPositionOpened?.Invoke(pos);
+
+                                        _activeSfpProbes.Clear();
+                                        return;
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                sfp.ReboundTicks = 0;
+                            }
+                        }
+                        // B. 刺破前低 Level 3 后拉回 -> 假跌破做多 (Long)
+                        else
+                        {
+                            if (tick.Price > sfp.MacroPivot.Price)
+                            {
+                                sfp.ReboundTicks++;
+                                if (sfp.ReboundTicks >= 2) // 连续 2 个 Tick 确认在 Level 3 之上
+                                {
+                                    // 检查冷却
+                                    if (_lastTriggerTimestampMs == 0 || (tick.Time - _lastTriggerTimestampMs) >= cooldownMs)
+                                    {
+                                        decimal tpPrice = tick.Price * (1m + TakeProfitPct / 100m);
+                                        // 止损设在刺破最低价 PokeLow 之下 5 个 Tick
+                                        decimal slPrice = sfp.ExtremePrice * 0.9995m;
+                                        decimal minSlPrice = tick.Price * (1m - StopLossPct / 100m);
+                                        if (slPrice < minSlPrice) slPrice = minSlPrice;
+
+                                        decimal slPct = (tick.Price - slPrice) / tick.Price * 100m;
+                                        string reason = $"【宏观Level 3假跌破猎杀开多(SFP)】刺破前低L3(#{sfp.MacroPivot.Index} @ {sfp.MacroPivot.Price:F2}) -> 触及最低:{sfp.ExtremePrice:F2} -> 拉回L3收阳价:{tick.Price:F2} | 止盈:{tpPrice:F2} (+{TakeProfitPct:F1}%), 极窄止损:{slPrice:F2} (-{slPct:F3}%)";
+
+                                        var signal = new TradeSignal
+                                        {
+                                            SignalId = TradeSignals.Count + 1,
+                                            GlobalBarIndex = currentGlobalIndex,
+                                            TimestampMs = tick.Time,
+                                            Side = TradeSide.Buy,
+                                            Price = tick.Price,
+                                            TriggerLine = default,
+                                            TicksSinceTouch = sfp.ReboundTicks,
+                                            Reason = reason
+                                        };
+
+                                        TradeSignals.Add(signal);
+                                        LongSignalsCount++;
+                                        _lastTriggerTimestampMs = tick.Time;
+                                        OnTradeSignalGenerated?.Invoke(signal);
+
+                                        var pos = new Position
+                                        {
+                                            PositionId = CompletedTrades.Count + ActivePositions.Count + 1,
+                                            Side = TradeSide.Buy,
+                                            EntryTimestampMs = tick.Time,
+                                            EntryPrice = tick.Price,
+                                            EntryGlobalBarIndex = currentGlobalIndex,
+                                            TakeProfitPrice = tpPrice,
+                                            StopLossPrice = slPrice,
+                                            HighestPriceSinceEntry = tick.Price,
+                                            LowestPriceSinceEntry = tick.Price,
+                                            TriggerLine = default,
+                                            StrategyReason = reason
+                                        };
+                                        ActivePositions.Add(pos);
+                                        OnPositionOpened?.Invoke(pos);
+
+                                        _activeSfpProbes.Clear();
+                                        return;
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                sfp.ReboundTicks = 0;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ====================================================================
+            // 步骤 1: 处理已有的触碰探针，检查是否出现 3 个 Tick 连续反向回弹入场 (仅触碰回弹策略与组合策略)
+            // ====================================================================
+            bool enableTouch = (TradeStrategy == TradeStrategyType.TouchRebound || TradeStrategy == TradeStrategyType.Combined);
+            if (ActivePositions.Count == 0 && enableTouch && _activeTouchProbes.Count > 0)
             {
                 for (int i = _activeTouchProbes.Count - 1; i >= 0; i--)
                 {
@@ -805,7 +1110,8 @@ namespace Test.Strategy
                         }
                     }
 
-                    if (TradeStrategy == TradeStrategyType.PurpleBreakout || ActivePositions.Count > 0 || !line.IsThreePointConfirmed) continue; // 仅在启用触碰策略且无持仓时跟踪 3 点触碰回弹
+                    bool enableTouchProbe = (TradeStrategy == TradeStrategyType.TouchRebound || TradeStrategy == TradeStrategyType.Combined);
+                    if (!enableTouchProbe || ActivePositions.Count > 0 || !line.IsThreePointConfirmed) continue; // 仅在启用触碰策略且无持仓时跟踪 3 点触碰回弹
 
                     decimal diffPct = Math.Abs(tick.Price - linePrice) / linePrice * 100m;
 
@@ -874,7 +1180,8 @@ namespace Test.Strategy
                         }
                     }
 
-                    if (TradeStrategy == TradeStrategyType.PurpleBreakout || ActivePositions.Count > 0 || !line.IsThreePointConfirmed) continue; // 仅在启用触碰策略且无持仓时跟踪 3 点触碰回弹
+                    bool enableTouchProbe = (TradeStrategy == TradeStrategyType.TouchRebound || TradeStrategy == TradeStrategyType.Combined);
+                    if (!enableTouchProbe || ActivePositions.Count > 0 || !line.IsThreePointConfirmed) continue; // 仅在启用触碰策略且无持仓时跟踪 3 点触碰回弹
 
                     decimal diffPct = Math.Abs(tick.Price - linePrice) / linePrice * 100m;
 
@@ -1537,6 +1844,8 @@ namespace Test.Strategy
             _valleysL2.Clear();
             _valleysL3.Clear();
             _zigZagTracker.Reset();
+            _microAggregator.Reset();
+            _microAccelerator.Reset();
             _lastSpecialValleyOriginIndex = -1;
             _lastSpecialPeakOriginIndex = -1;
             ActiveResistanceLines.Clear();
@@ -1546,6 +1855,7 @@ namespace Test.Strategy
             _historicalTrendLines.Clear();
             _activeTouchProbes.Clear();
             _activePurpleBreakoutProbes.Clear();
+            _activeSfpProbes.Clear();
             TradeSignals.Clear();
             ActivePositions.Clear();
             CompletedTrades.Clear();
