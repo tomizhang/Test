@@ -48,7 +48,10 @@ namespace Common.Helper
             float lineWidth = 0.8f,
             TrendLine? selectedTrendLine = null,
             int? selectedKlineIndex = null,
-            ChartType chartType = ChartType.Candlestick)
+            ChartType chartType = ChartType.Candlestick,
+            IReadOnlyList<TradeRecord>? completedTrades = null,
+            IReadOnlyList<Position>? activePositions = null,
+            bool showTpSl = true)
         {
             if (plot == null || klines == null || klines.Count == 0)
             {
@@ -523,53 +526,240 @@ namespace Common.Helper
                 starScatter.LegendText = $"三点确认 ({thirdPointXs.Count})";
             }
 
-            // 6. 绘制交易信号标记 (多单: 紫色菱形◆, 空单: 粉红色方形■)
+            // 6. 绘制交易与止盈止损可视化 (Take Profit, Stop Loss, Position Brackets & Trade Trajectories)
             int longSignalsDrawn = 0;
             int shortSignalsDrawn = 0;
-            if (tradeSignals != null && tradeSignals.Count > 0)
-            {
-                var buyXs = new List<double>();
-                var buyYs = new List<double>();
-                var sellXs = new List<double>();
-                var sellYs = new List<double>();
 
-                foreach (var s in tradeSignals)
+            if (showTpSl)
+            {
+                // 1. 已平仓历史交易 (CompletedTrades)
+                if (completedTrades != null && completedTrades.Count > 0)
                 {
-                    if (s.GlobalBarIndex >= startGlobalIndex && s.GlobalBarIndex <= endGlobalIndex)
+                    var longEntryXs = new List<double>();
+                    var longEntryYs = new List<double>();
+                    var shortEntryXs = new List<double>();
+                    var shortEntryYs = new List<double>();
+                    var winExitXs = new List<double>();
+                    var winExitYs = new List<double>();
+                    var lossExitXs = new List<double>();
+                    var lossExitYs = new List<double>();
+
+                    foreach (var t in completedTrades)
                     {
-                        if (s.Side == TradeSide.Buy)
+                        int entryX = t.EntryGlobalBarIndex;
+                        int exitX = Math.Max(entryX, t.ExitGlobalBarIndex);
+
+                        // 仅绘制与当前视口范围 [startGlobalIndex, endGlobalIndex] 有交集的交易
+                        if (exitX < startGlobalIndex || entryX > endGlobalIndex) continue;
+
+                        double drawStartX = Math.Max(startGlobalIndex - 0.5, entryX - 0.4);
+                        double drawEndX = Math.Min(endGlobalIndex + 0.5, Math.Max(entryX + 0.4, exitX + 0.4));
+
+                        // 1. 止盈价格水平线 (Emerald 500 翠绿实线)
+                        if (t.TakeProfitPrice > 0)
                         {
-                            buyXs.Add(s.GlobalBarIndex);
-                            buyYs.Add((double)s.Price);
-                            longSignalsDrawn++;
+                            var tpLine = plot.Add.Line(drawStartX, (double)t.TakeProfitPrice, drawEndX, (double)t.TakeProfitPrice);
+                            tpLine.Color = Color.FromHex("#22c55e").WithAlpha(0.85);
+                            tpLine.LineWidth = 1.6f;
                         }
-                        else
+
+                        // 2. 止损价格水平线 (Rose 500 鲜红实线)
+                        if (t.StopLossPrice > 0)
                         {
-                            sellXs.Add(s.GlobalBarIndex);
-                            sellYs.Add((double)s.Price);
-                            shortSignalsDrawn++;
+                            var slLine = plot.Add.Line(drawStartX, (double)t.StopLossPrice, drawEndX, (double)t.StopLossPrice);
+                            slLine.Color = Color.FromHex("#ef4444").WithAlpha(0.85);
+                            slLine.LineWidth = 1.6f;
+                        }
+
+                        // 3. 开仓点的盈亏比区间垂直刻度线 (连接 止损价 <-> 开仓价 <-> 止盈价)
+                        if (entryX >= startGlobalIndex && entryX <= endGlobalIndex && t.TakeProfitPrice > 0 && t.StopLossPrice > 0)
+                        {
+                            double minP = (double)Math.Min(t.TakeProfitPrice, t.StopLossPrice);
+                            double maxP = (double)Math.Max(t.TakeProfitPrice, t.StopLossPrice);
+                            var bracketLine = plot.Add.Line(entryX, minP, entryX, maxP);
+                            bracketLine.Color = Color.FromHex("#94a3b8").WithAlpha(0.55); // Slate 400
+                            bracketLine.LineWidth = 1.0f;
+                        }
+
+                        // 4. 开仓点标记收集
+                        if (entryX >= startGlobalIndex && entryX <= endGlobalIndex)
+                        {
+                            if (t.Side == TradeSide.Buy)
+                            {
+                                longEntryXs.Add(entryX);
+                                longEntryYs.Add((double)t.EntryPrice);
+                            }
+                            else
+                            {
+                                shortEntryXs.Add(entryX);
+                                shortEntryYs.Add((double)t.EntryPrice);
+                            }
+                        }
+
+                        // 5. 开仓点到平仓点的交易盈亏轨迹线 (盈利翡翠绿实线，亏损玫瑰红实线)
+                        if (entryX <= endGlobalIndex && exitX >= startGlobalIndex)
+                        {
+                            var tradePath = plot.Add.Line(entryX, (double)t.EntryPrice, exitX, (double)t.ExitPrice);
+                            tradePath.Color = t.IsWin ? Color.FromHex("#10b981").WithAlpha(0.9) : Color.FromHex("#f43f5e").WithAlpha(0.9);
+                            tradePath.LineWidth = 2.0f;
+                        }
+
+                        // 6. 出场点标记收集
+                        if (exitX >= startGlobalIndex && exitX <= endGlobalIndex)
+                        {
+                            if (t.IsWin)
+                            {
+                                winExitXs.Add(exitX);
+                                winExitYs.Add((double)t.ExitPrice);
+                            }
+                            else
+                            {
+                                lossExitXs.Add(exitX);
+                                lossExitYs.Add((double)t.ExitPrice);
+                            }
                         }
                     }
+
+                    // 绘制多单开仓标记 (🟢 向上实心三角 ▲)
+                    if (longEntryXs.Count > 0)
+                    {
+                        var longScatter = plot.Add.Scatter(longEntryXs.ToArray(), longEntryYs.ToArray());
+                        longScatter.MarkerShape = MarkerShape.FilledTriangleUp;
+                        longScatter.MarkerSize = 9;
+                        longScatter.Color = Color.FromHex("#22c55e"); // Green 500
+                        longScatter.LineWidth = 0;
+                        longScatter.LegendText = $"多单开仓 ({longEntryXs.Count})";
+                    }
+
+                    // 绘制空单开仓标记 (🔴 向下实心三角 ▼)
+                    if (shortEntryXs.Count > 0)
+                    {
+                        var shortScatter = plot.Add.Scatter(shortEntryXs.ToArray(), shortEntryYs.ToArray());
+                        shortScatter.MarkerShape = MarkerShape.FilledTriangleDown;
+                        shortScatter.MarkerSize = 9;
+                        shortScatter.Color = Color.FromHex("#ef4444"); // Red 500
+                        shortScatter.LineWidth = 0;
+                        shortScatter.LegendText = $"空单开仓 ({shortEntryXs.Count})";
+                    }
+
+                    // 绘制止盈出场点 (💰 翡翠绿圆点)
+                    if (winExitXs.Count > 0)
+                    {
+                        var winScatter = plot.Add.Scatter(winExitXs.ToArray(), winExitYs.ToArray());
+                        winScatter.MarkerShape = MarkerShape.FilledCircle;
+                        winScatter.MarkerSize = 8;
+                        winScatter.Color = Color.FromHex("#10b981"); // Emerald 500
+                        winScatter.LineWidth = 0;
+                        winScatter.LegendText = $"止盈平仓 ({winExitXs.Count})";
+                    }
+
+                    // 绘制止损出场点 (🛑 玫瑰红方块)
+                    if (lossExitXs.Count > 0)
+                    {
+                        var lossScatter = plot.Add.Scatter(lossExitXs.ToArray(), lossExitYs.ToArray());
+                        lossScatter.MarkerShape = MarkerShape.FilledSquare;
+                        lossScatter.MarkerSize = 8;
+                        lossScatter.Color = Color.FromHex("#f43f5e"); // Rose 500
+                        lossScatter.LineWidth = 0;
+                        lossScatter.LegendText = $"止损平仓 ({lossExitXs.Count})";
+                    }
+
+                    longSignalsDrawn = longEntryXs.Count;
+                    shortSignalsDrawn = shortEntryXs.Count;
+                }
+                else if (tradeSignals != null && tradeSignals.Count > 0)
+                {
+                    // 若无 CompletedTrades 数据，退化回显示开仓信号
+                    var buyXs = new List<double>();
+                    var buyYs = new List<double>();
+                    var sellXs = new List<double>();
+                    var sellYs = new List<double>();
+
+                    foreach (var s in tradeSignals)
+                    {
+                        if (s.GlobalBarIndex >= startGlobalIndex && s.GlobalBarIndex <= endGlobalIndex)
+                        {
+                            if (s.Side == TradeSide.Buy)
+                            {
+                                buyXs.Add(s.GlobalBarIndex);
+                                buyYs.Add((double)s.Price);
+                            }
+                            else
+                            {
+                                sellXs.Add(s.GlobalBarIndex);
+                                sellYs.Add((double)s.Price);
+                            }
+                        }
+                    }
+
+                    if (buyXs.Count > 0)
+                    {
+                        var buyScatter = plot.Add.Scatter(buyXs.ToArray(), buyYs.ToArray());
+                        buyScatter.MarkerShape = MarkerShape.FilledTriangleUp;
+                        buyScatter.MarkerSize = 8;
+                        buyScatter.Color = Color.FromHex("#22c55e");
+                        buyScatter.LineWidth = 0;
+                        buyScatter.LegendText = $"开多信号 ({buyXs.Count})";
+                    }
+
+                    if (sellXs.Count > 0)
+                    {
+                        var sellScatter = plot.Add.Scatter(sellXs.ToArray(), sellYs.ToArray());
+                        sellScatter.MarkerShape = MarkerShape.FilledTriangleDown;
+                        sellScatter.MarkerSize = 8;
+                        sellScatter.Color = Color.FromHex("#ef4444");
+                        sellScatter.LineWidth = 0;
+                        sellScatter.LegendText = $"开空信号 ({sellXs.Count})";
+                    }
+
+                    longSignalsDrawn = buyXs.Count;
+                    shortSignalsDrawn = sellXs.Count;
                 }
 
-                if (buyXs.Count > 0)
+                // 2. 当前活跃持仓 (ActivePositions) 实时动态止盈止损线
+                if (activePositions != null && activePositions.Count > 0)
                 {
-                    var buyScatter = plot.Add.Scatter(buyXs.ToArray(), buyYs.ToArray());
-                    buyScatter.MarkerShape = MarkerShape.FilledDiamond;
-                    buyScatter.MarkerSize = 7;
-                    buyScatter.Color = Color.FromHex("#a855f7"); // 紫色开多标记
-                    buyScatter.LineWidth = 0;
-                    buyScatter.LegendText = $"开多信号 ({longSignalsDrawn})";
-                }
+                    foreach (var pos in activePositions)
+                    {
+                        int entryX = pos.EntryGlobalBarIndex;
+                        double currX = endGlobalIndex + 0.5;
 
-                if (sellXs.Count > 0)
-                {
-                    var sellScatter = plot.Add.Scatter(sellXs.ToArray(), sellYs.ToArray());
-                    sellScatter.MarkerShape = MarkerShape.FilledSquare;
-                    sellScatter.MarkerSize = 6;
-                    sellScatter.Color = Color.FromHex("#f43f5e"); // 玫红开空标记
-                    sellScatter.LineWidth = 0;
-                    sellScatter.LegendText = $"开空信号 ({shortSignalsDrawn})";
+                        if (entryX <= endGlobalIndex)
+                        {
+                            double drawStartX = Math.Max(startGlobalIndex - 0.5, entryX - 0.4);
+
+                            // 实时活跃止盈线 (高亮翠绿)
+                            if (pos.TakeProfitPrice > 0)
+                            {
+                                var activeTpLine = plot.Add.Line(drawStartX, (double)pos.TakeProfitPrice, currX, (double)pos.TakeProfitPrice);
+                                activeTpLine.Color = Color.FromHex("#22c55e");
+                                activeTpLine.LineWidth = 2.0f;
+                            }
+
+                            // 实时活跃止损线 (高亮鲜红)
+                            if (pos.StopLossPrice > 0)
+                            {
+                                var activeSlLine = plot.Add.Line(drawStartX, (double)pos.StopLossPrice, currX, (double)pos.StopLossPrice);
+                                activeSlLine.Color = Color.FromHex("#ef4444");
+                                activeSlLine.LineWidth = 2.0f;
+                            }
+
+                            // 实时开仓均价基准线 (天空蓝)
+                            var activeEntryLine = plot.Add.Line(drawStartX, (double)pos.EntryPrice, currX, (double)pos.EntryPrice);
+                            activeEntryLine.Color = Color.FromHex("#38bdf8").WithAlpha(0.85);
+                            activeEntryLine.LineWidth = 1.5f;
+
+                            // 开仓点标记
+                            if (entryX >= startGlobalIndex)
+                            {
+                                var posScatter = plot.Add.Scatter(new double[] { entryX }, new double[] { (double)pos.EntryPrice });
+                                posScatter.MarkerShape = pos.Side == TradeSide.Buy ? MarkerShape.FilledTriangleUp : MarkerShape.FilledTriangleDown;
+                                posScatter.MarkerSize = 10;
+                                posScatter.Color = pos.Side == TradeSide.Buy ? Color.FromHex("#22c55e") : Color.FromHex("#ef4444");
+                                posScatter.LineWidth = 0;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -677,7 +867,10 @@ namespace Common.Helper
             bool autoScaleAxes = true,
             IReadOnlyList<TradeSignal>? tradeSignals = null,
             float lineWidth = 0.8f,
-            ChartType chartType = ChartType.Candlestick)
+            ChartType chartType = ChartType.Candlestick,
+            IReadOnlyList<TradeRecord>? completedTrades = null,
+            IReadOnlyList<Position>? activePositions = null,
+            bool showTpSl = true)
         {
             var allLines = new List<TrendLine>();
             if (resistanceLines != null) allLines.AddRange(resistanceLines);
@@ -695,7 +888,10 @@ namespace Common.Helper
                 autoScaleAxes,
                 tradeSignals,
                 lineWidth,
-                chartType: chartType);
+                chartType: chartType,
+                completedTrades: completedTrades,
+                activePositions: activePositions,
+                showTpSl: showTpSl);
         }
 
         public static string PlotTrendLineChart(
@@ -712,7 +908,10 @@ namespace Common.Helper
             int height = 1080,
             IReadOnlyList<TradeSignal>? tradeSignals = null,
             float lineWidth = 0.8f,
-            ChartType chartType = ChartType.Candlestick)
+            ChartType chartType = ChartType.Candlestick,
+            IReadOnlyList<TradeRecord>? completedTrades = null,
+            IReadOnlyList<Position>? activePositions = null,
+            bool showTpSl = true)
         {
             if (klines == null || klines.Count == 0)
             {
@@ -734,7 +933,10 @@ namespace Common.Helper
                 autoScaleAxes: true,
                 tradeSignals: tradeSignals,
                 lineWidth: lineWidth,
-                chartType: chartType);
+                chartType: chartType,
+                completedTrades: completedTrades,
+                activePositions: activePositions,
+                showTpSl: showTpSl);
 
             if (string.IsNullOrWhiteSpace(outputFilePath))
             {

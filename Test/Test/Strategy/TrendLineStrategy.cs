@@ -1874,7 +1874,10 @@ namespace Test.Strategy
                 width: width,
                 height: height,
                 tradeSignals: TradeSignals,
-                lineWidth: lineWidth);
+                lineWidth: lineWidth,
+                completedTrades: CompletedTrades,
+                activePositions: ActivePositions,
+                showTpSl: true);
         }
 
         /// <summary>

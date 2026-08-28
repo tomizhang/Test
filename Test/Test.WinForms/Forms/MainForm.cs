@@ -99,6 +99,7 @@ namespace Test.WinForms.Forms
         private CheckBox chkRealtimeChart = null!;
         private CheckBox chkAutoScale = null!;
         private CheckBox chkEnableUiLogs = null!;
+        private CheckBox chkShowTpSl = null!;
 
         private GroupBox grpControl = null!;
         private Button btnStart = null!;
@@ -420,10 +421,21 @@ namespace Test.WinForms.Forms
                 chkEnableUiLogs = new CheckBox { Text = "输出界面实时日志 (取消勾选可防卡顿并提速)", Location = new Point(15, 597), Width = 320, Checked = true };
                 chkEnableUiLogs.CheckedChanged += (s, e) => _isUiLogEnabled = chkEnableUiLogs.Checked;
 
+                chkShowTpSl = new CheckBox
+                {
+                    Text = "🎯 显示止盈止损线 (TP/SL 价格与平仓点)",
+                    Location = new Point(15, 622),
+                    Width = 320,
+                    Checked = true,
+                    Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold),
+                    ForeColor = Color.FromArgb(250, 204, 21) // Yellow 400
+                };
+                chkShowTpSl.CheckedChanged += (s, e) => RedrawCurrentPlot(autoScale: false);
+
                 var lblStrategyNote = new Label
                 {
                     Text = "🎯 策略: 触碰回弹 / 紫色穿透(1m穿透跌破开多/突破开空)",
-                    Location = new Point(15, 624),
+                    Location = new Point(15, 650),
                     Size = new Size(325, 36),
                     ForeColor = Color.FromArgb(74, 222, 128), // Green 400
                     Font = new Font("Microsoft YaHei", 8F)
@@ -440,10 +452,10 @@ namespace Test.WinForms.Forms
                     lblCooldown, numCooldown, lblTP, numTakeProfit,
                     lblSL, numStopLoss, lblLineWidth, numLineWidth,
                     chkEnableTrading, chkEnableTickStopLoss, chkStrictEnvelope,
-                    chkRealtimeChart, chkAutoScale, chkEnableUiLogs, lblStrategyNote
+                    chkRealtimeChart, chkAutoScale, chkEnableUiLogs, chkShowTpSl, lblStrategyNote
                 });
             }
-            grpStrategy.Height = 675;
+            grpStrategy.Height = 700;
             panelRight.Controls.Add(grpStrategy);
             top += grpStrategy.Height + 10;
 
@@ -844,7 +856,10 @@ namespace Test.WinForms.Forms
                             lineWidth: snap.LineWidth,
                             selectedTrendLine: _selectedTrendLine,
                             selectedKlineIndex: _selectedKlineIndex,
-                            chartType: _chartType);
+                            chartType: _chartType,
+                            completedTrades: snap.CompletedTrades,
+                            activePositions: snap.ActivePositions,
+                            showTpSl: chkShowTpSl.Checked);
 
                         formsPlot.Refresh();
                     }
@@ -952,6 +967,8 @@ namespace Test.WinForms.Forms
                             Valleys = valleysSnapshot,
                             Lines = linesSnapshot,
                             TradeSignals = signalsSnapshot,
+                            CompletedTrades = strategy.CompletedTrades.ToArray(),
+                            ActivePositions = strategy.ActivePositions.ToArray(),
                             Summary = realtimeSummary,
                             Title = $"{coin} {intervalStr} - 实时回测动态走势 (K线 #{index:D4})",
                             StartGlobalIndex = startGlobal,
@@ -1157,7 +1174,10 @@ namespace Test.WinForms.Forms
                         lineWidth: (float)request.LineWidth,
                         selectedTrendLine: _selectedTrendLine,
                         selectedKlineIndex: _selectedKlineIndex,
-                        chartType: _chartType);
+                        chartType: _chartType,
+                        completedTrades: strat.CompletedTrades,
+                        activePositions: strat.ActivePositions,
+                        showTpSl: chkShowTpSl.Checked);
 
                     formsPlot.Refresh();
 
@@ -1664,7 +1684,10 @@ namespace Test.WinForms.Forms
                         lineWidth: snap.LineWidth,
                         selectedTrendLine: _selectedTrendLine,
                         selectedKlineIndex: _selectedKlineIndex,
-                        chartType: _chartType);
+                        chartType: _chartType,
+                        completedTrades: snap.CompletedTrades,
+                        activePositions: snap.ActivePositions,
+                        showTpSl: chkShowTpSl.Checked);
 
                     formsPlot.Refresh();
                     return;
@@ -1703,7 +1726,10 @@ namespace Test.WinForms.Forms
                         lineWidth: (float)numLineWidth.Value,
                         selectedTrendLine: _selectedTrendLine,
                         selectedKlineIndex: _selectedKlineIndex,
-                        chartType: _chartType);
+                        chartType: _chartType,
+                        completedTrades: strat.CompletedTrades,
+                        activePositions: strat.ActivePositions,
+                        showTpSl: chkShowTpSl.Checked);
 
                     formsPlot.Refresh();
                 }
@@ -1913,6 +1939,8 @@ namespace Test.WinForms.Forms
             public PivotPoint[] Valleys { get; init; } = Array.Empty<PivotPoint>();
             public List<TrendLine> Lines { get; init; } = new List<TrendLine>();
             public TradeSignal[] TradeSignals { get; init; } = Array.Empty<TradeSignal>();
+            public TradeRecord[] CompletedTrades { get; init; } = Array.Empty<TradeRecord>();
+            public Position[] ActivePositions { get; init; } = Array.Empty<Position>();
             public string Summary { get; init; } = string.Empty;
             public string Title { get; init; } = string.Empty;
             public int StartGlobalIndex { get; init; }
