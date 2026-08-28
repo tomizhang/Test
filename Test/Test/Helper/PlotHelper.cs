@@ -46,7 +46,8 @@ namespace Common.Helper
             bool autoScaleAxes = true,
             IReadOnlyList<TradeSignal>? tradeSignals = null,
             float lineWidth = 0.8f,
-            TrendLine? selectedTrendLine = null)
+            TrendLine? selectedTrendLine = null,
+            int? selectedKlineIndex = null)
         {
             if (plot == null || klines == null || klines.Count == 0)
             {
@@ -544,6 +545,42 @@ namespace Common.Helper
                     sellScatter.Color = Color.FromHex("#f43f5e"); // 玫红开空标记
                     sellScatter.LineWidth = 0;
                     sellScatter.LegendText = $"开空信号 ({shortSignalsDrawn})";
+                }
+            }
+
+            // 6.5 绘制用户点击选中的 K 线高亮光标 (垂直青色线 + 高亮点)
+            if (selectedKlineIndex.HasValue)
+            {
+                int selIdx = selectedKlineIndex.Value;
+                if (selIdx >= startGlobalIndex && selIdx <= endGlobalIndex)
+                {
+                    int localIdx = selIdx - startGlobalIndex;
+                    if (localIdx >= 0 && localIdx < count)
+                    {
+                        var k = klines[localIdx];
+                        double yLow = (double)k.Low;
+                        double yHigh = (double)k.High;
+                        double yClose = (double)k.Close;
+
+                        if (yLow == yHigh)
+                        {
+                            yLow = yClose * 0.999;
+                            yHigh = yClose * 1.001;
+                        }
+
+                        // 垂直高亮光标
+                        var klineBarLine = plot.Add.Line(selIdx, yLow, selIdx, yHigh);
+                        klineBarLine.Color = Color.FromHex("#38bdf8"); // 天空蓝 Sky 400
+                        klineBarLine.LineWidth = Math.Max(2.5f, lineWidth * 3.0f);
+
+                        // 选中的收盘价高亮点 (青色光晕大圆点)
+                        var selScatter = plot.Add.Scatter(new double[] { selIdx }, new double[] { yClose });
+                        selScatter.MarkerShape = MarkerShape.FilledCircle;
+                        selScatter.MarkerSize = 10;
+                        selScatter.Color = Color.FromHex("#38bdf8");
+                        selScatter.LineWidth = 0;
+                        selScatter.LegendText = $"选中K线 (Bar #{selIdx})";
+                    }
                 }
             }
 

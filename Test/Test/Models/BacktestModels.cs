@@ -53,7 +53,7 @@ namespace Common.Models
     public enum TradeStrategyType
     {
         /// <summary>
-        /// 经典趋势线触碰回弹策略 (3点线 0.001% 触碰 + 3-Tick 连续反向回弹开仓)
+        /// 经典趋势线触碰回弹策略 (3点线 0.001% 触碰 + 持续 3 分钟反向回弹确认开仓)
         /// </summary>
         TouchRebound = 0,
 
@@ -63,7 +63,7 @@ namespace Common.Models
         PurpleBreakout = 1,
 
         /// <summary>
-        /// 宏观 Level 3 假突破猎杀策略 (SFP / 2B 假突破反转：刺破前高L3后1m微观顶分型跌回开空，刺破前低L3后1m微观底分型反抽开多)
+        /// 宏观 Level 3 假突破猎杀策略 (SFP / 2B 假突破反转：刺破前高/前低 L3 后反向回抽持续 3 分钟确认开仓)
         /// </summary>
         Level3FalseBreakout = 2,
 

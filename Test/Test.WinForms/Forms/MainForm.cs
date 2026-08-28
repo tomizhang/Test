@@ -55,6 +55,7 @@ namespace Test.WinForms.Forms
         private int _currentPlotStartGlobalIndex = 0;
         private int _currentPlotEndGlobalIndex = 0;
         private TrendLine? _selectedTrendLine = null; // 当前用户点击选中的趋势线 (以红色高亮显示)
+        private int? _selectedKlineIndex = null;      // 🌟 当前用户点击选中的 K 线序号 (以青色光标高亮显示)
 
         // UI 控件定义
         private SplitContainer splitMain = null!;
@@ -821,7 +822,8 @@ namespace Test.WinForms.Forms
                             autoScaleAxes: snap.AutoScale,
                             tradeSignals: snap.TradeSignals,
                             lineWidth: snap.LineWidth,
-                            selectedTrendLine: _selectedTrendLine);
+                            selectedTrendLine: _selectedTrendLine,
+                            selectedKlineIndex: _selectedKlineIndex);
 
                         formsPlot.Refresh();
                     }
@@ -1073,9 +1075,9 @@ namespace Test.WinForms.Forms
             string stratDesc = request.TradeStrategy switch
             {
                 TradeStrategyType.PurpleBreakout => "🟣 紫色特殊趋势线穿透策略 (1m收盘跌破开空 / 突破开多)",
-                TradeStrategyType.Level3FalseBreakout => "🎯 宏观Level 3假突破猎杀策略 (SFP / 刺破L3诱多诱空后反转开仓)",
+                TradeStrategyType.Level3FalseBreakout => "🎯 宏观Level 3假突破猎杀策略 (SFP / 刺破L3诱多诱空后持续3分钟确认开仓)",
                 TradeStrategyType.Combined => "⚡ 多策略组合模式 (触碰回弹 + 紫色穿透 + 宏观L3假突破)",
-                _ => "🎯 经典趋势线触碰回弹策略 (3点线 0.001%触碰 / 3-Tick反弹开仓)"
+                _ => "🎯 经典趋势线触碰回弹策略 (3点线 0.001%触碰 / 3分钟持续回弹确认开仓)"
             };
 
             string tradeModeStr = request.EnableTrading ? $"已开启 - {stratDesc}" : "已关闭 (仅纯结构与趋势线分析)";
@@ -1132,7 +1134,8 @@ namespace Test.WinForms.Forms
                         autoScaleAxes: true,
                         tradeSignals: strat.TradeSignals,
                         lineWidth: (float)request.LineWidth,
-                        selectedTrendLine: _selectedTrendLine);
+                        selectedTrendLine: _selectedTrendLine,
+                        selectedKlineIndex: _selectedKlineIndex);
 
                     formsPlot.Refresh();
 
@@ -1308,7 +1311,14 @@ namespace Test.WinForms.Forms
                 // 鼠标微小位移判定为单击 (排除拖拽/缩放交互)
                 if (dx <= 8 && dy <= 8)
                 {
-                    HitTestTrendLine(e.X, e.Y);
+                    // 1. 优先尝试拾取趋势线
+                    bool trendLineHit = HitTestTrendLine(e.X, e.Y);
+
+                    // 2. 若未点击到趋势线，尝试拾取点击的 K 线
+                    if (!trendLineHit)
+                    {
+                        HitTestKline(e.X, e.Y);
+                    }
                 }
             }
         }
@@ -1317,8 +1327,8 @@ namespace Test.WinForms.Forms
         {
             if (!_isPlotMouseDown)
             {
-                bool isNearLine = IsNearAnyTrendLine(e.X, e.Y, 15.0);
-                formsPlot.Cursor = isNearLine ? Cursors.Hand : Cursors.Default;
+                bool isNear = IsNearAnyTrendLine(e.X, e.Y, 15.0);
+                formsPlot.Cursor = isNear ? Cursors.Hand : Cursors.Default;
             }
         }
 
@@ -1352,10 +1362,10 @@ namespace Test.WinForms.Forms
             return list;
         }
 
-        private void HitTestTrendLine(double mouseX, double mouseY)
+        private bool HitTestTrendLine(double mouseX, double mouseY)
         {
             var candidateLines = GetCandidateTrendLines();
-            if (candidateLines == null || candidateLines.Count == 0) return;
+            if (candidateLines == null || candidateLines.Count == 0) return false;
 
             double minDistance = double.MaxValue;
             TrendLine? selectedLine = null;
@@ -1454,6 +1464,7 @@ namespace Test.WinForms.Forms
             if (selectedLine.HasValue)
             {
                 _selectedTrendLine = selectedLine.Value;
+                _selectedKlineIndex = null; // 清除选中的 K 线
                 OutputTrendLineDetails(selectedLine.Value);
 
                 // 立即在图表上以鲜亮红色重绘高亮选中的趋势线 (保持当前缩放与视口不变)
@@ -1464,7 +1475,147 @@ namespace Test.WinForms.Forms
                 {
                     AppendLogInternal(item.Message, item.Color);
                 }
+                return true;
             }
+
+            return false;
+        }
+
+        private bool HitTestKline(double mouseX, double mouseY)
+        {
+            try
+            {
+                RawKline[]? klines = null;
+                int startGlobal = 0;
+
+                var snap = _latestChartSnapshot;
+                if (snap != null && snap.Klines.Length > 0)
+                {
+                    klines = snap.Klines;
+                    startGlobal = snap.StartGlobalIndex;
+                }
+                else if (_latestResult?.Strategy != null && _latestResult.Strategy.KlineCount > 0)
+                {
+                    klines = _latestResult.Strategy.Klines.ToArray();
+                    startGlobal = Math.Max(0, _latestResult.Strategy.GlobalBarIndex - _latestResult.Strategy.KlineCount);
+                }
+
+                if (klines == null || klines.Length == 0) return false;
+
+                var mouseCoord = formsPlot.Plot.GetCoordinates(new ScottPlot.Pixel(mouseX, mouseY));
+                int targetGlobalIndex = (int)Math.Round(mouseCoord.X);
+                int localIndex = targetGlobalIndex - startGlobal;
+
+                if (localIndex >= 0 && localIndex < klines.Length)
+                {
+                    var kline = klines[localIndex];
+
+                    var pixelClose = formsPlot.Plot.GetPixel(new ScottPlot.Coordinates(targetGlobalIndex, (double)kline.Close));
+                    var pixelHigh = formsPlot.Plot.GetPixel(new ScottPlot.Coordinates(targetGlobalIndex, (double)kline.High));
+                    var pixelLow = formsPlot.Plot.GetPixel(new ScottPlot.Coordinates(targetGlobalIndex, (double)kline.Low));
+
+                    double topY = Math.Min(pixelHigh.Y, pixelLow.Y) - 30;
+                    double bottomY = Math.Max(pixelHigh.Y, pixelLow.Y) + 30;
+                    double leftX = pixelClose.X - 25;
+                    double rightX = pixelClose.X + 25;
+
+                    if (mouseX >= leftX && mouseX <= rightX && mouseY >= topY && mouseY <= bottomY)
+                    {
+                        _selectedKlineIndex = targetGlobalIndex;
+                        _selectedTrendLine = null; // 清除选中的趋势线
+
+                        OutputKlineDetails(kline, targetGlobalIndex);
+                        RedrawCurrentPlot(autoScale: false);
+
+                        while (_logQueue.TryDequeue(out var item))
+                        {
+                            AppendLogInternal(item.Message, item.Color);
+                        }
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            return false;
+        }
+
+        private void OutputKlineDetails(RawKline kline, int globalIndex)
+        {
+            DateTime openTime = TimeHelper.FromUnixTimeMilliseconds(kline.OpenTime);
+            DateTime closeTime = TimeHelper.FromUnixTimeMilliseconds(kline.CloseTime);
+
+            decimal change = kline.Close - kline.Open;
+            decimal changePct = kline.Open > 0 ? (change / kline.Open) * 100m : 0m;
+            decimal amplitude = kline.Low > 0 ? ((kline.High - kline.Low) / kline.Low) * 100m : 0m;
+            decimal body = Math.Abs(kline.Close - kline.Open);
+            decimal upperShadow = kline.High - Math.Max(kline.Open, kline.Close);
+            decimal lowerShadow = Math.Min(kline.Open, kline.Close) - kline.Low;
+
+            bool isBull = kline.Close >= kline.Open;
+            string barTypeStr = isBull ? "🟢 阳线 (Bullish)" : "🔴 阴线 (Bearish)";
+            Color themeColor = isBull ? Color.FromArgb(74, 222, 128) : Color.FromArgb(244, 63, 94); // Green 400 / Rose 500
+
+            // 检查极值高低点
+            string pivotInfo = "普通K线 (无极值分型)";
+            var strat = _latestResult?.Strategy;
+            if (strat != null)
+            {
+                var peak = strat.Peaks.FirstOrDefault(p => p.Index == globalIndex);
+                var valley = strat.Valleys.FirstOrDefault(v => v.Index == globalIndex);
+                if (peak.Index == globalIndex)
+                {
+                    pivotInfo = $"🔺 【高点极值 Peak】Level {peak.Level} (高点价: {peak.Price:F2})";
+                }
+                else if (valley.Index == globalIndex)
+                {
+                    pivotInfo = $"🔻 【低点极值 Valley】Level {valley.Level} (低点价: {valley.Price:F2})";
+                }
+            }
+
+            // 检查是否在此处产生交易信号或开平仓
+            string tradeInfo = "无交易动作";
+            if (strat != null)
+            {
+                var sig = strat.TradeSignals.FirstOrDefault(s => s.GlobalBarIndex == globalIndex);
+                if (sig.GlobalBarIndex == globalIndex)
+                {
+                    tradeInfo = $"⚡ 产生开仓信号: {(sig.Side == TradeSide.Buy ? "🟢 开多" : "🔴 开空")} @ {sig.Price:F2} ({sig.Reason})";
+                }
+
+                var tradeEntry = strat.CompletedTrades.FirstOrDefault(t => t.EntryGlobalBarIndex == globalIndex);
+                if (tradeEntry != null)
+                {
+                    tradeInfo += $"\n  📥 包含开仓: #{tradeEntry.TradeId} {(tradeEntry.Side == TradeSide.Buy ? "多单" : "空单")} @ {tradeEntry.EntryPrice:F2}";
+                }
+
+                var tradeExit = strat.CompletedTrades.FirstOrDefault(t => t.ExitGlobalBarIndex == globalIndex);
+                if (tradeExit != null)
+                {
+                    string sign = tradeExit.PnLPct >= 0 ? "+" : "";
+                    tradeInfo += $"\n  🏁 包含平仓: #{tradeExit.TradeId} {(tradeExit.IsWin ? "💰 止盈" : "🛑 止损")} @ {tradeExit.ExitPrice:F2} ({sign}{tradeExit.PnLPct:F2}%)";
+                }
+            }
+
+            _logQueue.Enqueue(("\n========================================================", themeColor));
+            _logQueue.Enqueue(($"📊 [选中K线行情详情] Bar #{globalIndex} 【{barTypeStr}】", themeColor));
+            _logQueue.Enqueue(($"  • 时间周期: {openTime:yyyy-MM-dd HH:mm:ss} ~ {closeTime:HH:mm:ss} (UTC+0)", Color.FromArgb(241, 245, 249)));
+            _logQueue.Enqueue(($"  • 价格行情: 开={kline.Open:F2} | 高={kline.High:F2} | 低={kline.Low:F2} | 收={kline.Close:F2}", Color.FromArgb(241, 245, 249)));
+            _logQueue.Enqueue(($"  • 涨跌幅度: 涨跌额={change:+0.00;-0.00;0.00}, 涨跌幅={changePct:+0.00;-0.00;0.00}%, 振幅={amplitude:F2}%", themeColor));
+            _logQueue.Enqueue(($"  • 形态特征: 实体={body:F2} | 上影线={upperShadow:F2} | 下影线={lowerShadow:F2} | 结构属性: {pivotInfo}", Color.FromArgb(226, 232, 240)));
+            _logQueue.Enqueue(($"  • 成交量能: 成交量={kline.Volume:N2} (Base), 成交额={kline.QuoteVolume:N2} USDT, 笔数={kline.TradeCount:N0} 笔", Color.FromArgb(241, 245, 249)));
+            if (kline.Volume > 0)
+            {
+                decimal takerBuyPct = (kline.TakerBuyVolume / kline.Volume) * 100m;
+                _logQueue.Enqueue(($"  • 买卖力量: 主动买入量={kline.TakerBuyVolume:N2} ({takerBuyPct:F1}%), 主动买入额={kline.TakerBuyQuoteVolume:N2} USDT", Color.FromArgb(250, 204, 21)));
+            }
+            if (tradeInfo != "无交易动作")
+            {
+                _logQueue.Enqueue(($"  • 策略动作: {tradeInfo}", Color.FromArgb(168, 85, 247)));
+            }
+            _logQueue.Enqueue(("========================================================", themeColor));
         }
 
         private void RedrawCurrentPlot(bool autoScale = false)
@@ -1489,7 +1640,8 @@ namespace Test.WinForms.Forms
                         autoScaleAxes: autoScale,
                         tradeSignals: snap.TradeSignals,
                         lineWidth: snap.LineWidth,
-                        selectedTrendLine: _selectedTrendLine);
+                        selectedTrendLine: _selectedTrendLine,
+                        selectedKlineIndex: _selectedKlineIndex);
 
                     formsPlot.Refresh();
                     return;
@@ -1526,7 +1678,8 @@ namespace Test.WinForms.Forms
                         autoScaleAxes: autoScale,
                         tradeSignals: strat.TradeSignals,
                         lineWidth: (float)numLineWidth.Value,
-                        selectedTrendLine: _selectedTrendLine);
+                        selectedTrendLine: _selectedTrendLine,
+                        selectedKlineIndex: _selectedKlineIndex);
 
                     formsPlot.Refresh();
                 }

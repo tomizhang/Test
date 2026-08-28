@@ -8,7 +8,7 @@ using System.Collections.Generic;
 namespace Test.Strategy
 {
     /// <summary>
-    /// 3点趋势线触碰跟踪探针状态 (用于判定到达 0.001% 附近后出现 3 个 Tick 反向回弹入场)
+    /// 3点趋势线触碰跟踪探针状态 (用于判定到达趋势线附近后反向回弹持续 3 分钟 / 180 秒确认入场)
     /// </summary>
     public class TouchProbe
     {
@@ -16,8 +16,10 @@ namespace Test.Strategy
         public decimal TouchPrice;
         public decimal LastPrice;
         public int TouchGlobalIndex;
+        public long FirstTouchTimeMs;     // 首次触碰趋势线时间戳 (毫秒)
+        public long FirstReboundTimeMs;   // 首次开始反向回弹时间戳 (毫秒)
         public int TicksSinceTouch;
-        public int ReboundTicks; // 连续反向回弹 Tick 计数
+        public int ReboundTicks;
         public bool IsResistance => Line.IsResistance;
     }
 
@@ -34,15 +36,16 @@ namespace Test.Strategy
     }
 
     /// <summary>
-    /// 宏观 Level 3 假突破 (SFP / 2B) 跟踪探针 (用于跟踪刺破前高/前低后的假突破回落/反抽入场)
+    /// 宏观 Level 3 假突破 (SFP / 2B) 跟踪探针 (用于跟踪刺破前高/前低后反向回抽持续 3 分钟确认入场)
     /// </summary>
     public class FalseBreakoutProbe
     {
         public PivotPoint MacroPivot;          // 被刺破的宏观 Level 3 极值点
         public decimal ExtremePrice;           // 刺破过程中达到的最极致价格 (最高价 PokeHigh / 最低价 PokeLow)
         public long FirstBreakoutTimeMs;       // 首次刺破时间戳 (毫秒)
+        public long FirstReboundTimeMs;        // 跌回/拉回 Level 3 后的首次确认时间戳 (毫秒)
         public int BreakoutGlobalIndex;        // 首次刺破时的全局 K 线序号
-        public int ReboundTicks;               // 跌回/拉回后的连续确认 Tick 数
+        public int ReboundTicks;               // 跌回/拉回后的确认 Tick 数
         public bool IsPeak => MacroPivot.Type == PivotType.Peak; // true: 刺破前高 -> 假突破跌回开空; false: 刺破前低 -> 假跌破拉回开多
     }
 
@@ -707,8 +710,8 @@ namespace Test.Strategy
                     {
                         var sfp = _activeSfpProbes[i];
 
-                        // 超时/偏离过大失效 (超过 60 秒或偏离超过 1.5%)
-                        if (tick.Time - sfp.FirstBreakoutTimeMs > 60000L || 
+                        // 超时/偏离过大失效 (超过 10 分钟未形成有效确认 或 偏离超过 1.5%)
+                        if (tick.Time - sfp.FirstBreakoutTimeMs > 600000L || 
                             (sfp.IsPeak && tick.Price > sfp.MacroPivot.Price * 1.015m) || 
                             (!sfp.IsPeak && tick.Price < sfp.MacroPivot.Price * 0.985m))
                         {
@@ -719,22 +722,39 @@ namespace Test.Strategy
                         // A. 刺破前高 Level 3 后跌回 -> 假突破做空 (Short)
                         if (sfp.IsPeak)
                         {
+                            // 价格保持在 Level 3 之下，处于假突破回落状态
                             if (tick.Price < sfp.MacroPivot.Price)
                             {
+                                if (sfp.FirstReboundTimeMs == 0)
+                                {
+                                    sfp.FirstReboundTimeMs = tick.Time;
+                                }
                                 sfp.ReboundTicks++;
-                                if (sfp.ReboundTicks >= 2) // 连续 2 个 Tick 确认在 Level 3 之下
+
+                                // 持续跌回并在 Level 3 之下维持满 3 分钟 (180 秒 / 180,000 毫秒) -> 确认开空！
+                                if (tick.Time - sfp.FirstReboundTimeMs >= 180000L)
                                 {
                                     // 检查冷却
                                     if (_lastTriggerTimestampMs == 0 || (tick.Time - _lastTriggerTimestampMs) >= cooldownMs)
                                     {
                                         decimal tpPrice = tick.Price * (1m - TakeProfitPct / 100m);
-                                        // 止损设在刺破最高价 PokeHigh 之上 5 个 Tick
-                                        decimal slPrice = sfp.ExtremePrice * 1.0005m;
-                                        decimal maxSlPrice = tick.Price * (1m + StopLossPct / 100m);
-                                        if (slPrice > maxSlPrice) slPrice = maxSlPrice;
+                                        decimal slPrice;
+                                        if (EnableTickStopLoss)
+                                        {
+                                            // 开启微止损：止损设在刺破最高价 PokeHigh 之上 5-Tick / 0.05%
+                                            slPrice = sfp.ExtremePrice * 1.0005m;
+                                            decimal maxSlPrice = tick.Price * (1m + StopLossPct / 100m);
+                                            if (slPrice > maxSlPrice) slPrice = maxSlPrice;
+                                        }
+                                        else
+                                        {
+                                            // 未开启微止损：采用设定固定比例止损 (如 0.5%)
+                                            slPrice = tick.Price * (1m + StopLossPct / 100m);
+                                        }
 
                                         decimal slPct = (slPrice - tick.Price) / tick.Price * 100m;
-                                        string reason = $"【宏观Level 3假突破猎杀开空(SFP)】刺破前高L3(#{sfp.MacroPivot.Index} @ {sfp.MacroPivot.Price:F2}) -> 触及最高:{sfp.ExtremePrice:F2} -> 跌回L3收阴价:{tick.Price:F2} | 止盈:{tpPrice:F2} (+{TakeProfitPct:F1}%), 极窄止损:{slPrice:F2} (-{slPct:F3}%)";
+                                        string slModeStr = EnableTickStopLoss ? "极窄微止损" : "固定止损";
+                                        string reason = $"【宏观Level 3假突破猎杀满3分钟开空(SFP)】刺破前高L3(#{sfp.MacroPivot.Index} @ {sfp.MacroPivot.Price:F2}) -> 触及最高:{sfp.ExtremePrice:F2} -> 跌回L3持续3分钟确认价:{tick.Price:F2} | 止盈:{tpPrice:F2} (+{TakeProfitPct:F1}%), {slModeStr}:{slPrice:F2} (-{slPct:F3}%)";
 
                                         var signal = new TradeSignal
                                         {
@@ -777,28 +797,48 @@ namespace Test.Strategy
                             }
                             else
                             {
+                                // 价格重新反弹到 Level 3 之上，更新刺破最高价并重置回弹确认计时
+                                if (tick.Price > sfp.ExtremePrice) sfp.ExtremePrice = tick.Price;
+                                sfp.FirstReboundTimeMs = 0;
                                 sfp.ReboundTicks = 0;
                             }
                         }
                         // B. 刺破前低 Level 3 后拉回 -> 假跌破做多 (Long)
                         else
                         {
+                            // 价格保持在 Level 3 之上，处于假跌破拉回状态
                             if (tick.Price > sfp.MacroPivot.Price)
                             {
+                                if (sfp.FirstReboundTimeMs == 0)
+                                {
+                                    sfp.FirstReboundTimeMs = tick.Time;
+                                }
                                 sfp.ReboundTicks++;
-                                if (sfp.ReboundTicks >= 2) // 连续 2 个 Tick 确认在 Level 3 之上
+
+                                // 持续拉回并在 Level 3 之上维持满 3 分钟 (180 秒 / 180,000 毫秒) -> 确认开多！
+                                if (tick.Time - sfp.FirstReboundTimeMs >= 180000L)
                                 {
                                     // 检查冷却
                                     if (_lastTriggerTimestampMs == 0 || (tick.Time - _lastTriggerTimestampMs) >= cooldownMs)
                                     {
                                         decimal tpPrice = tick.Price * (1m + TakeProfitPct / 100m);
-                                        // 止损设在刺破最低价 PokeLow 之下 5 个 Tick
-                                        decimal slPrice = sfp.ExtremePrice * 0.9995m;
-                                        decimal minSlPrice = tick.Price * (1m - StopLossPct / 100m);
-                                        if (slPrice < minSlPrice) slPrice = minSlPrice;
+                                        decimal slPrice;
+                                        if (EnableTickStopLoss)
+                                        {
+                                            // 开启微止损：止损设在刺破最低价 PokeLow 之下 5-Tick / 0.05%
+                                            slPrice = sfp.ExtremePrice * 0.9995m;
+                                            decimal minSlPrice = tick.Price * (1m - StopLossPct / 100m);
+                                            if (slPrice < minSlPrice) slPrice = minSlPrice;
+                                        }
+                                        else
+                                        {
+                                            // 未开启微止损：采用设定固定比例止损 (如 0.5%)
+                                            slPrice = tick.Price * (1m - StopLossPct / 100m);
+                                        }
 
                                         decimal slPct = (tick.Price - slPrice) / tick.Price * 100m;
-                                        string reason = $"【宏观Level 3假跌破猎杀开多(SFP)】刺破前低L3(#{sfp.MacroPivot.Index} @ {sfp.MacroPivot.Price:F2}) -> 触及最低:{sfp.ExtremePrice:F2} -> 拉回L3收阳价:{tick.Price:F2} | 止盈:{tpPrice:F2} (+{TakeProfitPct:F1}%), 极窄止损:{slPrice:F2} (-{slPct:F3}%)";
+                                        string slModeStr = EnableTickStopLoss ? "极窄微止损" : "固定止损";
+                                        string reason = $"【宏观Level 3假跌破猎杀满3分钟开多(SFP)】刺破前低L3(#{sfp.MacroPivot.Index} @ {sfp.MacroPivot.Price:F2}) -> 触及最低:{sfp.ExtremePrice:F2} -> 拉回L3持续3分钟确认价:{tick.Price:F2} | 止盈:{tpPrice:F2} (+{TakeProfitPct:F1}%), {slModeStr}:{slPrice:F2} (-{slPct:F3}%)";
 
                                         var signal = new TradeSignal
                                         {
@@ -841,6 +881,9 @@ namespace Test.Strategy
                             }
                             else
                             {
+                                // 价格重新跌到 Level 3 之下，更新刺破最低价并重置回弹确认计时
+                                if (tick.Price < sfp.ExtremePrice) sfp.ExtremePrice = tick.Price;
+                                sfp.FirstReboundTimeMs = 0;
                                 sfp.ReboundTicks = 0;
                             }
                         }
@@ -849,7 +892,7 @@ namespace Test.Strategy
             }
 
             // ====================================================================
-            // 步骤 1: 处理已有的触碰探针，检查是否出现 3 个 Tick 连续反向回弹入场 (仅触碰回弹策略与组合策略)
+            // 步骤 1: 处理已有的触碰探针，检查是否出现反向回弹持续满 3 分钟 (180秒) 确认入场 (仅触碰回弹策略与组合策略)
             // ====================================================================
             bool enableTouch = (TradeStrategy == TradeStrategyType.TouchRebound || TradeStrategy == TradeStrategyType.Combined);
             if (ActivePositions.Count == 0 && enableTouch && _activeTouchProbes.Count > 0)
@@ -858,218 +901,231 @@ namespace Test.Strategy
                 {
                     var probe = _activeTouchProbes[i];
                     probe.TicksSinceTouch++;
+                    decimal linePrice = probe.Line.CachedCurrentPrice > 0m ? probe.Line.CachedCurrentPrice : probe.Line.GetPriceAt(currentGlobalIndex);
 
-                    decimal linePrice = probe.Line.CachedCurrentPrice;
-
-                if (probe.IsResistance)
-                {
-                    // 高点阻力线：反向回弹为价格向下下跌
-                    if (tick.Price < probe.LastPrice)
+                    if (probe.IsResistance)
                     {
-                        probe.ReboundTicks++;
-                    }
-                    else
-                    {
-                        probe.ReboundTicks = 0; // 若未连续向下回弹，重置回弹计数
-                    }
-                    probe.LastPrice = tick.Price;
-
-                    // 出现 3 个 Tick 连续反向回弹且价格低于触碰价 -> 开空！
-                    if (probe.ReboundTicks >= 3 && tick.Price < probe.TouchPrice)
-                    {
-                        // 检查冷却时间：若处于冷却时间内，本轮不触发开仓
-                        if (_lastTriggerTimestampMs > 0 && (tick.Time - _lastTriggerTimestampMs) < cooldownMs)
+                        // 高点阻力线：反向回弹为价格向下回落 (tick.Price < probe.TouchPrice)
+                        if (tick.Price < probe.TouchPrice && tick.Price <= linePrice)
                         {
+                            if (probe.FirstReboundTimeMs == 0)
+                            {
+                                probe.FirstReboundTimeMs = tick.Time;
+                            }
+                            probe.ReboundTicks++;
+
+                            // 持续向下回弹满 3 分钟 (180 秒 / 180,000 毫秒) 且价格保持在阻力线下方 -> 确认开空！
+                            if (tick.Time - probe.FirstReboundTimeMs >= 180000L)
+                            {
+                                // 检查冷却时间：若处于冷却时间内，本轮不触发开仓
+                                if (_lastTriggerTimestampMs > 0 && (tick.Time - _lastTriggerTimestampMs) < cooldownMs)
+                                {
+                                    _activeTouchProbes.RemoveAt(i);
+                                    continue;
+                                }
+
+                                // 触发成功！更新冷却时间戳并标记趋势线为绿色触发线
+                                _lastTriggerTimestampMs = tick.Time;
+                                probe.Line.IsTriggered = true;
+                                MarkTrendLineTriggered(probe.Line);
+
+                                // 开立空单仓位 (1.5% 止盈, 支持 Tick 级别 5-Tick 极小微止损 或 固定比例止损)
+                                decimal tpPrice = tick.Price * (1m - TakeProfitPct / 100m);
+
+                                decimal slPrice;
+                                if (EnableTickStopLoss)
+                                {
+                                    // 5 个 Tick 之前的价格作为自动极小微止损点位
+                                    decimal tick5Price = GetPriceTicksAgo(5);
+                                    if (tick5Price > tick.Price)
+                                    {
+                                        slPrice = tick5Price;
+                                    }
+                                    else
+                                    {
+                                        decimal highest5 = GetExtremePriceLastNTicks(5, getHighest: true);
+                                        slPrice = highest5 > tick.Price ? highest5 : tick.Price * (1m + StopLossPct / 100m);
+                                    }
+
+                                    // 安全兜底上限：最大止损不超过 StopLossPct (默认 0.5%)
+                                    decimal maxSlPrice = tick.Price * (1m + StopLossPct / 100m);
+                                    if (slPrice > maxSlPrice) slPrice = maxSlPrice;
+                                }
+                                else
+                                {
+                                    // 固定比例止损
+                                    slPrice = tick.Price * (1m + StopLossPct / 100m);
+                                }
+
+                                decimal slPct = (slPrice - tick.Price) / tick.Price * 100m;
+                                int lineAge = currentGlobalIndex - probe.Line.X2;
+                                string slModeStr = EnableTickStopLoss ? "5-Tick微止损" : "固定止损";
+                                decimal overallSlopePct = probe.Line.Y1 > 0m ? (probe.Line.CachedCurrentPrice - probe.Line.Y1) / probe.Line.Y1 * 100m : 0m;
+                                string reason = $"【3点高点阻力线触碰回弹满3分钟开空】#{probe.Line.X1}->#{probe.Line.X2}->#{probe.Line.X3} | 整体斜率={overallSlopePct:F2}% (|K整体|≥{MinSignalOverallSlopePct:F2}%), 跨度={probe.Line.LineX1X2}, 寿命={lineAge} | 触碰价:{probe.TouchPrice:F2} -> 3分钟持续回弹确认价:{tick.Price:F2} | 止盈:{tpPrice:F2} (+{TakeProfitPct:F1}%), {slModeStr}:{slPrice:F2} (-{slPct:F3}%)";
+
+                                var signal = new TradeSignal
+                                {
+                                    SignalId = TradeSignals.Count + 1,
+                                    GlobalBarIndex = currentGlobalIndex,
+                                    TimestampMs = tick.Time,
+                                    Side = TradeSide.Sell,
+                                    Price = tick.Price,
+                                    TriggerLine = probe.Line,
+                                    TicksSinceTouch = probe.TicksSinceTouch,
+                                    Reason = reason
+                                };
+
+                                TradeSignals.Add(signal);
+                                ShortSignalsCount++;
+                                OnTradeSignalGenerated?.Invoke(signal);
+
+                                var pos = new Position
+                                {
+                                    PositionId = CompletedTrades.Count + ActivePositions.Count + 1,
+                                    Side = TradeSide.Sell,
+                                    EntryTimestampMs = tick.Time,
+                                    EntryPrice = tick.Price,
+                                    EntryGlobalBarIndex = currentGlobalIndex,
+                                    TakeProfitPrice = tpPrice,
+                                    StopLossPrice = slPrice,
+                                    HighestPriceSinceEntry = tick.Price,
+                                    LowestPriceSinceEntry = tick.Price,
+                                    TriggerLine = probe.Line,
+                                    StrategyReason = reason
+                                };
+                                ActivePositions.Add(pos);
+                                OnPositionOpened?.Invoke(pos);
+
+                                _activeTouchProbes.Clear();
+                                return;
+                            }
+                        }
+                        else if (tick.Price > linePrice * 1.002m || (probe.FirstTouchTimeMs > 0 && tick.Time - probe.FirstTouchTimeMs > 600000L))
+                        {
+                            // 向上明显突破压力线或超时 10 分钟未维持回弹，探针失效
                             _activeTouchProbes.RemoveAt(i);
                             continue;
                         }
-
-                        // 触发成功！更新冷却时间戳并标记趋势线为绿色触发线
-                        _lastTriggerTimestampMs = tick.Time;
-                        probe.Line.IsTriggered = true;
-                        MarkTrendLineTriggered(probe.Line);
-
-                        // 开立空单仓位 (1.5% 止盈, 支持 Tick 级别 5-Tick 极小微止损 或 固定比例止损)
-                        decimal tpPrice = tick.Price * (1m - TakeProfitPct / 100m);
-
-                        decimal slPrice;
-                        if (EnableTickStopLoss)
-                        {
-                            // 5 个 Tick 之前的价格作为自动极小微止损点位
-                            decimal tick5Price = GetPriceTicksAgo(5);
-                            if (tick5Price > tick.Price)
-                            {
-                                slPrice = tick5Price;
-                            }
-                            else
-                            {
-                                decimal highest5 = GetExtremePriceLastNTicks(5, getHighest: true);
-                                slPrice = highest5 > tick.Price ? highest5 : tick.Price * (1m + StopLossPct / 100m);
-                            }
-
-                            // 安全兜底上限：最大止损不超过 StopLossPct (默认 0.5%)
-                            decimal maxSlPrice = tick.Price * (1m + StopLossPct / 100m);
-                            if (slPrice > maxSlPrice) slPrice = maxSlPrice;
-                        }
                         else
                         {
-                            // 固定比例止损
-                            slPrice = tick.Price * (1m + StopLossPct / 100m);
+                            // 价格在触碰价上方波动，未维持有效回弹状态，重置回弹起始时间
+                            probe.FirstReboundTimeMs = 0;
+                            probe.ReboundTicks = 0;
                         }
-
-                        decimal slPct = (slPrice - tick.Price) / tick.Price * 100m;
-                        int lineAge = currentGlobalIndex - probe.Line.X2;
-                        string slModeStr = EnableTickStopLoss ? "5-Tick微止损" : "固定止损";
-                        decimal overallSlopePct = probe.Line.Y1 > 0m ? (probe.Line.CachedCurrentPrice - probe.Line.Y1) / probe.Line.Y1 * 100m : 0m;
-                        string reason = $"【3点高点阻力线触碰开空】#{probe.Line.X1}->#{probe.Line.X2}->#{probe.Line.X3} | 整体斜率={overallSlopePct:F2}% (|K整体|≥{MinSignalOverallSlopePct:F2}%), 跨度={probe.Line.LineX1X2}, 寿命={lineAge} | 触碰价:{probe.TouchPrice:F2} (0.001%附近) -> 3-Tick反向回弹价:{tick.Price:F2} | 止盈:{tpPrice:F2} (+{TakeProfitPct:F1}%), {slModeStr}:{slPrice:F2} (-{slPct:F3}%)";
-
-                        var signal = new TradeSignal
-                        {
-                            SignalId = TradeSignals.Count + 1,
-                            GlobalBarIndex = currentGlobalIndex,
-                            TimestampMs = tick.Time,
-                            Side = TradeSide.Sell,
-                            Price = tick.Price,
-                            TriggerLine = probe.Line,
-                            TicksSinceTouch = probe.TicksSinceTouch,
-                            Reason = reason
-                        };
-
-                        TradeSignals.Add(signal);
-                        ShortSignalsCount++;
-                        OnTradeSignalGenerated?.Invoke(signal);
-
-                        var pos = new Position
-                        {
-                            PositionId = CompletedTrades.Count + ActivePositions.Count + 1,
-                            Side = TradeSide.Sell,
-                            EntryTimestampMs = tick.Time,
-                            EntryPrice = tick.Price,
-                            EntryGlobalBarIndex = currentGlobalIndex,
-                            TakeProfitPrice = tpPrice,
-                            StopLossPrice = slPrice,
-                            HighestPriceSinceEntry = tick.Price,
-                            LowestPriceSinceEntry = tick.Price,
-                            TriggerLine = probe.Line,
-                            StrategyReason = reason
-                        };
-                        ActivePositions.Add(pos);
-                        OnPositionOpened?.Invoke(pos);
-
-                        _activeTouchProbes.Clear();
-                        return;
-                    }
-                    else if (probe.TicksSinceTouch > 15 || tick.Price > linePrice * 1.002m)
-                    {
-                        // 超过 15 个 Tick 未完成 3-Tick 回弹或明显击穿，探针失效
-                        _activeTouchProbes.RemoveAt(i);
-                    }
-                }
-                else
-                {
-                    // 低点支撑线：反向回弹为价格向上上涨
-                    if (tick.Price > probe.LastPrice)
-                    {
-                        probe.ReboundTicks++;
+                        probe.LastPrice = tick.Price;
                     }
                     else
                     {
-                        probe.ReboundTicks = 0; // 若未连续向上回弹，重置回弹计数
-                    }
-                    probe.LastPrice = tick.Price;
-
-                    // 出现 3 个 Tick 连续反向回弹且价格高于触碰价 -> 开多！
-                    if (probe.ReboundTicks >= 3 && tick.Price > probe.TouchPrice)
-                    {
-                        // 检查冷却时间：若处于冷却时间内，本轮不触发开仓
-                        if (_lastTriggerTimestampMs > 0 && (tick.Time - _lastTriggerTimestampMs) < cooldownMs)
+                        // 低点支撑线：反向回弹为价格向上回升 (tick.Price > probe.TouchPrice)
+                        if (tick.Price > probe.TouchPrice && tick.Price >= linePrice)
                         {
+                            if (probe.FirstReboundTimeMs == 0)
+                            {
+                                probe.FirstReboundTimeMs = tick.Time;
+                            }
+                            probe.ReboundTicks++;
+
+                            // 持续向上回弹满 3 分钟 (180 秒 / 180,000 毫秒) 且价格保持在支撑线上方 -> 确认开多！
+                            if (tick.Time - probe.FirstReboundTimeMs >= 180000L)
+                            {
+                                // 检查冷却时间：若处于冷却时间内，本轮不触发开仓
+                                if (_lastTriggerTimestampMs > 0 && (tick.Time - _lastTriggerTimestampMs) < cooldownMs)
+                                {
+                                    _activeTouchProbes.RemoveAt(i);
+                                    continue;
+                                }
+
+                                // 触发成功！更新冷却时间戳并标记趋势线为绿色触发线
+                                _lastTriggerTimestampMs = tick.Time;
+                                probe.Line.IsTriggered = true;
+                                MarkTrendLineTriggered(probe.Line);
+
+                                // 开立多单仓位 (1.5% 止盈, 支持 Tick 级别 5-Tick 极小微止损 或 固定比例止损)
+                                decimal tpPrice = tick.Price * (1m + TakeProfitPct / 100m);
+
+                                decimal slPrice;
+                                if (EnableTickStopLoss)
+                                {
+                                    // 5 个 Tick 之前的价格作为自动极小微止损点位
+                                    decimal tick5Price = GetPriceTicksAgo(5);
+                                    if (tick5Price > 0m && tick5Price < tick.Price)
+                                    {
+                                        slPrice = tick5Price;
+                                    }
+                                    else
+                                    {
+                                        decimal lowest5 = GetExtremePriceLastNTicks(5, getHighest: false);
+                                        slPrice = (lowest5 > 0m && lowest5 < tick.Price) ? lowest5 : tick.Price * (1m - StopLossPct / 100m);
+                                    }
+
+                                    // 安全兜底下限：最大止损不超过 StopLossPct (默认 0.5%)
+                                    decimal minSlPrice = tick.Price * (1m - StopLossPct / 100m);
+                                    if (slPrice < minSlPrice) slPrice = minSlPrice;
+                                }
+                                else
+                                {
+                                    // 固定比例止损
+                                    slPrice = tick.Price * (1m - StopLossPct / 100m);
+                                }
+
+                                decimal slPct = (tick.Price - slPrice) / tick.Price * 100m;
+                                int lineAge = currentGlobalIndex - probe.Line.X2;
+                                string slModeStr = EnableTickStopLoss ? "5-Tick微止损" : "固定止损";
+                                decimal overallSlopePct = probe.Line.Y1 > 0m ? (probe.Line.CachedCurrentPrice - probe.Line.Y1) / probe.Line.Y1 * 100m : 0m;
+                                string reason = $"【3点低点支撑线触碰回弹满3分钟开多】#{probe.Line.X1}->#{probe.Line.X2}->#{probe.Line.X3} | 整体斜率={overallSlopePct:F2}% (|K整体|≥{MinSignalOverallSlopePct:F2}%), 跨度={probe.Line.LineX1X2}, 寿命={lineAge} | 触碰价:{probe.TouchPrice:F2} -> 3分钟持续回弹确认价:{tick.Price:F2} | 止盈:{tpPrice:F2} (+{TakeProfitPct:F1}%), {slModeStr}:{slPrice:F2} (-{slPct:F3}%)";
+
+                                var signal = new TradeSignal
+                                {
+                                    SignalId = TradeSignals.Count + 1,
+                                    GlobalBarIndex = currentGlobalIndex,
+                                    TimestampMs = tick.Time,
+                                    Side = TradeSide.Buy,
+                                    Price = tick.Price,
+                                    TriggerLine = probe.Line,
+                                    TicksSinceTouch = probe.TicksSinceTouch,
+                                    Reason = reason
+                                };
+
+                                TradeSignals.Add(signal);
+                                LongSignalsCount++;
+                                OnTradeSignalGenerated?.Invoke(signal);
+
+                                var pos = new Position
+                                {
+                                    PositionId = CompletedTrades.Count + ActivePositions.Count + 1,
+                                    Side = TradeSide.Buy,
+                                    EntryTimestampMs = tick.Time,
+                                    EntryPrice = tick.Price,
+                                    EntryGlobalBarIndex = currentGlobalIndex,
+                                    TakeProfitPrice = tpPrice,
+                                    StopLossPrice = slPrice,
+                                    HighestPriceSinceEntry = tick.Price,
+                                    LowestPriceSinceEntry = tick.Price,
+                                    TriggerLine = probe.Line,
+                                    StrategyReason = reason
+                                };
+                                ActivePositions.Add(pos);
+                                OnPositionOpened?.Invoke(pos);
+
+                                _activeTouchProbes.Clear();
+                                return;
+                            }
+                        }
+                        else if (tick.Price < linePrice * 0.998m || (probe.FirstTouchTimeMs > 0 && tick.Time - probe.FirstTouchTimeMs > 600000L))
+                        {
+                            // 向下明显击穿支撑线或超时 10 分钟未维持回弹，探针失效
                             _activeTouchProbes.RemoveAt(i);
                             continue;
                         }
-
-                        // 触发成功！更新冷却时间戳并标记趋势线为绿色触发线
-                        _lastTriggerTimestampMs = tick.Time;
-                        probe.Line.IsTriggered = true;
-                        MarkTrendLineTriggered(probe.Line);
-
-                        // 开立多单仓位 (1.5% 止盈, 支持 Tick 级别 5-Tick 极小微止损 或 固定比例止损)
-                        decimal tpPrice = tick.Price * (1m + TakeProfitPct / 100m);
-
-                        decimal slPrice;
-                        if (EnableTickStopLoss)
-                        {
-                            // 5 个 Tick 之前的价格作为自动极小微止损点位
-                            decimal tick5Price = GetPriceTicksAgo(5);
-                            if (tick5Price > 0m && tick5Price < tick.Price)
-                            {
-                                slPrice = tick5Price;
-                            }
-                            else
-                            {
-                                decimal lowest5 = GetExtremePriceLastNTicks(5, getHighest: false);
-                                slPrice = (lowest5 > 0m && lowest5 < tick.Price) ? lowest5 : tick.Price * (1m - StopLossPct / 100m);
-                            }
-
-                            // 安全兜底下限：最大止损不超过 StopLossPct (默认 0.5%)
-                            decimal minSlPrice = tick.Price * (1m - StopLossPct / 100m);
-                            if (slPrice < minSlPrice) slPrice = minSlPrice;
-                        }
                         else
                         {
-                            // 固定比例止损
-                            slPrice = tick.Price * (1m - StopLossPct / 100m);
+                            // 价格在触碰价下方波动，未维持有效回弹状态，重置回弹起始时间
+                            probe.FirstReboundTimeMs = 0;
+                            probe.ReboundTicks = 0;
                         }
-
-                        decimal slPct = (tick.Price - slPrice) / tick.Price * 100m;
-                        int lineAge = currentGlobalIndex - probe.Line.X2;
-                        string slModeStr = EnableTickStopLoss ? "5-Tick微止损" : "固定止损";
-                        decimal overallSlopePct = probe.Line.Y1 > 0m ? (probe.Line.CachedCurrentPrice - probe.Line.Y1) / probe.Line.Y1 * 100m : 0m;
-                        string reason = $"【3点低点支撑线触碰开多】#{probe.Line.X1}->#{probe.Line.X2}->#{probe.Line.X3} | 整体斜率={overallSlopePct:F2}% (|K整体|≥{MinSignalOverallSlopePct:F2}%), 跨度={probe.Line.LineX1X2}, 寿命={lineAge} | 触碰价:{probe.TouchPrice:F2} (0.001%附近) -> 3-Tick反向回弹价:{tick.Price:F2} | 止盈:{tpPrice:F2} (+{TakeProfitPct:F1}%), {slModeStr}:{slPrice:F2} (-{slPct:F3}%)";
-
-                        var signal = new TradeSignal
-                        {
-                            SignalId = TradeSignals.Count + 1,
-                            GlobalBarIndex = currentGlobalIndex,
-                            TimestampMs = tick.Time,
-                            Side = TradeSide.Buy,
-                            Price = tick.Price,
-                            TriggerLine = probe.Line,
-                            TicksSinceTouch = probe.TicksSinceTouch,
-                            Reason = reason
-                        };
-
-                        TradeSignals.Add(signal);
-                        LongSignalsCount++;
-                        OnTradeSignalGenerated?.Invoke(signal);
-
-                        var pos = new Position
-                        {
-                            PositionId = CompletedTrades.Count + ActivePositions.Count + 1,
-                            Side = TradeSide.Buy,
-                            EntryTimestampMs = tick.Time,
-                            EntryPrice = tick.Price,
-                            EntryGlobalBarIndex = currentGlobalIndex,
-                            TakeProfitPrice = tpPrice,
-                            StopLossPrice = slPrice,
-                            HighestPriceSinceEntry = tick.Price,
-                            LowestPriceSinceEntry = tick.Price,
-                            TriggerLine = probe.Line,
-                            StrategyReason = reason
-                        };
-                        ActivePositions.Add(pos);
-                        OnPositionOpened?.Invoke(pos);
-
-                        _activeTouchProbes.Clear();
-                        return;
-                    }
-                    else if (probe.TicksSinceTouch > 15 || tick.Price < linePrice * 0.998m)
-                    {
-                        // 超过 15 个 Tick 未完成 3-Tick 回弹或明显击穿，探针失效
-                        _activeTouchProbes.RemoveAt(i);
+                        probe.LastPrice = tick.Price;
                     }
                 }
-            }
             }
 
             // ====================================================================
@@ -1133,6 +1189,8 @@ namespace Test.Strategy
                                     TouchPrice = tick.Price,
                                     LastPrice = tick.Price,
                                     TouchGlobalIndex = currentGlobalIndex,
+                                    FirstTouchTimeMs = tick.Time,
+                                    FirstReboundTimeMs = 0,
                                     TicksSinceTouch = 0,
                                     ReboundTicks = 0
                                 });
@@ -1202,6 +1260,8 @@ namespace Test.Strategy
                                     TouchPrice = tick.Price,
                                     LastPrice = tick.Price,
                                     TouchGlobalIndex = currentGlobalIndex,
+                                    FirstTouchTimeMs = tick.Time,
+                                    FirstReboundTimeMs = 0,
                                     TicksSinceTouch = 0,
                                     ReboundTicks = 0
                                 });
