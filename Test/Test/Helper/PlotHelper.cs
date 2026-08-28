@@ -47,7 +47,8 @@ namespace Common.Helper
             IReadOnlyList<TradeSignal>? tradeSignals = null,
             float lineWidth = 0.8f,
             TrendLine? selectedTrendLine = null,
-            int? selectedKlineIndex = null)
+            int? selectedKlineIndex = null,
+            ChartType chartType = ChartType.Candlestick)
         {
             if (plot == null || klines == null || klines.Count == 0)
             {
@@ -69,21 +70,45 @@ namespace Common.Helper
             int count = klines.Count;
             int endGlobalIndex = startGlobalIndex + count - 1;
 
-            // 3. 绘制 K 线价格走势折线图 (以收盘价 Close 绘制基准折线，线宽 lineWidth)
-            double[] xs = new double[count];
-            double[] ys = new double[count];
-
-            for (int i = 0; i < count; i++)
+            // 3. 绘制主价格走势 (支持标准红绿蜡烛图 Candlestick 或收盘价折线图 Line)
+            if (chartType == ChartType.Candlestick)
             {
-                xs[i] = startGlobalIndex + i;
-                ys[i] = (double)klines[i].Close;
-            }
+                var ohlcList = new List<OHLC>(count);
+                for (int i = 0; i < count; i++)
+                {
+                    var k = klines[i];
+                    double x = startGlobalIndex + i;
+                    var ohlc = new OHLC(
+                        (double)k.Open,
+                        (double)k.High,
+                        (double)k.Low,
+                        (double)k.Close,
+                        DateTime.FromOADate(x),
+                        TimeSpan.FromDays(0.8));
+                    ohlcList.Add(ohlc);
+                }
 
-            var priceLine = plot.Add.Scatter(xs, ys);
-            priceLine.LineWidth = Math.Max(0.5f, lineWidth);
-            priceLine.MarkerSize = 0;
-            priceLine.Color = Color.FromHex("#38bdf8"); // 天空蓝 Sky 400
-            priceLine.LegendText = $"价格收盘折线 ({count:N0}根)";
+                var candlePlot = plot.Add.Candlestick(ohlcList);
+                candlePlot.RisingColor = Color.FromHex("#22c55e"); // 绿色阳线 (Green 500)
+                candlePlot.FallingColor = Color.FromHex("#ef4444"); // 红色阴线 (Red 500)
+            }
+            else
+            {
+                double[] xs = new double[count];
+                double[] ys = new double[count];
+
+                for (int i = 0; i < count; i++)
+                {
+                    xs[i] = startGlobalIndex + i;
+                    ys[i] = (double)klines[i].Close;
+                }
+
+                var priceLine = plot.Add.Scatter(xs, ys);
+                priceLine.LineWidth = Math.Max(0.5f, lineWidth);
+                priceLine.MarkerSize = 0;
+                priceLine.Color = Color.FromHex("#38bdf8"); // 天空蓝 Sky 400
+                priceLine.LegendText = $"价格收盘折线 ({count:N0}根)";
+            }
 
             // 4. 绘制高低点极值标记 (分 3 个等级：L1 小/浅淡色，L2 中/鲜亮色，L3 大/深浓色；大小逐渐增加，颜色浓度递增)
             int peaksL1Count = 0, peaksL2Count = 0, peaksL3Count = 0;
@@ -651,7 +676,8 @@ namespace Common.Helper
             int startGlobalIndex = 0,
             bool autoScaleAxes = true,
             IReadOnlyList<TradeSignal>? tradeSignals = null,
-            float lineWidth = 0.8f)
+            float lineWidth = 0.8f,
+            ChartType chartType = ChartType.Candlestick)
         {
             var allLines = new List<TrendLine>();
             if (resistanceLines != null) allLines.AddRange(resistanceLines);
@@ -668,7 +694,8 @@ namespace Common.Helper
                 startGlobalIndex,
                 autoScaleAxes,
                 tradeSignals,
-                lineWidth);
+                lineWidth,
+                chartType: chartType);
         }
 
         public static string PlotTrendLineChart(
@@ -684,7 +711,8 @@ namespace Common.Helper
             int width = 1920,
             int height = 1080,
             IReadOnlyList<TradeSignal>? tradeSignals = null,
-            float lineWidth = 0.8f)
+            float lineWidth = 0.8f,
+            ChartType chartType = ChartType.Candlestick)
         {
             if (klines == null || klines.Count == 0)
             {
@@ -705,7 +733,8 @@ namespace Common.Helper
                 startGlobalIndex,
                 autoScaleAxes: true,
                 tradeSignals: tradeSignals,
-                lineWidth: lineWidth);
+                lineWidth: lineWidth,
+                chartType: chartType);
 
             if (string.IsNullOrWhiteSpace(outputFilePath))
             {

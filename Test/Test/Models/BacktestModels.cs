@@ -48,6 +48,22 @@ namespace Common.Models
     }
 
     /// <summary>
+    /// 图表主走势渲染模式 (K线蜡烛图 / 收盘折线图)
+    /// </summary>
+    public enum ChartType
+    {
+        /// <summary>
+        /// 标准红绿蜡烛图 (Candlestick / OHLC 实体与上下影线)
+        /// </summary>
+        Candlestick = 0,
+
+        /// <summary>
+        /// 收盘价折线图 (Line Chart)
+        /// </summary>
+        Line = 1
+    }
+
+    /// <summary>
     /// 回测交易策略类型模式
     /// </summary>
     public enum TradeStrategyType

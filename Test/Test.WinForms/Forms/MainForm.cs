@@ -56,6 +56,7 @@ namespace Test.WinForms.Forms
         private int _currentPlotEndGlobalIndex = 0;
         private TrendLine? _selectedTrendLine = null; // 当前用户点击选中的趋势线 (以红色高亮显示)
         private int? _selectedKlineIndex = null;      // 🌟 当前用户点击选中的 K 线序号 (以青色光标高亮显示)
+        private ChartType _chartType = ChartType.Candlestick; // 🌟 当前图表渲染模式 (蜡烛图 / 收盘折线)
 
         // UI 控件定义
         private SplitContainer splitMain = null!;
@@ -71,6 +72,7 @@ namespace Test.WinForms.Forms
         private GroupBox grpData = null!;
         private ComboBox cboCoin = null!;
         private ComboBox cboInterval = null!;
+        private ComboBox cboChartType = null!;
         private DateTimePicker dtpStart = null!;
         private DateTimePicker dtpEnd = null!;
 
@@ -257,7 +259,7 @@ namespace Test.WinForms.Forms
             int top = 10;
 
             // Group 1: 基础数据设置
-            grpData = CreateGroupBox("1. 基础数据配置", top, 170);
+            grpData = CreateGroupBox("1. 基础数据配置", top, 205);
             {
                 var lblCoin = CreateLabel("交易对:", 15, 25);
                 cboCoin = new ComboBox { Location = new Point(90, 22), Width = 250, DropDownStyle = ComboBoxStyle.DropDownList };
@@ -269,13 +271,31 @@ namespace Test.WinForms.Forms
                 cboInterval.Items.AddRange(new object[] { "1m (1分钟)", "3m (3分钟)", "5m (5分钟)", "15m (15分钟)", "30m (30分钟)", "1h (1小时)", "2h (2小时)", "4h (4小时)", "1d (1天)" });
                 cboInterval.SelectedIndex = 0;
 
-                var lblStart = CreateLabel("起始日期:", 15, 93);
-                dtpStart = new DateTimePicker { Location = new Point(90, 90), Width = 250, Format = DateTimePickerFormat.Short, Value = new DateTime(2025, 1, 1) };
+                var lblChartType = CreateLabel("图表模式:", 15, 93);
+                cboChartType = new ComboBox
+                {
+                    Location = new Point(90, 90),
+                    Width = 250,
+                    DropDownStyle = ComboBoxStyle.DropDownList,
+                    BackColor = Color.FromArgb(30, 41, 59),
+                    ForeColor = Color.FromArgb(74, 222, 128), // Green 400
+                    Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold)
+                };
+                cboChartType.Items.AddRange(new object[] { "🕯️ 蜡烛图 (Candlestick)", "📈 收盘折线 (Line Chart)" });
+                cboChartType.SelectedIndex = 0;
+                cboChartType.SelectedIndexChanged += (s, e) =>
+                {
+                    _chartType = (ChartType)cboChartType.SelectedIndex;
+                    RedrawCurrentPlot(autoScale: false);
+                };
 
-                var lblEnd = CreateLabel("结束日期:", 15, 128);
-                dtpEnd = new DateTimePicker { Location = new Point(90, 125), Width = 250, Format = DateTimePickerFormat.Short, Value = new DateTime(2025, 1, 5) };
+                var lblStart = CreateLabel("起始日期:", 15, 128);
+                dtpStart = new DateTimePicker { Location = new Point(90, 125), Width = 250, Format = DateTimePickerFormat.Short, Value = new DateTime(2025, 1, 1) };
 
-                grpData.Controls.AddRange(new Control[] { lblCoin, cboCoin, lblInterval, cboInterval, lblStart, dtpStart, lblEnd, dtpEnd });
+                var lblEnd = CreateLabel("结束日期:", 15, 163);
+                dtpEnd = new DateTimePicker { Location = new Point(90, 160), Width = 250, Format = DateTimePickerFormat.Short, Value = new DateTime(2025, 1, 5) };
+
+                grpData.Controls.AddRange(new Control[] { lblCoin, cboCoin, lblInterval, cboInterval, lblChartType, cboChartType, lblStart, dtpStart, lblEnd, dtpEnd });
             }
             panelRight.Controls.Add(grpData);
             top += grpData.Height + 10;
@@ -823,7 +843,8 @@ namespace Test.WinForms.Forms
                             tradeSignals: snap.TradeSignals,
                             lineWidth: snap.LineWidth,
                             selectedTrendLine: _selectedTrendLine,
-                            selectedKlineIndex: _selectedKlineIndex);
+                            selectedKlineIndex: _selectedKlineIndex,
+                            chartType: _chartType);
 
                         formsPlot.Refresh();
                     }
@@ -1135,7 +1156,8 @@ namespace Test.WinForms.Forms
                         tradeSignals: strat.TradeSignals,
                         lineWidth: (float)request.LineWidth,
                         selectedTrendLine: _selectedTrendLine,
-                        selectedKlineIndex: _selectedKlineIndex);
+                        selectedKlineIndex: _selectedKlineIndex,
+                        chartType: _chartType);
 
                     formsPlot.Refresh();
 
@@ -1641,7 +1663,8 @@ namespace Test.WinForms.Forms
                         tradeSignals: snap.TradeSignals,
                         lineWidth: snap.LineWidth,
                         selectedTrendLine: _selectedTrendLine,
-                        selectedKlineIndex: _selectedKlineIndex);
+                        selectedKlineIndex: _selectedKlineIndex,
+                        chartType: _chartType);
 
                     formsPlot.Refresh();
                     return;
@@ -1679,7 +1702,8 @@ namespace Test.WinForms.Forms
                         tradeSignals: strat.TradeSignals,
                         lineWidth: (float)numLineWidth.Value,
                         selectedTrendLine: _selectedTrendLine,
-                        selectedKlineIndex: _selectedKlineIndex);
+                        selectedKlineIndex: _selectedKlineIndex,
+                        chartType: _chartType);
 
                     formsPlot.Refresh();
                 }
@@ -1894,6 +1918,7 @@ namespace Test.WinForms.Forms
             public int StartGlobalIndex { get; init; }
             public bool AutoScale { get; init; }
             public float LineWidth { get; init; } = 0.8f;
+            public ChartType ChartType { get; init; } = ChartType.Candlestick;
             public long SnapshotVersion { get; init; }
         }
 

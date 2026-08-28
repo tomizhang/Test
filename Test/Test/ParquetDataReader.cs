@@ -394,6 +394,11 @@ namespace Common
                     });
                 }
 
+                if (list.Count > 1)
+                {
+                    list.Sort((a, b) => a.Time == b.Time ? a.TradeId.CompareTo(b.TradeId) : a.Time.CompareTo(b.Time));
+                }
+
                 return list.ToArray();
             }
             catch (Exception ex)
@@ -464,6 +469,11 @@ namespace Common
                         TakerBuyVolume = tbVolume,
                         TakerBuyQuoteVolume = tbQuoteVolume
                     });
+                }
+
+                if (list.Count > 1)
+                {
+                    list.Sort((a, b) => a.OpenTime.CompareTo(b.OpenTime));
                 }
 
                 return list.ToArray();
