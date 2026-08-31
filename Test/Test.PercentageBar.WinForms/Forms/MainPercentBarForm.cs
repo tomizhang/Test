@@ -1,0 +1,1137 @@
+using Common;
+using Common.Helper;
+using DuckDB.NET.Data;
+using ScottPlot.WinForms;
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Drawing;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+using Test.PercentageBar.WinForms.Engine;
+using Test.PercentageBar.WinForms.Helper;
+using Test.PercentageBar.WinForms.Models;
+
+namespace Test.PercentageBar.WinForms.Forms
+{
+    public class MainPercentBarForm : Form
+    {
+        // 核心 K 线与统计数据 (零逐笔 Tick 内存堆积, 纯流式增量生成)
+        private List<PercentageKline> _currentBars = new List<PercentageKline>();
+        private PercentBarGenerationStats? _currentStats = null;
+        private int? _selectedBarIndex = null;
+        private PercentChartType _chartType = PercentChartType.Candlestick;
+
+        private CancellationTokenSource? _cts = null;
+        private bool _isRunning = false;
+        private volatile bool _isPaused = false;
+
+        // UI 日志防卡顿批量队列
+        private readonly ConcurrentQueue<(string Message, System.Drawing.Color Color)> _logQueue = new();
+        private System.Windows.Forms.Timer _uiRefreshTimer = null!;
+
+        // 界面控件
+        private SplitContainer splitMain = null!;
+        private SplitContainer splitLeft = null!;
+        private FormsPlot formsPlot = null!;
+        private RichTextBox txtLogs = null!;
+        private Panel panelLogHeader = null!;
+        private Label lblLogTitle = null!;
+        private Button btnClearLogs = null!;
+
+        // 右侧控制面板控件
+        private Panel panelRight = null!;
+        private GroupBox grpData = null!;
+        private ComboBox cboCoin = null!;
+        private DateTimePicker dtpStart = null!;
+        private DateTimePicker dtpEnd = null!;
+
+        private GroupBox grpParams = null!;
+        private ComboBox cboSliceUnit = null!;
+        private Label lblThreshold = null!;
+        private NumericUpDown numThresholdValue = null!;
+        private ComboBox cboBarMode = null!;
+        private ComboBox cboChartType = null!;
+        private FlowLayoutPanel flowPresets = null!;
+
+        private GroupBox grpAnalysis = null!;
+        private CheckBox chkShowPivots = null!;
+        private CheckBox chkShowGlobalHighLow = null!;
+        private CheckBox chkShowZigZag = null!;
+        private NumericUpDown numPivotWindow = null!;
+
+        private GroupBox grpPlayback = null!;
+        private ComboBox cboPlaybackMode = null!;
+        private ComboBox cboPlaybackSpeed = null!;
+        private CheckBox chkAutoFollow = null!;
+
+        private GroupBox grpControl = null!;
+        private Button btnStart = null!;
+        private Button btnPause = null!;
+        private Button btnStop = null!;
+        private Button btnResetAxes = null!;
+        private ProgressBar progressBar = null!;
+        private Label lblProgress = null!;
+
+        private Label lblStatTicks = null!;
+        private Label lblStatBars = null!;
+        private Label lblStatAvgDuration = null!;
+        private Label lblStatMinMaxDuration = null!;
+        private Label lblStatPriceRange = null!;
+        private Label lblStatThroughput = null!;
+
+        public MainPercentBarForm()
+        {
+            InitializeComponent();
+            ApplyDarkTheme();
+            SetupUiTimer();
+            AppendLogInternal("🚀 [系统就绪] 百分比变化 K 线生成与可视化引擎已加载，X 轴为纯 Bar 序号，支持逐条动态回放与毫秒级时间跨度计算。", System.Drawing.Color.FromArgb(74, 222, 128));
+        }
+
+        private void InitializeComponent()
+        {
+            this.Text = "量化分析 - 基于 Tick 数据的百分比变化 K 线生成引擎 (逐条动态回放 & 精确时间跨度)";
+            this.Size = new Size(1600, 950);
+            this.StartPosition = FormStartPosition.CenterScreen;
+            this.MinimumSize = new Size(1100, 700);
+
+            // 主分割容器 (左侧图表+日志, 右侧控制面板)
+            splitMain = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical,
+                SplitterDistance = 1200,
+                SplitterWidth = 6,
+                BackColor = System.Drawing.Color.FromArgb(30, 41, 59)
+            };
+
+            // 左侧分割容器 (上方图表, 下方日志控制台)
+            splitLeft = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Horizontal,
+                SplitterDistance = 620,
+                SplitterWidth = 6,
+                BackColor = System.Drawing.Color.FromArgb(30, 41, 59)
+            };
+
+            // 1. ScottPlot 5 图表控件
+            formsPlot = new FormsPlot
+            {
+                Dock = DockStyle.Fill,
+                BackColor = System.Drawing.Color.FromArgb(15, 23, 42)
+            };
+            formsPlot.MouseDown += OnFormsPlotMouseDown;
+            splitLeft.Panel1.Controls.Add(formsPlot);
+
+            // 2. 底部日志与点击详情控制台
+            panelLogHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 32,
+                BackColor = System.Drawing.Color.FromArgb(30, 41, 59)
+            };
+            lblLogTitle = new Label
+            {
+                Text = "📋 系统运行日志 & K 线点击全量指标分析输出看板",
+                ForeColor = System.Drawing.Color.FromArgb(226, 232, 240),
+                Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold),
+                Location = new Point(10, 6),
+                AutoSize = true
+            };
+            btnClearLogs = new Button
+            {
+                Text = "清空日志",
+                Size = new Size(80, 24),
+                Location = new Point(panelLogHeader.Width - 90, 4),
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                BackColor = System.Drawing.Color.FromArgb(51, 65, 85),
+                ForeColor = System.Drawing.Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Cursor = Cursors.Hand
+            };
+            btnClearLogs.FlatAppearance.BorderSize = 0;
+            btnClearLogs.Click += (s, e) => txtLogs.Clear();
+
+            panelLogHeader.Controls.AddRange(new Control[] { lblLogTitle, btnClearLogs });
+
+            txtLogs = new RichTextBox
+            {
+                Dock = DockStyle.Fill,
+                BackColor = System.Drawing.Color.FromArgb(15, 23, 42),
+                ForeColor = System.Drawing.Color.FromArgb(241, 245, 249),
+                Font = new Font("Consolas", 9.5F),
+                ReadOnly = true,
+                BorderStyle = BorderStyle.None
+            };
+
+            var panelLogContainer = new Panel { Dock = DockStyle.Fill };
+            panelLogContainer.Controls.Add(txtLogs);
+            panelLogContainer.Controls.Add(panelLogHeader);
+            splitLeft.Panel2.Controls.Add(panelLogContainer);
+
+            splitMain.Panel1.Controls.Add(splitLeft);
+
+            // 3. 右侧控制面板
+            BuildRightControlPanel();
+            splitMain.Panel2.Controls.Add(panelRight);
+
+            this.Controls.Add(splitMain);
+        }
+
+        private void BuildRightControlPanel()
+        {
+            panelRight = new Panel
+            {
+                Dock = DockStyle.Fill,
+                AutoScroll = true,
+                BackColor = System.Drawing.Color.FromArgb(15, 23, 42),
+                Padding = new Padding(10)
+            };
+
+            int top = 10;
+
+            // Group 1: 基础数据配置
+            grpData = CreateGroupBox("1. 基础数据配置", top, 140);
+            {
+                var lblCoin = CreateLabel("交易对:", 15, 25);
+                cboCoin = new ComboBox { Location = new Point(90, 22), Width = 250, DropDownStyle = ComboBoxStyle.DropDownList };
+                cboCoin.Items.AddRange(new object[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "XRPUSDT" });
+                cboCoin.SelectedIndex = 0;
+
+                var lblStart = CreateLabel("起始日期:", 15, 60);
+                dtpStart = new DateTimePicker { Location = new Point(90, 57), Width = 250, Format = DateTimePickerFormat.Short, Value = new DateTime(2025, 1, 1) };
+
+                var lblEnd = CreateLabel("结束日期:", 15, 95);
+                dtpEnd = new DateTimePicker { Location = new Point(90, 92), Width = 250, Format = DateTimePickerFormat.Short, Value = new DateTime(2025, 1, 5) };
+
+                grpData.Controls.AddRange(new Control[] { lblCoin, cboCoin, lblStart, dtpStart, lblEnd, dtpEnd });
+            }
+            panelRight.Controls.Add(grpData);
+            top += grpData.Height + 10;
+
+            // Group 2: 百分比 / 固定价格 K 线生成参数
+            grpParams = CreateGroupBox("2. K 线切分与聚合参数", top, 275);
+            {
+                var lblUnit = CreateLabel("切分方式:", 15, 25);
+                cboSliceUnit = new ComboBox
+                {
+                    Location = new Point(90, 22),
+                    Width = 250,
+                    DropDownStyle = ComboBoxStyle.DropDownList,
+                    BackColor = System.Drawing.Color.FromArgb(30, 41, 59),
+                    ForeColor = System.Drawing.Color.FromArgb(250, 204, 21),
+                    Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold)
+                };
+                cboSliceUnit.Items.AddRange(new object[]
+                {
+                    "📊 百分比涨跌切分 (%)",
+                    "💰 固定价格/价差切分 (USDT)"
+                });
+                cboSliceUnit.SelectedIndex = 0;
+                cboSliceUnit.SelectedIndexChanged += OnSliceUnitChanged;
+
+                lblThreshold = CreateLabel("涨跌幅度 (%):", 15, 60);
+                numThresholdValue = new NumericUpDown
+                {
+                    Location = new Point(130, 57),
+                    Width = 210,
+                    Minimum = 0.01m,
+                    Maximum = 100.0m,
+                    DecimalPlaces = 2,
+                    Increment = 0.1m,
+                    Value = 1.0m,
+                    Font = new Font("Microsoft YaHei", 9.5F, FontStyle.Bold),
+                    ForeColor = System.Drawing.Color.FromArgb(56, 189, 248) // Sky Blue
+                };
+                numThresholdValue.ValueChanged += (s, e) => AutoRegenerateIfLoaded();
+
+                var lblPresets = CreateLabel("快速预设:", 15, 95);
+                flowPresets = new FlowLayoutPanel
+                {
+                    Location = new Point(90, 92),
+                    Size = new Size(255, 34),
+                    BackColor = System.Drawing.Color.Transparent
+                };
+                UpdatePresetsUI();
+
+                var lblBarMode = CreateLabel("切分模式:", 15, 132);
+                cboBarMode = new ComboBox { Location = new Point(90, 129), Width = 250, DropDownStyle = ComboBoxStyle.DropDownList };
+                cboBarMode.Items.AddRange(new object[]
+                {
+                    "基于开盘价涨跌幅度 (From Open ±%)",
+                    "基于极值全振幅 (High-Low Range %)",
+                    "Renko 趋势砖块 (Renko %)"
+                });
+                cboBarMode.SelectedIndex = 0;
+                cboBarMode.SelectedIndexChanged += (s, e) => AutoRegenerateIfLoaded();
+
+                var lblChartType = CreateLabel("图表模式:", 15, 168);
+                cboChartType = new ComboBox
+                {
+                    Location = new Point(90, 165),
+                    Width = 250,
+                    DropDownStyle = ComboBoxStyle.DropDownList,
+                    BackColor = System.Drawing.Color.FromArgb(30, 41, 59),
+                    ForeColor = System.Drawing.Color.FromArgb(74, 222, 128),
+                    Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold)
+                };
+                cboChartType.Items.AddRange(new object[] { "🕯️ 蜡烛图 (Candlestick)", "📈 收盘折线 (Line Chart)" });
+                cboChartType.SelectedIndex = 0;
+                cboChartType.SelectedIndexChanged += (s, e) =>
+                {
+                    _chartType = (PercentChartType)cboChartType.SelectedIndex;
+                    RedrawCurrentPlot(autoScale: false, autoFollow: chkAutoFollow.Checked);
+                };
+
+                var lblTip = new Label
+                {
+                    Text = "💡 说明: X 轴不依赖时间，价格每达到设定的百分比或固定价差即生成一根 Bar。\n点击图表任意 K 线可查看其起止时间与耗时跨度。",
+                    Location = new Point(15, 205),
+                    Size = new Size(325, 55),
+                    ForeColor = System.Drawing.Color.FromArgb(148, 163, 184),
+                    Font = new Font("Microsoft YaHei", 8F)
+                };
+
+                grpParams.Controls.AddRange(new Control[]
+                {
+                    lblUnit, cboSliceUnit,
+                    lblThreshold, numThresholdValue,
+                    lblPresets, flowPresets,
+                    lblBarMode, cboBarMode,
+                    lblChartType, cboChartType,
+                    lblTip
+                });
+            }
+            panelRight.Controls.Add(grpParams);
+            top += grpParams.Height + 10;
+
+            // Group 3: 高低点位与形态分析
+            grpAnalysis = CreateGroupBox("3. 高低点位与形态分析", top, 130);
+            {
+                chkShowPivots = new CheckBox
+                {
+                    Text = "📍 显示局部波段高低点 (Swing High/Low)",
+                    Location = new Point(15, 24),
+                    AutoSize = true,
+                    Checked = true,
+                    ForeColor = System.Drawing.Color.FromArgb(226, 232, 240),
+                    Font = new Font("Microsoft YaHei", 8.5F)
+                };
+                chkShowPivots.CheckedChanged += (s, e) => RedrawCurrentPlot(autoScale: false, autoFollow: chkAutoFollow.Checked);
+
+                chkShowGlobalHighLow = new CheckBox
+                {
+                    Text = "👑 显示历史全局最高/最低水平线",
+                    Location = new Point(15, 48),
+                    AutoSize = true,
+                    Checked = true,
+                    ForeColor = System.Drawing.Color.FromArgb(250, 204, 21),
+                    Font = new Font("Microsoft YaHei", 8.5F)
+                };
+                chkShowGlobalHighLow.CheckedChanged += (s, e) => RedrawCurrentPlot(autoScale: false, autoFollow: chkAutoFollow.Checked);
+
+                chkShowZigZag = new CheckBox
+                {
+                    Text = "⚡ 显示波段高低趋势连线 (ZigZag)",
+                    Location = new Point(15, 72),
+                    AutoSize = true,
+                    Checked = true,
+                    ForeColor = System.Drawing.Color.FromArgb(56, 189, 248),
+                    Font = new Font("Microsoft YaHei", 8.5F)
+                };
+                chkShowZigZag.CheckedChanged += (s, e) => RedrawCurrentPlot(autoScale: false, autoFollow: chkAutoFollow.Checked);
+
+                var lblWin = CreateLabel("确认窗口(Bar):", 15, 98);
+                numPivotWindow = new NumericUpDown
+                {
+                    Location = new Point(125, 96),
+                    Width = 65,
+                    Minimum = 1,
+                    Maximum = 20,
+                    Value = 3,
+                    Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold),
+                    ForeColor = System.Drawing.Color.FromArgb(56, 189, 248)
+                };
+                numPivotWindow.ValueChanged += (s, e) => RedrawCurrentPlot(autoScale: false, autoFollow: chkAutoFollow.Checked);
+
+                var lblWinTip = new Label
+                {
+                    Text = "(左右极值确认根数)",
+                    Location = new Point(195, 98),
+                    AutoSize = true,
+                    ForeColor = System.Drawing.Color.FromArgb(148, 163, 184),
+                    Font = new Font("Microsoft YaHei", 8F)
+                };
+
+                grpAnalysis.Controls.AddRange(new Control[]
+                {
+                    chkShowPivots,
+                    chkShowGlobalHighLow,
+                    chkShowZigZag,
+                    lblWin, numPivotWindow, lblWinTip
+                });
+            }
+            panelRight.Controls.Add(grpAnalysis);
+            top += grpAnalysis.Height + 10;
+
+            // Group 4: 逐条回放与速度设置
+            grpPlayback = CreateGroupBox("4. 动态回放与推进控制", top, 135);
+            {
+                var lblPlayMode = CreateLabel("回放方式:", 15, 25);
+                cboPlaybackMode = new ComboBox
+                {
+                    Location = new Point(90, 22),
+                    Width = 250,
+                    DropDownStyle = ComboBoxStyle.DropDownList,
+                    ForeColor = System.Drawing.Color.FromArgb(56, 189, 248),
+                    Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold)
+                };
+                cboPlaybackMode.Items.AddRange(new object[]
+                {
+                    "🎬 逐条动态回放 (Real-time Playback)",
+                    "⚡ 极速生成 (Batch Full Speed)"
+                });
+                cboPlaybackMode.SelectedIndex = 0;
+
+                var lblSpeed = CreateLabel("回放速度:", 15, 60);
+                cboPlaybackSpeed = new ComboBox
+                {
+                    Location = new Point(90, 57),
+                    Width = 250,
+                    DropDownStyle = ComboBoxStyle.DropDownList
+                };
+                cboPlaybackSpeed.Items.AddRange(new object[]
+                {
+                    "⚡ 极速回放 (每20根批量刷新/10ms)",
+                    "🚀 快速回放 (每5根批量刷新/15ms)",
+                    "🎬 流畅回放 (逐根平滑刷新/20ms)",
+                    "🐢 慢速步进 (逐根刷新/100ms)",
+                    "🔍 极慢沉浸 (逐根刷新/300ms)"
+                });
+                cboPlaybackSpeed.SelectedIndex = 2; // 默认流畅回放
+
+                chkAutoFollow = new CheckBox
+                {
+                    Text = "回放时图表自动跟随最新 K 线 (Auto-Follow)",
+                    Location = new Point(15, 95),
+                    AutoSize = true,
+                    Checked = true,
+                    ForeColor = System.Drawing.Color.FromArgb(226, 232, 240),
+                    Font = new Font("Microsoft YaHei", 8.5F)
+                };
+                chkAutoFollow.CheckedChanged += (s, e) =>
+                {
+                    if (chkAutoFollow.Checked && _currentBars.Count > 0)
+                    {
+                        RedrawCurrentPlot(autoScale: false, autoFollow: true);
+                    }
+                };
+
+                grpPlayback.Controls.AddRange(new Control[]
+                {
+                    lblPlayMode, cboPlaybackMode,
+                    lblSpeed, cboPlaybackSpeed,
+                    chkAutoFollow
+                });
+            }
+            panelRight.Controls.Add(grpPlayback);
+            top += grpPlayback.Height + 10;
+
+            // Group 5: 执行控制与统计看板
+            grpControl = CreateGroupBox("5. 执行控制与统计看板", top, 380);
+            {
+                btnStart = new Button
+                {
+                    Text = "▶ 开始回放",
+                    Location = new Point(15, 25),
+                    Size = new Size(100, 36),
+                    BackColor = System.Drawing.Color.FromArgb(5, 150, 105), // Green 600
+                    ForeColor = System.Drawing.Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold),
+                    Cursor = Cursors.Hand
+                };
+                btnStart.FlatAppearance.BorderSize = 0;
+                btnStart.Click += async (s, e) => await StartGenerateAsync();
+
+                btnPause = new Button
+                {
+                    Text = "⏸ 暂停",
+                    Location = new Point(122, 25),
+                    Size = new Size(72, 36),
+                    BackColor = System.Drawing.Color.FromArgb(217, 119, 6), // Amber 600
+                    ForeColor = System.Drawing.Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold),
+                    Enabled = false,
+                    Cursor = Cursors.Hand
+                };
+                btnPause.FlatAppearance.BorderSize = 0;
+                btnPause.Click += (s, e) => TogglePause();
+
+                btnStop = new Button
+                {
+                    Text = "⏹ 停止",
+                    Location = new Point(200, 25),
+                    Size = new Size(68, 36),
+                    BackColor = System.Drawing.Color.FromArgb(220, 38, 38), // Red 600
+                    ForeColor = System.Drawing.Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold),
+                    Enabled = false,
+                    Cursor = Cursors.Hand
+                };
+                btnStop.FlatAppearance.BorderSize = 0;
+                btnStop.Click += (s, e) => StopGenerate();
+
+                btnResetAxes = new Button
+                {
+                    Text = "🔍 复位",
+                    Location = new Point(274, 25),
+                    Size = new Size(66, 36),
+                    BackColor = System.Drawing.Color.FromArgb(14, 116, 144), // Cyan 700
+                    ForeColor = System.Drawing.Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold),
+                    Cursor = Cursors.Hand
+                };
+                btnResetAxes.FlatAppearance.BorderSize = 0;
+                btnResetAxes.Click += (s, e) =>
+                {
+                    RedrawCurrentPlot(autoScale: true, autoFollow: false);
+                };
+
+                progressBar = new ProgressBar
+                {
+                    Location = new Point(15, 68),
+                    Size = new Size(325, 14),
+                    Style = ProgressBarStyle.Continuous
+                };
+
+                lblProgress = new Label
+                {
+                    Text = "就绪 (等待执行)",
+                    Location = new Point(15, 86),
+                    Size = new Size(325, 20),
+                    ForeColor = System.Drawing.Color.FromArgb(148, 163, 184),
+                    Font = new Font("Microsoft YaHei", 8F)
+                };
+
+                // 统计指标 Labels
+                lblStatTicks = CreateStatLabel("读取 Tick: -- | 耗时: --", 112);
+                lblStatBars = CreateStatLabel("生成 K 线: -- (纯序号 X 轴)", 144);
+                lblStatAvgDuration = CreateStatLabel("平均时间跨度: --", 176);
+                lblStatMinMaxDuration = CreateStatLabel("最快突破: -- | 最长盘整: --", 208);
+                lblStatPriceRange = CreateStatLabel("最高价: -- | 最低价: --", 240);
+                lblStatThroughput = CreateStatLabel("吞吐速率: -- ticks/s", 272);
+
+                var lblDetailTip = new Label
+                {
+                    Text = "🎯 交互说明: 在图表中鼠标左键点击任意一根百分比 K 线，底部日志控制台将即时输出该 Bar 的完整四值行情、精确时间跨度、Tick 笔数、量能与买卖力量分解分析！",
+                    Location = new Point(15, 305),
+                    Size = new Size(325, 65),
+                    ForeColor = System.Drawing.Color.FromArgb(250, 204, 21), // Yellow 400
+                    Font = new Font("Microsoft YaHei", 8F)
+                };
+
+                grpControl.Controls.AddRange(new Control[]
+                {
+                    btnStart, btnPause, btnStop, btnResetAxes, progressBar, lblProgress,
+                    lblStatTicks, lblStatBars, lblStatAvgDuration, lblStatMinMaxDuration,
+                    lblStatPriceRange, lblStatThroughput, lblDetailTip
+                });
+            }
+            panelRight.Controls.Add(grpControl);
+        }
+
+        private void SetupUiTimer()
+        {
+            _uiRefreshTimer = new System.Windows.Forms.Timer { Interval = 50 };
+            _uiRefreshTimer.Tick += (s, e) =>
+            {
+                int count = 0;
+                while (_logQueue.TryDequeue(out var item) && count < 25)
+                {
+                    AppendLogInternal(item.Message, item.Color);
+                    count++;
+                }
+            };
+            _uiRefreshTimer.Start();
+        }
+
+        private void TogglePause()
+        {
+            if (!_isRunning) return;
+
+            _isPaused = !_isPaused;
+            if (_isPaused)
+            {
+                btnPause.Text = "▶ 继续";
+                btnPause.BackColor = System.Drawing.Color.FromArgb(16, 185, 129); // Emerald 500
+                lblProgress.Text = "已暂停回放 (点击继续恢复)";
+                _logQueue.Enqueue(("[回放状态] 回放已暂停。", System.Drawing.Color.FromArgb(250, 204, 21)));
+            }
+            else
+            {
+                btnPause.Text = "⏸ 暂停";
+                btnPause.BackColor = System.Drawing.Color.FromArgb(217, 119, 6); // Amber 600
+                lblProgress.Text = "正在继续逐条回放...";
+                _logQueue.Enqueue(("[回放状态] 回放已恢复继续推进。", System.Drawing.Color.FromArgb(74, 222, 128)));
+            }
+        }
+
+        private void UpdatePresetsUI()
+        {
+            flowPresets.Controls.Clear();
+            var sliceUnit = (SliceUnitType)(cboSliceUnit?.SelectedIndex ?? 0);
+
+            decimal[] presets = sliceUnit == SliceUnitType.Percentage
+                ? new decimal[] { 0.2m, 0.5m, 1.0m, 2.0m, 3.0m, 5.0m }
+                : new decimal[] { 20m, 50m, 100m, 200m, 500m, 1000m };
+
+            foreach (var pVal in presets)
+            {
+                string text = sliceUnit == SliceUnitType.Percentage ? $"{pVal}%" : $"{pVal:F0}U";
+                var btnPreset = new Button
+                {
+                    Text = text,
+                    Size = new Size(38, 26),
+                    BackColor = System.Drawing.Color.FromArgb(51, 65, 85),
+                    ForeColor = System.Drawing.Color.FromArgb(241, 245, 249),
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Microsoft YaHei", 7.5F, FontStyle.Bold),
+                    Cursor = Cursors.Hand,
+                    Margin = new Padding(1)
+                };
+                btnPreset.FlatAppearance.BorderSize = 0;
+                decimal targetVal = pVal;
+                btnPreset.Click += (s, e) =>
+                {
+                    numThresholdValue.Value = targetVal;
+                };
+                flowPresets.Controls.Add(btnPreset);
+            }
+        }
+
+        private void OnSliceUnitChanged(object? sender, EventArgs e)
+        {
+            var sliceUnit = (SliceUnitType)cboSliceUnit.SelectedIndex;
+            if (sliceUnit == SliceUnitType.Percentage)
+            {
+                lblThreshold.Text = "涨跌幅度 (%):";
+                numThresholdValue.DecimalPlaces = 2;
+                numThresholdValue.Minimum = 0.01m;
+                numThresholdValue.Maximum = 100.0m;
+                numThresholdValue.Increment = 0.1m;
+                if (numThresholdValue.Value > 50m || numThresholdValue.Value < 0.01m)
+                {
+                    numThresholdValue.Value = 1.0m;
+                }
+
+                int prevModeIdx = cboBarMode.SelectedIndex;
+                cboBarMode.Items.Clear();
+                cboBarMode.Items.AddRange(new object[]
+                {
+                    "基于开盘价涨跌幅度 (From Open ±%)",
+                    "基于极值全振幅 (High-Low Range %)",
+                    "Renko 趋势砖块 (Renko %)"
+                });
+                cboBarMode.SelectedIndex = Math.Clamp(prevModeIdx, 0, 2);
+            }
+            else
+            {
+                lblThreshold.Text = "固定价差 (USDT):";
+                numThresholdValue.DecimalPlaces = 2;
+                numThresholdValue.Minimum = 0.0001m;
+                numThresholdValue.Maximum = 1000000.0m;
+                numThresholdValue.Increment = 10.0m;
+                if (numThresholdValue.Value <= 5.0m)
+                {
+                    numThresholdValue.Value = 100.0m;
+                }
+
+                int prevModeIdx = cboBarMode.SelectedIndex;
+                cboBarMode.Items.Clear();
+                cboBarMode.Items.AddRange(new object[]
+                {
+                    "开盘基准固定价差 (From Open ±USDT)",
+                    "极值全价差振幅 (High-Low Range USDT)",
+                    "Renko 固定价差砖块 (Renko USDT)"
+                });
+                cboBarMode.SelectedIndex = Math.Clamp(prevModeIdx, 0, 2);
+            }
+
+            UpdatePresetsUI();
+            AutoRegenerateIfLoaded();
+        }
+
+        private async Task StartGenerateAsync()
+        {
+            if (_isRunning) return;
+
+            string coin = cboCoin.SelectedItem?.ToString() ?? "BTCUSDT";
+            DateTime startDate = dtpStart.Value.Date;
+            DateTime endDate = dtpEnd.Value.Date;
+            SliceUnitType sliceUnit = (SliceUnitType)cboSliceUnit.SelectedIndex;
+            decimal thresholdValue = numThresholdValue.Value;
+            PercentBarMode mode = (PercentBarMode)cboBarMode.SelectedIndex;
+            bool isStreamingMode = cboPlaybackMode.SelectedIndex == 0;
+
+            if (startDate > endDate)
+            {
+                MessageBox.Show("起始日期不能大于结束日期！", "参数错误", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            _isRunning = true;
+            _isPaused = false;
+            btnStart.Enabled = false;
+            btnPause.Enabled = isStreamingMode;
+            btnPause.Text = "⏸ 暂停";
+            btnPause.BackColor = System.Drawing.Color.FromArgb(217, 119, 6);
+            btnStop.Enabled = true;
+            progressBar.Value = 0;
+            lblProgress.Text = "正在启动分批流式读取与生成...";
+
+            _cts = new CancellationTokenSource();
+            var ct = _cts.Token;
+
+            _currentBars.Clear();
+            _selectedBarIndex = null;
+
+            int batchYield = 1;
+            int sleepMs = 20;
+
+            if (isStreamingMode)
+            {
+                switch (cboPlaybackSpeed.SelectedIndex)
+                {
+                    case 0: batchYield = 20; sleepMs = 10; break;
+                    case 1: batchYield = 5; sleepMs = 15; break;
+                    case 2: batchYield = 1; sleepMs = 20; break;
+                    case 3: batchYield = 1; sleepMs = 100; break;
+                    case 4: batchYield = 1; sleepMs = 300; break;
+                }
+            }
+
+            string unitDesc = sliceUnit == SliceUnitType.Percentage ? $"±{thresholdValue:F2}%" : $"±{thresholdValue:F2} USDT";
+            _logQueue.Enqueue(($"[引擎启动] 正在以 {unitDesc} 切分基准开始【分批流式{(isStreamingMode ? "动态回放" : "极速生成")}】(币种: {coin}, 日期: {startDate:yyyy-MM-dd} ~ {endDate:yyyy-MM-dd})...", System.Drawing.Color.FromArgb(250, 204, 21)));
+
+            var session = new IncrementalPercentageBarSession(thresholdValue, sliceUnit, mode);
+            long lastPlotRefreshTime = 0;
+            var localSw = Stopwatch.StartNew();
+            int totalDaysLoaded = 0;
+
+            try
+            {
+                await foreach (var batch in TickBatchStreamReader.StreamDayBatchesAsync(
+                    coin,
+                    startDate,
+                    endDate,
+                    ct,
+                    msg => _logQueue.Enqueue((msg, System.Drawing.Color.FromArgb(250, 204, 21)))))
+                {
+                    if (ct.IsCancellationRequested) break;
+
+                    totalDaysLoaded++;
+                    _logQueue.Enqueue(($"[分批读取 #{batch.DayIndex}/{batch.TotalDays}] {batch.Date:yyyy-MM-dd} 读取 {batch.Ticks.Length:N0} 笔 Tick (耗时 {batch.ReadElapsedMs} ms)，正在增量生成...", System.Drawing.Color.FromArgb(56, 189, 248)));
+
+                    await session.ProcessBatchAsync(
+                        batch.Ticks,
+                        async (bar, processedTicks, stats) =>
+                        {
+                            _currentBars.Add(bar);
+                            _currentStats = stats;
+
+                            if (isStreamingMode)
+                            {
+                                long now = localSw.ElapsedMilliseconds;
+                                if (now - lastPlotRefreshTime >= 25 || _currentBars.Count <= 5)
+                                {
+                                    lastPlotRefreshTime = now;
+                                    await this.InvokeAsync(() =>
+                                    {
+                                        int pct = (int)((double)batch.DayIndex / batch.TotalDays * 100);
+                                        progressBar.Value = Math.Clamp(pct, 0, 100);
+                                        lblProgress.Text = $"第 {batch.DayIndex}/{batch.TotalDays} 天 ({batch.Date:MM-dd}) | 已生成: {_currentBars.Count:N0} 根 Bar";
+
+                                        UpdateStatLabels(stats);
+                                        RedrawCurrentPlot(autoScale: false, autoFollow: true);
+                                    });
+                                }
+                            }
+                        },
+                        () => _isPaused,
+                        ct,
+                        batchYieldBars: batchYield,
+                        sleepIntervalMs: isStreamingMode ? sleepMs : 0);
+
+                    if (!isStreamingMode)
+                    {
+                        await this.InvokeAsync(() =>
+                        {
+                            int pct = (int)((double)batch.DayIndex / batch.TotalDays * 100);
+                            progressBar.Value = Math.Clamp(pct, 0, 100);
+                            lblProgress.Text = $"已批量处理 {batch.DayIndex}/{batch.TotalDays} 天 ({batch.Date:yyyy-MM-dd}) | K线: {_currentBars.Count:N0} 根";
+                            UpdateStatLabels(session.Stats);
+                        });
+                    }
+                }
+
+                if (totalDaysLoaded == 0 && !ct.IsCancellationRequested)
+                {
+                    _logQueue.Enqueue(($"[警告] 未在本地找到 {coin} 在 {startDate:yyyy-MM-dd} ~ {endDate:yyyy-MM-dd} 的 Tick Parquet 数据文件！", System.Drawing.Color.FromArgb(244, 63, 94)));
+                    MessageBox.Show($"未找到 {coin} 在 {startDate:yyyy-MM-dd} ~ {endDate:yyyy-MM-dd} 的 Tick Parquet 数据文件，请检查数据目录。", "无数据", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                if (!ct.IsCancellationRequested)
+                {
+                    var lastBar = session.FlushLastBar();
+                    if (lastBar.HasValue)
+                    {
+                        _currentBars.Add(lastBar.Value);
+                    }
+                    _currentStats = session.Stats;
+
+                    await this.InvokeAsync(() =>
+                    {
+                        UpdateStatLabels(session.Stats);
+                        if (chkAutoFollow.Checked)
+                        {
+                            RedrawCurrentPlot(autoScale: false, autoFollow: true);
+                        }
+                        else
+                        {
+                            RedrawCurrentPlot(autoScale: true, autoFollow: false);
+                        }
+                        progressBar.Value = 100;
+                        lblProgress.Text = $"全部分批处理完毕！共 {_currentBars.Count:N0} 根 K 线";
+                    });
+
+                    _logQueue.Enqueue(($"[完成] 成功分批处理完成！生成 {_currentBars.Count:N0} 根 K 线，平均每根跨度: {FormatTimeSpan(_currentStats?.AverageBarDuration ?? TimeSpan.Zero)} | 速率: {_currentStats?.TicksPerSecond:N0} ticks/s", System.Drawing.Color.FromArgb(74, 222, 128)));
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                _logQueue.Enqueue(("[操作中断] 用户停止了分批生成与回放。", System.Drawing.Color.FromArgb(250, 204, 21)));
+                lblProgress.Text = "已停止";
+            }
+            catch (Exception ex)
+            {
+                _logQueue.Enqueue(($"[异常错误] {ex.Message}\n{ex.StackTrace}", System.Drawing.Color.FromArgb(244, 63, 94)));
+                MessageBox.Show($"生成异常: {ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                _isRunning = false;
+                _isPaused = false;
+                btnStart.Enabled = true;
+                btnPause.Enabled = false;
+                btnPause.Text = "⏸ 暂停";
+                btnStop.Enabled = false;
+            }
+        }
+
+        private void UpdateStatLabels(PercentBarGenerationStats stats)
+        {
+            lblStatTicks.Text = $"读取 Tick: {stats.TotalTicks:N0} 笔 | 耗时: {stats.ElapsedMilliseconds} ms";
+            lblStatBars.Text = $"生成 K 线: {stats.TotalBars:N0} 根 (纯序号 X 轴)";
+            lblStatAvgDuration.Text = $"平均时间跨度: {FormatTimeSpan(stats.AverageBarDuration)}";
+            lblStatMinMaxDuration.Text = $"最快突破: {FormatTimeSpan(stats.MinBarDuration)} | 最长: {FormatTimeSpan(stats.MaxBarDuration)}";
+            lblStatPriceRange.Text = $"最高价: {stats.MaxPrice:F2} | 最低价: {stats.MinPrice:F2}";
+            lblStatThroughput.Text = $"吞吐速率: {stats.TicksPerSecond:N0} ticks/s";
+        }
+
+        private void AutoRegenerateIfLoaded()
+        {
+            if (_currentBars.Count > 0 && !_isRunning)
+            {
+                _ = StartGenerateAsync();
+            }
+        }
+
+        private void StopGenerate()
+        {
+            _cts?.Cancel();
+        }
+
+        private void RedrawCurrentPlot(bool autoScale = false, bool autoFollow = false)
+        {
+            if (_currentBars.Count == 0 || formsPlot.IsDisposed) return;
+
+            var oldLimits = formsPlot.Plot.Axes.GetLimits();
+
+            string coin = cboCoin.SelectedItem?.ToString() ?? "BTCUSDT";
+            SliceUnitType sliceUnit = (SliceUnitType)cboSliceUnit.SelectedIndex;
+            decimal threshold = numThresholdValue.Value;
+            PercentBarMode mode = (PercentBarMode)cboBarMode.SelectedIndex;
+            string unitDesc = sliceUnit == SliceUnitType.Percentage ? $"涨跌每达到 ±{threshold:F2}%" : $"价格每变化 ±{threshold:F2} USDT";
+
+            PercentPlotHelper.BuildPlot(
+                formsPlot.Plot,
+                _currentBars,
+                coin: coin,
+                thresholdValue: threshold,
+                sliceUnit: sliceUnit,
+                mode: mode,
+                stats: _currentStats,
+                title: $"{coin} 基于 Tick 数据的 {(sliceUnit == SliceUnitType.Percentage ? "百分比" : "固定价格")} K 线走势图 ({unitDesc} 递增)",
+                autoScaleAxes: autoScale,
+                selectedBarIndex: _selectedBarIndex,
+                chartType: _chartType,
+                showPivots: chkShowPivots?.Checked ?? true,
+                showGlobalHighLow: chkShowGlobalHighLow?.Checked ?? true,
+                showZigZag: chkShowZigZag?.Checked ?? true,
+                pivotWindow: (int)(numPivotWindow?.Value ?? 3));
+
+            int total = _currentBars.Count;
+
+            if (autoFollow && chkAutoFollow.Checked && total > 0)
+            {
+                int windowSize = 75;
+                int startIdx = Math.Max(0, total - windowSize);
+                decimal visibleMinPrice = decimal.MaxValue;
+                decimal visibleMaxPrice = decimal.MinValue;
+                double visibleMaxVolume = 0;
+
+                for (int b = startIdx; b < total; b++)
+                {
+                    var k = _currentBars[b];
+                    if (k.Low < visibleMinPrice) visibleMinPrice = k.Low;
+                    if (k.High > visibleMaxPrice) visibleMaxPrice = k.High;
+                    double v = (double)k.Volume;
+                    if (v > visibleMaxVolume) visibleMaxVolume = v;
+                }
+
+                if (visibleMinPrice <= visibleMaxPrice && visibleMinPrice > 0)
+                {
+                    double padding = (double)(visibleMaxPrice - visibleMinPrice) * 0.12;
+                    if (padding <= 0) padding = (double)visibleMaxPrice * 0.01;
+                    double yMin = (double)visibleMinPrice - padding;
+                    double yMax = (double)visibleMaxPrice + padding;
+                    double xMin = Math.Max(-0.5, total - windowSize);
+                    double xMax = total + 3.5;
+
+                    formsPlot.Plot.Axes.SetLimits(xMin, xMax, yMin, yMax);
+
+                    if (visibleMaxVolume <= 0) visibleMaxVolume = 1;
+                    formsPlot.Plot.Axes.SetLimitsY(0, visibleMaxVolume * 3.8, formsPlot.Plot.Axes.Right);
+                }
+                else
+                {
+                    formsPlot.Plot.Axes.AutoScale();
+                }
+            }
+            else if (!autoScale && oldLimits.Right > oldLimits.Left && oldLimits.Top > oldLimits.Bottom)
+            {
+                formsPlot.Plot.Axes.SetLimits(oldLimits);
+            }
+
+            formsPlot.Refresh();
+        }
+
+        private void OnFormsPlotMouseDown(object? sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left || _currentBars.Count == 0) return;
+
+            try
+            {
+                var mouseCoord = formsPlot.Plot.GetCoordinates(new ScottPlot.Pixel(e.X, e.Y));
+                int targetIndex = (int)Math.Round(mouseCoord.X);
+
+                if (targetIndex >= 0 && targetIndex < _currentBars.Count)
+                {
+                    var bar = _currentBars[targetIndex];
+
+                    var pixelClose = formsPlot.Plot.GetPixel(new ScottPlot.Coordinates(targetIndex, (double)bar.Close));
+                    var pixelHigh = formsPlot.Plot.GetPixel(new ScottPlot.Coordinates(targetIndex, (double)bar.High));
+                    var pixelLow = formsPlot.Plot.GetPixel(new ScottPlot.Coordinates(targetIndex, (double)bar.Low));
+
+                    double topY = Math.Min(pixelHigh.Y, pixelLow.Y) - 30;
+                    double bottomY = Math.Max(pixelHigh.Y, pixelLow.Y) + 30;
+                    double leftX = pixelClose.X - 25;
+                    double rightX = pixelClose.X + 25;
+
+                    if (e.X >= leftX && e.X <= rightX && e.Y >= topY && e.Y <= bottomY)
+                    {
+                        _selectedBarIndex = targetIndex;
+                        OutputBarDetails(bar);
+                        RedrawCurrentPlot(autoScale: false);
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        /// <summary>
+        /// 🌟 全量输出点击 K 线的所有明细指标到日志栏 (包含高低极值定位、精确时间跨度、价格行情、波动形态与逐笔量能)
+        /// </summary>
+        private void OutputBarDetails(in PercentageKline bar)
+        {
+            bool isBull = bar.Close >= bar.Open;
+            string barType = isBull ? "🟢 阳线 (上涨突破)" : "🔴 阴线 (下跌突破)";
+            var themeColor = isBull ? System.Drawing.Color.FromArgb(74, 222, 128) : System.Drawing.Color.FromArgb(244, 63, 94);
+
+            decimal body = Math.Abs(bar.Close - bar.Open);
+            decimal upperShadow = bar.High - Math.Max(bar.Open, bar.Close);
+            decimal lowerShadow = Math.Min(bar.Open, bar.Close) - bar.Low;
+            decimal totalRange = bar.High - bar.Low;
+            decimal bodyRatio = totalRange > 0 ? (body / totalRange) * 100m : 100m;
+            decimal upperRatio = totalRange > 0 ? (upperShadow / totalRange) * 100m : 0m;
+            decimal lowerRatio = totalRange > 0 ? (lowerShadow / totalRange) * 100m : 0m;
+
+            decimal takerBuyPct = bar.Volume > 0 ? (bar.TakerBuyVolume / bar.Volume) * 100m : 0m;
+            decimal takerSellPct = 100m - takerBuyPct;
+            decimal takerSellVol = Math.Max(0m, bar.Volume - bar.TakerBuyVolume);
+            decimal takerSellQuote = Math.Max(0m, bar.QuoteVolume - bar.TakerBuyQuoteVolume);
+            decimal avgPricePerTrade = bar.TradeCount > 0 ? bar.QuoteVolume / bar.TradeCount : 0m;
+            double tickDensity = bar.Duration.TotalSeconds > 0 ? bar.TickCount / bar.Duration.TotalSeconds : bar.TickCount;
+
+            _logQueue.Enqueue(("\n╔══════════════════════════════════════════════════════════════════════════════════════════", themeColor));
+            _logQueue.Enqueue(($"║ 📊【百分比 K 线完整信息报告】 Bar #{bar.BarIndex}  {barType}", themeColor));
+
+            // 高低点位分析与定位
+            int currentBarIdx = bar.BarIndex;
+            var pivotAnalysis = PivotDetector.CalculatePivots(_currentBars, window: (int)(numPivotWindow?.Value ?? 3), alternateHighLow: true);
+            var matchedPivot = pivotAnalysis.Pivots.Find(p => p.BarIndex == currentBarIdx);
+            bool isGlobalHigh = pivotAnalysis.GlobalHigh.HasValue && pivotAnalysis.GlobalHigh.Value.BarIndex == currentBarIdx;
+            bool isGlobalLow = pivotAnalysis.GlobalLow.HasValue && pivotAnalysis.GlobalLow.Value.BarIndex == currentBarIdx;
+
+            if (isGlobalHigh || isGlobalLow || matchedPivot.BarIndex == currentBarIdx)
+            {
+                _logQueue.Enqueue(("╠──────────────────────────────────────────────────────────────────────────────────────────", System.Drawing.Color.FromArgb(71, 85, 105)));
+                string extremeTag = isGlobalHigh ? "👑 历史最高点 (Global High)" : (isGlobalLow ? "👑 历史最低点 (Global Low)" : "");
+                string pivotTag = matchedPivot.Type == PivotPointType.High ? "🔴 局部波峰高点 (Swing High)" : "🟢 局部波谷低点 (Swing Low)";
+                string diffInfo = matchedPivot.BarsFromPrev > 0
+                    ? $" | 距前一拐点: {matchedPivot.BarsFromPrev} 根Bar, 波动 {matchedPivot.PriceChangeFromPrev:+0.00;-0.00;0.00} USDT ({matchedPivot.PriceChangePctFromPrev:+0.00;-0.00;0.00}%)"
+                    : "";
+
+                string finalMsg = string.IsNullOrEmpty(extremeTag)
+                    ? $"║ 🎯【高低极值定位】: {pivotTag}{diffInfo}"
+                    : $"║ 🎯【高低极值定位】: {extremeTag} ({pivotTag}){diffInfo}";
+
+                _logQueue.Enqueue((finalMsg, System.Drawing.Color.FromArgb(250, 204, 21)));
+            }
+
+            _logQueue.Enqueue(("╠──────────────────────────────────────────────────────────────────────────────────────────", System.Drawing.Color.FromArgb(71, 85, 105)));
+            _logQueue.Enqueue(($"║ ⏱️ 🌟【精确时间跨度】: {bar.GetFormattedDuration()} (耗时共计 {bar.Duration.TotalSeconds:F3} 秒, {bar.Duration.TotalMilliseconds:N0} ms)", System.Drawing.Color.FromArgb(250, 204, 21)));
+            _logQueue.Enqueue(($"║    • 开盘时间 (UTC+0): {bar.OpenDateTime:yyyy-MM-dd HH:mm:ss.fff}  |  本地: {bar.OpenDateTime.ToLocalTime():yyyy-MM-dd HH:mm:ss.fff}", System.Drawing.Color.FromArgb(241, 245, 249)));
+            _logQueue.Enqueue(($"║    • 收盘时间 (UTC+0): {bar.CloseDateTime:yyyy-MM-dd HH:mm:ss.fff}  |  本地: {bar.CloseDateTime.ToLocalTime():yyyy-MM-dd HH:mm:ss.fff}", System.Drawing.Color.FromArgb(241, 245, 249)));
+            _logQueue.Enqueue(("╠──────────────────────────────────────────────────────────────────────────────────────────", System.Drawing.Color.FromArgb(71, 85, 105)));
+            _logQueue.Enqueue(($"║ 💰【四值价格行情】: 开盘价={bar.Open:F2}  |  最高价={bar.High:F2}  |  最低价={bar.Low:F2}  |  收盘价={bar.Close:F2}", System.Drawing.Color.FromArgb(241, 245, 249)));
+            _logQueue.Enqueue(($"║    • 涨跌额与幅度: 净涨跌={bar.PriceChange:+0.00;-0.00;0.00}  |  涨跌幅={bar.PriceChangePct:+0.00;-0.00;0.00}%  |  极值全振幅={bar.PriceAmplitudePct:F2}%", themeColor));
+            _logQueue.Enqueue(($"║    • K线结构分解: 实体={body:F2} ({bodyRatio:F1}%)  |  上影线={upperShadow:F2} ({upperRatio:F1}%)  |  下影线={lowerShadow:F2} ({lowerRatio:F1}%)", System.Drawing.Color.FromArgb(226, 232, 240)));
+            _logQueue.Enqueue(("╠──────────────────────────────────────────────────────────────────────────────────────────", System.Drawing.Color.FromArgb(71, 85, 105)));
+            _logQueue.Enqueue(($"║ ⚡【逐笔撮合成交与量能分析】", System.Drawing.Color.FromArgb(56, 189, 248)));
+            _logQueue.Enqueue(($"║    • 涵盖 Tick 笔数: {bar.TickCount:N0} 笔 (Tick 撮合频率密度: {tickDensity:F1} 笔/秒)", System.Drawing.Color.FromArgb(56, 189, 248)));
+            _logQueue.Enqueue(($"║    • 基础币总成交量: {bar.Volume:N4} (Base Coin)", System.Drawing.Color.FromArgb(241, 245, 249)));
+            _logQueue.Enqueue(($"║    • 计价币总成交额: {bar.QuoteVolume:N2} USDT (总笔数: {bar.TradeCount:N0} 笔, 均笔成交额: {avgPricePerTrade:N2} USDT)", System.Drawing.Color.FromArgb(241, 245, 249)));
+            _logQueue.Enqueue(($"║    • 主动买入成交量: {bar.TakerBuyVolume:N4} ({takerBuyPct:F1}%)  |  主动买入额: {bar.TakerBuyQuoteVolume:N2} USDT", System.Drawing.Color.FromArgb(74, 222, 128)));
+            _logQueue.Enqueue(($"║    • 主动卖出成交量: {takerSellVol:N4} ({takerSellPct:F1}%)  |  主动卖出额: {takerSellQuote:N2} USDT", System.Drawing.Color.FromArgb(244, 63, 94)));
+            _logQueue.Enqueue(("╚══════════════════════════════════════════════════════════════════════════════════════════", themeColor));
+        }
+
+        private void AppendLogInternal(string message, System.Drawing.Color color)
+        {
+            if (txtLogs.IsDisposed) return;
+
+            txtLogs.SelectionStart = txtLogs.TextLength;
+            txtLogs.SelectionLength = 0;
+            txtLogs.SelectionColor = color;
+            txtLogs.AppendText(message + "\n");
+            txtLogs.SelectionColor = txtLogs.ForeColor;
+            txtLogs.ScrollToCaret();
+        }
+
+        private void ApplyDarkTheme()
+        {
+            this.BackColor = System.Drawing.Color.FromArgb(15, 23, 42);
+            this.ForeColor = System.Drawing.Color.FromArgb(248, 250, 252);
+        }
+
+        private GroupBox CreateGroupBox(string text, int top, int height)
+        {
+            return new GroupBox
+            {
+                Text = text,
+                Location = new Point(10, top),
+                Width = 360,
+                Height = height,
+                ForeColor = System.Drawing.Color.FromArgb(56, 189, 248), // Sky Blue
+                Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold),
+                BackColor = System.Drawing.Color.FromArgb(30, 41, 59)
+            };
+        }
+
+        private Label CreateLabel(string text, int x, int y)
+        {
+            return new Label
+            {
+                Text = text,
+                Location = new Point(x, y),
+                AutoSize = true,
+                ForeColor = System.Drawing.Color.FromArgb(226, 232, 240),
+                Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Regular)
+            };
+        }
+
+        private Label CreateStatLabel(string text, int top)
+        {
+            return new Label
+            {
+                Text = text,
+                Location = new Point(15, top),
+                Size = new Size(325, 24),
+                ForeColor = System.Drawing.Color.FromArgb(241, 245, 249),
+                Font = new Font("Microsoft YaHei", 8.5F)
+            };
+        }
+
+        private static string FormatTimeSpan(TimeSpan ts)
+        {
+            if (ts.TotalDays >= 1) return $"{(int)ts.TotalDays}天{ts.Hours}时{ts.Minutes}分";
+            if (ts.TotalHours >= 1) return $"{(int)ts.TotalHours}时{ts.Minutes}分{ts.Seconds}秒";
+            if (ts.TotalMinutes >= 1) return $"{(int)ts.TotalMinutes}分{ts.Seconds}秒";
+            if (ts.TotalSeconds >= 1) return $"{ts.Seconds}秒{ts.Milliseconds:D3}ms";
+            return $"{ts.Milliseconds}ms";
+        }
+    }
+
+    /// <summary>
+    /// 扩展方法：安全在 UI 线程异步执行委托
+    /// </summary>
+    public static class ControlExtensions
+    {
+        public static Task InvokeAsync(this Control control, Action action)
+        {
+            if (control.IsDisposed || !control.IsHandleCreated) return Task.CompletedTask;
+            if (!control.InvokeRequired)
+            {
+                action();
+                return Task.CompletedTask;
+            }
+
+            var tcs = new TaskCompletionSource();
+            control.BeginInvoke(() =>
+            {
+                try
+                {
+                    action();
+                    tcs.SetResult();
+                }
+                catch (Exception ex)
+                {
+                    tcs.SetException(ex);
+                }
+            });
+            return tcs.Task;
+        }
+    }
+}
