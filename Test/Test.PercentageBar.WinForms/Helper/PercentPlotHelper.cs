@@ -62,7 +62,8 @@ namespace Test.PercentageBar.WinForms.Helper
             PercentBarGenerationStats? stats = null,
             string title = "百分比 / 固定价格变化 K 线分析图",
             bool autoScaleAxes = true,
-            int? selectedBarIndex = null,
+            int? selectedBarStartIndex = null,
+            int? selectedBarEndIndex = null,
             PercentChartType chartType = PercentChartType.Candlestick,
             bool showPivots = true,
             bool showGlobalHighLow = true,
@@ -183,10 +184,9 @@ namespace Test.PercentageBar.WinForms.Helper
                     ys[i] = (double)bars[i].Close;
                 }
 
-                var linePlot = plot.Add.Scatter(xs, ys);
-                linePlot.Color = Color.FromHex("#38bdf8"); // 天空蓝 Sky 400
-                linePlot.LineWidth = 0.8f;
-                linePlot.MarkerShape = MarkerShape.FilledCircle;
+                var linePlot = plot.Add.ScatterLine(xs, ys);
+                linePlot.Color = Color.FromHex("#38bdf8"); // 亮天蓝 (Sky 400)
+                linePlot.LineWidth = 1.2f;
                 linePlot.MarkerSize = count > 300 ? 0 : 3;
             }
 
@@ -298,39 +298,36 @@ namespace Test.PercentageBar.WinForms.Helper
 
                         // 选中线端点特别徽章
                         string tagPrefix = isThreePoint ? $"🟣【{tl.TouchCount}点共线强" : "★ 选中【";
-                        string brokenTag = tl.IsBroken ? " (已穿透/历史参考)" : "";
-                        string selTypeName = isRes ? $"{tagPrefix}阻力趋势线{brokenTag}】" : $"{tagPrefix}支撑趋势线{brokenTag}】";
-                        string selTagText = $"{selTypeName}\n起: Bar #{tl.StartBarIndex} (${tl.StartPrice:F2}) -> 锚: Bar #{tl.EndBarIndex} (${tl.EndPrice:F2})\n当前投影: ${tl.CurrentBarPrice:F2} | 斜率: {tl.Slope:+0.00;-0.00;0.00}/Bar";
+                        string selTagText = $"{tagPrefix}{(isRes ? "阻力" : "支撑")}】最新映射: {tl.CurrentBarPrice:F2} USDT";
                         var selTag = plot.Add.Text(selTagText, tl.ExtendedBarIndex, (double)tl.ExtendedPrice);
                         selTag.LabelFontName = chineseFont;
                         selTag.LabelFontSize = 9.5f;
                         selTag.LabelFontColor = Color.FromHex("#f8fafc");
                         selTag.LabelAlignment = isRes ? Alignment.LowerLeft : Alignment.UpperLeft;
-                        selTag.LabelBackgroundColor = isThreePoint ? Color.FromHex("#581c87").WithAlpha(0.92) : Color.FromHex("#0369a1").WithAlpha(0.92);
-                        selTag.LabelBorderColor = isThreePoint ? Color.FromHex("#c084fc") : Color.FromHex("#38bdf8");
-                        selTag.LabelBorderWidth = 1.2f;
+                        selTag.LabelBackgroundColor = Color.FromHex("#0284c7").WithAlpha(0.95);
+                        selTag.LabelBorderColor = Color.FromHex("#38bdf8");
+                        selTag.LabelBorderWidth = 1.5f;
+                        continue;
                     }
-                    else if (isThreePoint)
-                    {
-                        // 🟣 3点及以上共线强趋势线专用紫色渲染 (Purple 400 / Violet c084fc，穿透不删除)
-                        var purpleColor = tl.IsBroken ? Color.FromHex("#c084fc").WithAlpha(0.70) : Color.FromHex("#c084fc");
 
-                        // 1. 主趋势线段 (全图统一线宽 0.8f)
+                    if (isThreePoint)
+                    {
+                        // 🟣 3点及以上共线强趋势线：紫色呈现，线宽统一 0.8f
+                        var purpleColor = Color.FromHex("#c084fc");
+
                         var mainLine = plot.Add.Line(tl.StartBarIndex, (double)tl.StartPrice, tl.EndBarIndex, (double)tl.EndPrice);
                         mainLine.Color = purpleColor;
                         mainLine.LineWidth = 0.8f;
                         mainLine.LinePattern = LinePattern.Solid;
 
-                        // 2. 向右延伸虚线射线 (全图统一线宽 0.8f，穿透时精准截断在穿透 Bar，不向未来无序延伸)
                         if (tl.ExtendedBarIndex > tl.EndBarIndex)
                         {
                             var rayLine = plot.Add.Line(tl.EndBarIndex, (double)tl.EndPrice, tl.ExtendedBarIndex, (double)tl.ExtendedPrice);
-                            rayLine.Color = purpleColor.WithAlpha(0.85);
+                            rayLine.Color = purpleColor;
                             rayLine.LineWidth = 0.8f;
                             rayLine.LinePattern = LinePattern.Dashed;
                         }
 
-                        // 3. 在所有触碰极值点上绘制紫色菱形标记
                         if (tl.TouchBarIndices != null)
                         {
                             foreach (int bIdx in tl.TouchBarIndices)
@@ -343,40 +340,39 @@ namespace Test.PercentageBar.WinForms.Helper
                             }
                         }
 
-                        // 4. 趋势线末端投影价格标签 (显示点数与穿透截断点)
-                        string typeName = isRes ? "阻力" : "支撑";
-                        string brokenMark = tl.IsBroken ? $"(破@Bar#{tl.BreakBarIndex})" : "";
-                        string tagText = $"🟣{typeName}({tl.TouchCount}点{brokenMark}): {tl.ExtendedPrice:F2}";
+                        string prefix = isRes ? "🟣阻力" : "🟣支撑";
+                        string tagText = tl.IsBroken
+                            ? $"{prefix}({tl.TouchCount}点破@Bar#{tl.BreakBarIndex}): {tl.ExtendedPrice:F2}"
+                            : $"{prefix}({tl.TouchCount}点): {tl.CurrentBarPrice:F2}";
 
                         var tag = plot.Add.Text(tagText, tl.ExtendedBarIndex, (double)tl.ExtendedPrice);
                         tag.LabelFontName = chineseFont;
                         tag.LabelFontSize = 8.5f;
                         tag.LabelFontColor = Color.FromHex("#f3e8ff");
                         tag.LabelAlignment = isRes ? Alignment.LowerLeft : Alignment.UpperLeft;
-                        tag.LabelBackgroundColor = Color.FromHex("#3b0764").WithAlpha(0.88);
+                        tag.LabelBackgroundColor = Color.FromHex("#581c87").WithAlpha(0.9);
                         tag.LabelBorderColor = purpleColor;
-                        tag.LabelBorderWidth = 0.8f;
+                        tag.LabelBorderWidth = 1f;
                     }
                     else
                     {
-                        // 正常未选中 2点趋势线渲染 (Rose Red 阻力 / Emerald Green 支撑，全图统一线宽 0.8f)
-                        var baseColor = isRes
-                            ? (isLatest ? Color.FromHex("#f43f5e").WithAlpha(0.9) : Color.FromHex("#f43f5e").WithAlpha(0.42)) // Rose 500
-                            : (isLatest ? Color.FromHex("#10b981").WithAlpha(0.9) : Color.FromHex("#10b981").WithAlpha(0.42)); // Emerald 500
+                        var lineColor = isRes
+                            ? (isLatest ? Color.FromHex("#ef4444") : Color.FromHex("#f87171").WithAlpha(0.35))
+                            : (isLatest ? Color.FromHex("#22c55e") : Color.FromHex("#4ade80").WithAlpha(0.35));
 
-                        // 1. 主趋势线段 (全图统一线宽 0.8f)
                         var mainLine = plot.Add.Line(tl.StartBarIndex, (double)tl.StartPrice, tl.EndBarIndex, (double)tl.EndPrice);
-                        mainLine.Color = baseColor;
+                        mainLine.Color = lineColor;
                         mainLine.LineWidth = 0.8f;
                         mainLine.LinePattern = LinePattern.Solid;
 
-                        // 2. 向右延伸虚线射线 (全图统一线宽 0.8f)
-                        var rayLine = plot.Add.Line(tl.EndBarIndex, (double)tl.EndPrice, tl.ExtendedBarIndex, (double)tl.ExtendedPrice);
-                        rayLine.Color = baseColor.WithAlpha(isLatest ? 0.75 : 0.35);
-                        rayLine.LineWidth = 0.8f;
-                        rayLine.LinePattern = LinePattern.Dashed;
+                        if (tl.ExtendedBarIndex > tl.EndBarIndex)
+                        {
+                            var rayLine = plot.Add.Line(tl.EndBarIndex, (double)tl.EndPrice, tl.ExtendedBarIndex, (double)tl.ExtendedPrice);
+                            rayLine.Color = lineColor;
+                            rayLine.LineWidth = 0.8f;
+                            rayLine.LinePattern = LinePattern.Dashed;
+                        }
 
-                        // 3. 趋势线末端投影价格标签
                         if (isLatest || trendlines.Count <= 20)
                         {
                             string typeName = isRes ? "阻力" : "支撑";
@@ -395,7 +391,7 @@ namespace Test.PercentageBar.WinForms.Helper
                 }
             }
 
-            // 4.4 绘制局部高低点位标记与价格文字徽章
+            // 4.4 绘制局部高低点位标记 (红色正三角 ▲ 表示最高，红色倒三角 ▼ 表示最低)
             if (showPivots && pivotResult.Pivots.Count > 0)
             {
                 foreach (var p in pivotResult.Pivots)
@@ -404,18 +400,18 @@ namespace Test.PercentageBar.WinForms.Helper
                     double x = p.BarIndex;
                     double y = (double)p.Price;
 
-                    // 三角标记
+                    // 红色正三角 (▲) 与 红色倒三角 (▼)
                     var marker = plot.Add.Marker(x, y);
-                    marker.Shape = isHigh ? MarkerShape.FilledTriangleDown : MarkerShape.FilledTriangleUp;
-                    marker.Size = 7;
-                    marker.Color = isHigh ? Color.FromHex("#f87171") : Color.FromHex("#4ade80");
+                    marker.Shape = isHigh ? MarkerShape.FilledTriangleUp : MarkerShape.FilledTriangleDown;
+                    marker.Size = 9;
+                    marker.Color = Color.FromHex("#ef4444"); // 统一红色三角表示极值
 
                     // 价格文字标签 (点数较少或为全局极值时显示文字标签)
                     if (count <= 250 || p.IsGlobalExtreme)
                     {
                         string prefix = p.IsGlobalExtreme
-                            ? (isHigh ? "👑高 " : "👑低 ")
-                            : (isHigh ? "H: " : "L: ");
+                            ? (isHigh ? "👑最高 " : "👑最低 ")
+                            : (isHigh ? "▲ " : "▼ ");
                         string labelText = $"{prefix}{p.Price:F2}";
 
                         var text = plot.Add.Text(labelText, x, y);
@@ -430,13 +426,17 @@ namespace Test.PercentageBar.WinForms.Helper
                 }
             }
 
-            // 5. 绘制用户点击选中的 K 线高亮光标 (垂直青色光标 + 收盘圆晕)
-            if (selectedBarIndex.HasValue)
+            // 5. 绘制用户点击选中的单根或 Shift 连续多根 K 线高亮选区
+            if (selectedBarStartIndex.HasValue)
             {
-                int selIdx = selectedBarIndex.Value;
-                if (selIdx >= 0 && selIdx < count)
+                int sIdx = Math.Clamp(selectedBarStartIndex.Value, 0, count - 1);
+                int eIdx = Math.Clamp(selectedBarEndIndex ?? sIdx, 0, count - 1);
+                int minB = Math.Min(sIdx, eIdx);
+                int maxB = Math.Max(sIdx, eIdx);
+
+                if (minB == maxB)
                 {
-                    var selBar = bars[selIdx];
+                    var selBar = bars[minB];
                     double yLow = (double)selBar.Low;
                     double yHigh = (double)selBar.High;
                     double yClose = (double)selBar.Close;
@@ -448,16 +448,42 @@ namespace Test.PercentageBar.WinForms.Helper
                     }
 
                     // 垂直光标
-                    var cursorLine = plot.Add.Line(selIdx, yLow, selIdx, yHigh);
+                    var cursorLine = plot.Add.Line(minB, yLow, minB, yHigh);
                     cursorLine.Color = Color.FromHex("#38bdf8");
                     cursorLine.LineWidth = 3.0f;
 
                     // 高亮点
-                    var cursorPoint = plot.Add.Scatter(new double[] { selIdx }, new double[] { yClose });
+                    var cursorPoint = plot.Add.Scatter(new double[] { minB }, new double[] { yClose });
                     cursorPoint.MarkerShape = MarkerShape.FilledCircle;
                     cursorPoint.MarkerSize = 10;
                     cursorPoint.Color = Color.FromHex("#38bdf8");
                     cursorPoint.LineWidth = 0;
+                }
+                else
+                {
+                    // Shift 连续多选：绘制霓虹半透明选区矩形与文字徽章
+                    decimal rangeMinLow = decimal.MaxValue;
+                    decimal rangeMaxHigh = decimal.MinValue;
+                    for (int k = minB; k <= maxB; k++)
+                    {
+                        if (bars[k].Low < rangeMinLow) rangeMinLow = bars[k].Low;
+                        if (bars[k].High > rangeMaxHigh) rangeMaxHigh = bars[k].High;
+                    }
+
+                    var selBox = plot.Add.Rectangle(minB - 0.45, maxB + 0.45, (double)rangeMinLow, (double)rangeMaxHigh);
+                    selBox.FillColor = Color.FromHex("#38bdf8").WithAlpha(0.18);
+                    selBox.LineColor = Color.FromHex("#38bdf8").WithAlpha(0.85);
+                    selBox.LineWidth = 1.5f;
+                    selBox.LinePattern = LinePattern.Dashed;
+
+                    var selTag = plot.Add.Text($"★ 选中连续 {maxB - minB + 1} 根 Bar (#{minB} ~ #{maxB})", (minB + maxB) / 2.0, (double)rangeMaxHigh);
+                    selTag.LabelFontName = chineseFont;
+                    selTag.LabelFontSize = 9.0f;
+                    selTag.LabelFontColor = Color.FromHex("#38bdf8");
+                    selTag.LabelAlignment = Alignment.LowerCenter;
+                    selTag.LabelBackgroundColor = Color.FromHex("#0f172a").WithAlpha(0.9);
+                    selTag.LabelBorderColor = Color.FromHex("#38bdf8");
+                    selTag.LabelBorderWidth = 1f;
                 }
             }
 
