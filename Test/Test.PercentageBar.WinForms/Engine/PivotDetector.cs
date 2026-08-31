@@ -220,5 +220,357 @@ namespace Test.PercentageBar.WinForms.Engine
 
             return result;
         }
+
+        /// <summary>
+        /// 趋势线交互生成与穿透过滤引擎：
+        /// 1. 所有历史高低点与新产生的高低点进行两两交互配对生成多条候选趋势线
+        /// 2. 严格检查区间内部与区间之后的所有 K 线，若被 K 线触碰穿透则立即删除剔除
+        /// 3. 保留并输出未被穿透的有效活跃趋势线（所有 3点及以上高精度共线趋势线 100% 强制保留）
+        /// </summary>
+        public static List<TrendLine> CalculateTrendLines(
+            IReadOnlyList<PercentageKline> bars,
+            PivotAnalysisResult pivotResult,
+            int maxLines = 1000,
+            int maxSpanBars = 1000,
+            int extensionBars = 8,
+            bool strictWickPenetration = true,
+            decimal touchTolerancePct = 0.0003m) 
+        {
+            var validTrendLines = new List<TrendLine>(Math.Min(1024, maxLines));
+            if (bars == null || bars.Count < 3 || pivotResult == null || pivotResult.Pivots.Count < 2)
+                return validTrendLines;
+
+            int lastBarIdx = bars.Count - 1;
+            int extIdx = lastBarIdx + Math.Max(3, extensionBars);
+            decimal tol = Math.Max(0.00005m, touchTolerancePct);
+
+            var highPivots = pivotResult.Pivots.Where(p => p.Type == PivotPointType.High).ToList();
+            var lowPivots = pivotResult.Pivots.Where(p => p.Type == PivotPointType.Low).ToList();
+
+            var highPivotDict = new Dictionary<int, PivotPoint>(highPivots.Count);
+            foreach (var p in highPivots) highPivotDict[p.BarIndex] = p;
+
+            var lowPivotDict = new Dictionary<int, PivotPoint>(lowPivots.Count);
+            foreach (var p in lowPivots) lowPivotDict[p.BarIndex] = p;
+
+            var candidateResistance = new List<TrendLine>();
+            var candidateSupport = new List<TrendLine>();
+
+            if (highPivots.Count >= 2)
+            {
+                for (int i = 0; i < highPivots.Count - 1; i++)
+                {
+                    var p1 = highPivots[i];
+                    int x1 = p1.BarIndex;
+                    decimal y1 = p1.Price;
+
+                    for (int j = i + 1; j < highPivots.Count; j++)
+                    {
+                        var p2 = highPivots[j];
+                        int x2 = p2.BarIndex;
+                        decimal y2 = p2.Price;
+
+                        int span = x2 - x1;
+                        if (span <= 0) continue;
+                        if (span > maxSpanBars) break;
+
+                        decimal slope = (y2 - y1) / span;
+
+                        var touchBars = new List<int> { x1 };
+                        int breakBarIdx = -1;
+
+                        for (int m = x1 + 1; m <= lastBarIdx; m++)
+                        {
+                            decimal lineY = y1 + slope * (m - x1);
+                            decimal checkPrice = strictWickPenetration ? bars[m].High : bars[m].Close;
+
+                            if (checkPrice > lineY + 0.000001m)
+                            {
+                                breakBarIdx = m;
+                                break;
+                            }
+
+                            if (highPivotDict.TryGetValue(m, out var hp))
+                            {
+                                if (lineY > 0 && Math.Abs(hp.Price - lineY) / lineY <= tol)
+                                {
+                                    touchBars.Add(m);
+                                }
+                            }
+                        }
+
+                        if (breakBarIdx > 0 && breakBarIdx <= x2) continue;
+
+                        bool isThreePoint = touchBars.Count >= 3;
+                        int finalStartIdx = touchBars[0];
+                        int finalEndIdx = touchBars[touchBars.Count - 1];
+                        decimal finalStartPrice = y1 + slope * (finalStartIdx - x1);
+                        decimal finalEndPrice = y1 + slope * (finalEndIdx - x1);
+
+                        if (breakBarIdx > 0)
+                        {
+                            if (!isThreePoint) continue;
+                            candidateResistance.Add(new TrendLine
+                            {
+                                StartBarIndex = finalStartIdx,
+                                StartPrice = finalStartPrice,
+                                StartTime = p1.Time,
+                                EndBarIndex = finalEndIdx,
+                                EndPrice = finalEndPrice,
+                                EndTime = bars[finalEndIdx].CloseTime,
+                                Slope = slope,
+                                Type = TrendLineType.Resistance,
+                                ExtendedBarIndex = breakBarIdx,
+                                ExtendedPrice = y1 + slope * (breakBarIdx - x1),
+                                CurrentBarPrice = y1 + slope * (lastBarIdx - x1),
+                                SpanBars = finalEndIdx - finalStartIdx,
+                                AgeBars = breakBarIdx - finalEndIdx,
+                                TouchCount = touchBars.Count,
+                                TouchBarIndices = touchBars.ToArray(),
+                                BreakBarIndex = breakBarIdx,
+                                IsBroken = true
+                            });
+                        }
+                        else
+                        {
+                            candidateResistance.Add(new TrendLine
+                            {
+                                StartBarIndex = finalStartIdx,
+                                StartPrice = finalStartPrice,
+                                StartTime = p1.Time,
+                                EndBarIndex = finalEndIdx,
+                                EndPrice = finalEndPrice,
+                                EndTime = bars[finalEndIdx].CloseTime,
+                                Slope = slope,
+                                Type = TrendLineType.Resistance,
+                                ExtendedBarIndex = extIdx,
+                                ExtendedPrice = y1 + slope * (extIdx - x1),
+                                CurrentBarPrice = y1 + slope * (lastBarIdx - x1),
+                                SpanBars = finalEndIdx - finalStartIdx,
+                                AgeBars = lastBarIdx - finalEndIdx,
+                                TouchCount = touchBars.Count,
+                                TouchBarIndices = touchBars.ToArray(),
+                                BreakBarIndex = -1,
+                                IsBroken = false
+                            });
+                        }
+                    }
+                }
+            }
+
+            // 2. 低点交互配对生成支撑趋势线 (Support Trendlines，严格单向时间流前向扫描与穿透即刻冻结)
+            if (lowPivots.Count >= 2)
+            {
+                for (int i = 0; i < lowPivots.Count - 1; i++)
+                {
+                    var q1 = lowPivots[i];
+                    int x1 = q1.BarIndex;
+                    decimal y1 = q1.Price;
+
+                    for (int j = i + 1; j < lowPivots.Count; j++)
+                    {
+                        var q2 = lowPivots[j];
+                        int x2 = q2.BarIndex;
+                        decimal y2 = q2.Price;
+
+                        int span = x2 - x1;
+                        if (span <= 0) continue;
+                        if (span > maxSpanBars) break;
+
+                        decimal slope = (y2 - y1) / span;
+
+                        var touchBars = new List<int> { x1 };
+                        int breakBarIdx = -1;
+
+                        for (int m = x1 + 1; m <= lastBarIdx; m++)
+                        {
+                            decimal lineY = y1 + slope * (m - x1);
+                            decimal checkPrice = strictWickPenetration ? bars[m].Low : bars[m].Close;
+
+                            // 1. 穿透判定：一旦在 Bar m 处被向下跌破穿透，立即终止扫描！
+                            // 【核心保证】：后续所有 K 线与点位绝不再参与该趋势线的任何计算！
+                            if (checkPrice < lineY - 0.000001m)
+                            {
+                                breakBarIdx = m;
+                                break; // ⚡ 首次被穿透，生命周期彻底终结，时间流立即停止！
+                            }
+
+                            // 2. 触碰判定：仅在尚未发生任何穿透的连续健康区间内，统计低点极值点触碰
+                            if (lowPivotDict.TryGetValue(m, out var lp))
+                            {
+                                if (lineY > 0 && Math.Abs(lp.Price - lineY) / lineY <= tol)
+                                {
+                                    touchBars.Add(m);
+                                }
+                            }
+                        }
+
+                        // 如果在到达锚定点 x2 之前就已经被击穿，说明内部已被破坏，直接舍弃
+                        if (breakBarIdx > 0 && breakBarIdx <= x2)
+                        {
+                            continue;
+                        }
+
+                        bool isThreePoint = touchBars.Count >= 3;
+                        int finalStartIdx = touchBars[0];
+                        int finalEndIdx = touchBars[touchBars.Count - 1];
+                        decimal finalStartPrice = y1 + slope * (finalStartIdx - x1);
+                        decimal finalEndPrice = y1 + slope * (finalEndIdx - x1);
+
+                        if (breakBarIdx > 0)
+                        {
+                            // 发生穿透：普通 2点线直接删除抛弃；穿透前已达成 3点+ 的紫色线保留（射线精准截断在破坏点 breakBarIdx）
+                            if (!isThreePoint) continue;
+
+                            candidateSupport.Add(new TrendLine
+                            {
+                                StartBarIndex = finalStartIdx,
+                                StartPrice = finalStartPrice,
+                                StartTime = q1.Time,
+                                EndBarIndex = finalEndIdx,
+                                EndPrice = finalEndPrice,
+                                EndTime = bars[finalEndIdx].CloseTime,
+                                Slope = slope,
+                                Type = TrendLineType.Support,
+                                ExtendedBarIndex = breakBarIdx, // 射线截断在被穿透的 Bar 处，不再向后延伸
+                                ExtendedPrice = y1 + slope * (breakBarIdx - x1),
+                                CurrentBarPrice = y1 + slope * (lastBarIdx - x1),
+                                SpanBars = finalEndIdx - finalStartIdx,
+                                AgeBars = breakBarIdx - finalEndIdx,
+                                TouchCount = touchBars.Count,
+                                TouchBarIndices = touchBars.ToArray(),
+                                BreakBarIndex = breakBarIdx,
+                                IsBroken = true
+                            });
+                        }
+                        else
+                        {
+                            // 未被穿透：健康活跃趋势线，正常延伸至最新与未来
+                            candidateSupport.Add(new TrendLine
+                            {
+                                StartBarIndex = finalStartIdx,
+                                StartPrice = finalStartPrice,
+                                StartTime = q1.Time,
+                                EndBarIndex = finalEndIdx,
+                                EndPrice = finalEndPrice,
+                                EndTime = bars[finalEndIdx].CloseTime,
+                                Slope = slope,
+                                Type = TrendLineType.Support,
+                                ExtendedBarIndex = extIdx,
+                                ExtendedPrice = y1 + slope * (extIdx - x1),
+                                CurrentBarPrice = y1 + slope * (lastBarIdx - x1),
+                                SpanBars = finalEndIdx - finalStartIdx,
+                                AgeBars = lastBarIdx - finalEndIdx,
+                                TouchCount = touchBars.Count,
+                                TouchBarIndices = touchBars.ToArray(),
+                                BreakBarIndex = -1,
+                                IsBroken = false
+                            });
+                        }
+                    }
+                }
+            }
+
+            // 3. 汇总并控制最大保留容量 (所有 3点及以上共线趋势线去重并 100% 优先保留，剩余名额分配给最新 2点线)
+            var confirmed3PointLines = new List<TrendLine>();
+            var regular2PointRes = new List<TrendLine>();
+            var regular2PointSup = new List<TrendLine>();
+            var unique3PointKeys = new HashSet<string>();
+
+            foreach (var tl in candidateResistance)
+            {
+                if (tl.IsThreePointConfirmed)
+                {
+                    string key = "RES_" + string.Join("-", tl.TouchBarIndices ?? Array.Empty<int>());
+                    if (unique3PointKeys.Add(key))
+                    {
+                        confirmed3PointLines.Add(tl);
+                    }
+                }
+                else regular2PointRes.Add(tl);
+            }
+
+            foreach (var tl in candidateSupport)
+            {
+                if (tl.IsThreePointConfirmed)
+                {
+                    string key = "SUP_" + string.Join("-", tl.TouchBarIndices ?? Array.Empty<int>());
+                    if (unique3PointKeys.Add(key))
+                    {
+                        confirmed3PointLines.Add(tl);
+                    }
+                }
+                else regular2PointSup.Add(tl);
+            }
+
+            // 先将所有 3点+ 强趋势线全部保留
+            validTrendLines.AddRange(confirmed3PointLines);
+
+            // 剩余名额分配给 2点趋势线 (至少保证总容量保留到 maxLines)
+            int remainingCapacity = Math.Max(0, maxLines - validTrendLines.Count);
+            int halfRemaining = remainingCapacity / 2;
+            int resTake = Math.Min(regular2PointRes.Count, halfRemaining);
+            int supTake = Math.Min(regular2PointSup.Count, remainingCapacity - resTake);
+            if (regular2PointRes.Count > resTake && regular2PointSup.Count < halfRemaining)
+            {
+                resTake = Math.Min(regular2PointRes.Count, remainingCapacity - regular2PointSup.Count);
+            }
+
+            for (int i = 0; i < resTake; i++)
+            {
+                validTrendLines.Add(regular2PointRes[i]);
+            }
+            for (int i = 0; i < supTake; i++)
+            {
+                validTrendLines.Add(regular2PointSup[i]);
+            }
+
+            return validTrendLines;
+        }
+    }
+
+    /// <summary>
+    /// 趋势线类型 (高点阻力线 / 低点支撑线)
+    /// </summary>
+    public enum TrendLineType
+    {
+        /// <summary>
+        /// 阻力趋势线 (由高点连接并向右延伸)
+        /// </summary>
+        Resistance = 1,
+
+        /// <summary>
+        /// 支撑趋势线 (由低点连接并向右延伸)
+        /// </summary>
+        Support = 2
+    }
+
+    /// <summary>
+    /// 自动高低点趋势线数据结构 (支持 3点及以上共线强趋势线标识)
+    /// </summary>
+    public readonly struct TrendLine
+    {
+        public int StartBarIndex { get; init; }
+        public decimal StartPrice { get; init; }
+        public long StartTime { get; init; }
+        public int EndBarIndex { get; init; }
+        public decimal EndPrice { get; init; }
+        public long EndTime { get; init; }
+        public decimal Slope { get; init; }
+        public TrendLineType Type { get; init; }
+        public int ExtendedBarIndex { get; init; }
+        public decimal ExtendedPrice { get; init; }
+        public decimal CurrentBarPrice { get; init; }
+        public int SpanBars { get; init; }
+        public int AgeBars { get; init; }
+        public int TouchCount { get; init; } // 触碰/共线极值点数量 (>= 3 为高强度多点共线趋势线)
+        public int[]? TouchBarIndices { get; init; } // 共线极值点 Bar 序号列表
+        public int BreakBarIndex { get; init; } // 首次被 K 线穿透破坏的 Bar 序号 (-1 表示尚未被穿透)
+        public bool IsBroken { get; init; } // 是否在后续行进中被 K 线穿透突破
+
+        public bool IsThreePointConfirmed => TouchCount >= 3;
+
+        public bool IsMatching(int startIdx, int endIdx, TrendLineType type) =>
+            StartBarIndex == startIdx && EndBarIndex == endIdx && Type == type;
     }
 }
