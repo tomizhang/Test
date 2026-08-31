@@ -38,10 +38,21 @@ namespace Test.PercentageBar.WinForms.Forms
         private SplitContainer splitMain = null!;
         private SplitContainer splitLeft = null!;
         private FormsPlot formsPlot = null!;
+
+        // 底部水平分割与 Tick 明细控件
+        private SplitContainer splitBottom = null!;
         private RichTextBox txtLogs = null!;
         private Panel panelLogHeader = null!;
         private Label lblLogTitle = null!;
         private Button btnClearLogs = null!;
+
+        private Panel panelTickDetail = null!;
+        private Panel panelTickHeader = null!;
+        private Label lblTickTitle = null!;
+        private Label lblTickInfo = null!;
+        private TabControl tabTickViews = null!;
+        private FormsPlot formsPlotTick = null!;
+        private DataGridView dgvTicks = null!;
 
         // 右侧控制面板控件
         private Panel panelRight = null!;
@@ -59,6 +70,7 @@ namespace Test.PercentageBar.WinForms.Forms
         private FlowLayoutPanel flowPresets = null!;
 
         private GroupBox grpAnalysis = null!;
+        private CheckBox chkShowVolume = null!;
         private CheckBox chkShowPivots = null!;
         private CheckBox chkShowGlobalHighLow = null!;
         private CheckBox chkShowZigZag = null!;
@@ -91,7 +103,21 @@ namespace Test.PercentageBar.WinForms.Forms
             InitializeComponent();
             ApplyDarkTheme();
             SetupUiTimer();
+
+            // 🚀 反射自动加载用户保存的全部历史配置参数
+            bool configLoaded = FormConfigHelper.LoadFormConfig(this);
+
+            this.FormClosing += (s, e) =>
+            {
+                // 💾 窗体关闭时自动使用反射保存所有配置
+                FormConfigHelper.SaveFormConfig(this);
+            };
+
             AppendLogInternal("🚀 [系统就绪] 百分比变化 K 线生成与可视化引擎已加载，X 轴为纯 Bar 序号，支持逐条动态回放与毫秒级时间跨度计算。", System.Drawing.Color.FromArgb(74, 222, 128));
+            if (configLoaded)
+            {
+                AppendLogInternal("💾 [配置系统] 已通过反射自动加载历史参数配置 (后续新增控件均支持全自动识别保存)。", System.Drawing.Color.FromArgb(56, 189, 248));
+            }
         }
 
         private void InitializeComponent()
@@ -130,7 +156,17 @@ namespace Test.PercentageBar.WinForms.Forms
             formsPlot.MouseDown += OnFormsPlotMouseDown;
             splitLeft.Panel1.Controls.Add(formsPlot);
 
-            // 2. 底部日志与点击详情控制台
+            // 2. 底部控制台：横向切分为 [左侧：运行日志与指标分析] 与 [右侧：选中 Bar 内部全量 Tick 走势与流水]
+            splitBottom = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical,
+                SplitterDistance = 580,
+                SplitterWidth = 6,
+                BackColor = System.Drawing.Color.FromArgb(30, 41, 59)
+            };
+
+            // 2.1 底部左侧：运行日志看板
             panelLogHeader = new Panel
             {
                 Dock = DockStyle.Top,
@@ -139,7 +175,7 @@ namespace Test.PercentageBar.WinForms.Forms
             };
             lblLogTitle = new Label
             {
-                Text = "📋 系统运行日志 & K 线点击全量指标分析输出看板",
+                Text = "📋 系统运行日志 & K 线指标分析看板",
                 ForeColor = System.Drawing.Color.FromArgb(226, 232, 240),
                 Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold),
                 Location = new Point(10, 6),
@@ -158,7 +194,6 @@ namespace Test.PercentageBar.WinForms.Forms
             };
             btnClearLogs.FlatAppearance.BorderSize = 0;
             btnClearLogs.Click += (s, e) => txtLogs.Clear();
-
             panelLogHeader.Controls.AddRange(new Control[] { lblLogTitle, btnClearLogs });
 
             txtLogs = new RichTextBox
@@ -174,7 +209,102 @@ namespace Test.PercentageBar.WinForms.Forms
             var panelLogContainer = new Panel { Dock = DockStyle.Fill };
             panelLogContainer.Controls.Add(txtLogs);
             panelLogContainer.Controls.Add(panelLogHeader);
-            splitLeft.Panel2.Controls.Add(panelLogContainer);
+            splitBottom.Panel1.Controls.Add(panelLogContainer);
+
+            // 2.2 底部右侧：选中 Bar 内部 Tick 微观走势图与逐笔流水看板
+            panelTickDetail = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = System.Drawing.Color.FromArgb(15, 23, 42)
+            };
+
+            panelTickHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 32,
+                BackColor = System.Drawing.Color.FromArgb(30, 41, 59)
+            };
+
+            lblTickTitle = new Label
+            {
+                Text = "🔬 选中 Bar 内部 Tick 微观走势与切片",
+                ForeColor = System.Drawing.Color.FromArgb(56, 189, 248),
+                Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold),
+                Location = new Point(10, 6),
+                AutoSize = true
+            };
+
+            lblTickInfo = new Label
+            {
+                Text = "未选择 K 线 (请在上方图表中点击任意一根 K 线)",
+                ForeColor = System.Drawing.Color.FromArgb(250, 204, 21),
+                Font = new Font("Microsoft YaHei", 8F),
+                Location = new Point(285, 8),
+                AutoSize = true
+            };
+            panelTickHeader.Controls.AddRange(new Control[] { lblTickTitle, lblTickInfo });
+
+            tabTickViews = new TabControl
+            {
+                Dock = DockStyle.Fill,
+                Font = new Font("Microsoft YaHei", 8.5F)
+            };
+
+            var tabTickPlot = new TabPage("📈 微观 Tick 分时走势图") { BackColor = System.Drawing.Color.FromArgb(15, 23, 42) };
+            formsPlotTick = new FormsPlot
+            {
+                Dock = DockStyle.Fill,
+                BackColor = System.Drawing.Color.FromArgb(15, 23, 42)
+            };
+            tabTickPlot.Controls.Add(formsPlotTick);
+
+            var tabTickTable = new TabPage("📑 逐笔 Tick 流水明细表") { BackColor = System.Drawing.Color.FromArgb(15, 23, 42) };
+            dgvTicks = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                BackgroundColor = System.Drawing.Color.FromArgb(15, 23, 42),
+                GridColor = System.Drawing.Color.FromArgb(51, 65, 85),
+                BorderStyle = BorderStyle.None,
+                RowHeadersVisible = false,
+                AllowUserToAddRows = false,
+                ReadOnly = true,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                EnableHeadersVisualStyles = false,
+                Font = new Font("Consolas", 9F)
+            };
+            dgvTicks.ColumnHeadersDefaultCellStyle.BackColor = System.Drawing.Color.FromArgb(30, 41, 59);
+            dgvTicks.ColumnHeadersDefaultCellStyle.ForeColor = System.Drawing.Color.FromArgb(56, 189, 248);
+            dgvTicks.ColumnHeadersDefaultCellStyle.Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold);
+            dgvTicks.DefaultCellStyle.BackColor = System.Drawing.Color.FromArgb(15, 23, 42);
+            dgvTicks.DefaultCellStyle.ForeColor = System.Drawing.Color.FromArgb(241, 245, 249);
+            dgvTicks.DefaultCellStyle.SelectionBackColor = System.Drawing.Color.FromArgb(30, 58, 138);
+
+            dgvTicks.Columns.Add("ColIdx", "#");
+            dgvTicks.Columns.Add("ColTime", "精确时间 (UTC+8)");
+            dgvTicks.Columns.Add("ColPrice", "价格 (USDT)");
+            dgvTicks.Columns.Add("ColQty", "数量 (Qty)");
+            dgvTicks.Columns.Add("ColQuote", "成交额 (USDT)");
+            dgvTicks.Columns.Add("ColSide", "主动买卖");
+            dgvTicks.Columns.Add("ColChange", "偏离开盘 (%)");
+
+            dgvTicks.Columns[0].Width = 50;
+            dgvTicks.Columns[1].Width = 140;
+            dgvTicks.Columns[2].Width = 100;
+            dgvTicks.Columns[3].Width = 90;
+            dgvTicks.Columns[4].Width = 100;
+            dgvTicks.Columns[5].Width = 110;
+            dgvTicks.Columns[6].Width = 100;
+
+            tabTickTable.Controls.Add(dgvTicks);
+
+            tabTickViews.TabPages.Add(tabTickPlot);
+            tabTickViews.TabPages.Add(tabTickTable);
+
+            panelTickDetail.Controls.Add(tabTickViews);
+            panelTickDetail.Controls.Add(panelTickHeader);
+            splitBottom.Panel2.Controls.Add(panelTickDetail);
+
+            splitLeft.Panel2.Controls.Add(splitBottom);
 
             splitMain.Panel1.Controls.Add(splitLeft);
 
@@ -313,12 +443,23 @@ namespace Test.PercentageBar.WinForms.Forms
             top += grpParams.Height + 10;
 
             // Group 3: 高低点位与形态分析
-            grpAnalysis = CreateGroupBox("3. 高低点位与形态分析", top, 185);
+            grpAnalysis = CreateGroupBox("3. 高低点位与形态分析", top, 210);
             {
+                chkShowVolume = new CheckBox
+                {
+                    Text = "📊 显示底部成交量柱状图 (Volume)",
+                    Location = new Point(15, 22),
+                    AutoSize = true,
+                    Checked = true,
+                    ForeColor = System.Drawing.Color.FromArgb(148, 163, 184),
+                    Font = new Font("Microsoft YaHei", 8.5F)
+                };
+                chkShowVolume.CheckedChanged += (s, e) => RedrawCurrentPlot(autoScale: false, autoFollow: chkAutoFollow.Checked);
+
                 chkShowPivots = new CheckBox
                 {
                     Text = "📍 显示局部波段高低点 (Swing High/Low)",
-                    Location = new Point(15, 24),
+                    Location = new Point(15, 44),
                     AutoSize = true,
                     Checked = true,
                     ForeColor = System.Drawing.Color.FromArgb(226, 232, 240),
@@ -329,7 +470,7 @@ namespace Test.PercentageBar.WinForms.Forms
                 chkShowGlobalHighLow = new CheckBox
                 {
                     Text = "👑 显示历史全局最高/最低水平线",
-                    Location = new Point(15, 48),
+                    Location = new Point(15, 66),
                     AutoSize = true,
                     Checked = true,
                     ForeColor = System.Drawing.Color.FromArgb(250, 204, 21),
@@ -340,7 +481,7 @@ namespace Test.PercentageBar.WinForms.Forms
                 chkShowZigZag = new CheckBox
                 {
                     Text = "⚡ 显示波段高低趋势连线 (ZigZag)",
-                    Location = new Point(15, 72),
+                    Location = new Point(15, 88),
                     AutoSize = true,
                     Checked = true,
                     ForeColor = System.Drawing.Color.FromArgb(56, 189, 248),
@@ -351,7 +492,7 @@ namespace Test.PercentageBar.WinForms.Forms
                 chkShowTrendLines = new CheckBox
                 {
                     Text = "📈 绘制高低点支撑/阻力趋势线 (Auto Trendlines)",
-                    Location = new Point(15, 96),
+                    Location = new Point(15, 110),
                     AutoSize = true,
                     Checked = true,
                     ForeColor = System.Drawing.Color.FromArgb(244, 114, 182), // Pink 400
@@ -359,10 +500,10 @@ namespace Test.PercentageBar.WinForms.Forms
                 };
                 chkShowTrendLines.CheckedChanged += (s, e) => RedrawCurrentPlot(autoScale: false, autoFollow: chkAutoFollow.Checked);
 
-                var lblWin = CreateLabel("确认窗口(Bar):", 15, 122);
+                var lblWin = CreateLabel("确认窗口(Bar):", 15, 136);
                 numPivotWindow = new NumericUpDown
                 {
-                    Location = new Point(125, 120),
+                    Location = new Point(125, 134),
                     Width = 65,
                     Minimum = 1,
                     Maximum = 20,
@@ -375,16 +516,16 @@ namespace Test.PercentageBar.WinForms.Forms
                 var lblWinTip = new Label
                 {
                     Text = "(左右极值确认根数)",
-                    Location = new Point(195, 122),
+                    Location = new Point(195, 136),
                     AutoSize = true,
                     ForeColor = System.Drawing.Color.FromArgb(148, 163, 184),
                     Font = new Font("Microsoft YaHei", 8F)
                 };
 
-                var lblTol = CreateLabel("3点共线容差(%):", 15, 150);
+                var lblTol = CreateLabel("3点共线容差(%):", 15, 164);
                 numTouchTolerance = new NumericUpDown
                 {
-                    Location = new Point(125, 148),
+                    Location = new Point(125, 162),
                     Width = 65,
                     DecimalPlaces = 3,
                     Increment = 0.005m,
@@ -399,7 +540,7 @@ namespace Test.PercentageBar.WinForms.Forms
                 var lblTolTip = new Label
                 {
                     Text = "(🟣超精准点位触碰)",
-                    Location = new Point(195, 150),
+                    Location = new Point(195, 164),
                     AutoSize = true,
                     ForeColor = System.Drawing.Color.FromArgb(192, 132, 252),
                     Font = new Font("Microsoft YaHei", 8F)
@@ -407,6 +548,7 @@ namespace Test.PercentageBar.WinForms.Forms
 
                 grpAnalysis.Controls.AddRange(new Control[]
                 {
+                    chkShowVolume,
                     chkShowPivots,
                     chkShowGlobalHighLow,
                     chkShowZigZag,
@@ -930,7 +1072,8 @@ namespace Test.PercentageBar.WinForms.Forms
                 showTrendLines: chkShowTrendLines?.Checked ?? true,
                 pivotWindow: (int)(numPivotWindow?.Value ?? 3),
                 selectedTrendLine: _selectedTrendLine,
-                touchTolerancePct: (numTouchTolerance?.Value ?? 0.030m) / 100m);
+                touchTolerancePct: (numTouchTolerance?.Value ?? 0.030m) / 100m,
+                showVolume: chkShowVolume?.Checked ?? true);
 
             int total = _currentBars.Count;
 
@@ -962,8 +1105,11 @@ namespace Test.PercentageBar.WinForms.Forms
 
                     formsPlot.Plot.Axes.SetLimits(xMin, xMax, yMin, yMax);
 
-                    if (visibleMaxVolume <= 0) visibleMaxVolume = 1;
-                    formsPlot.Plot.Axes.SetLimitsY(0, visibleMaxVolume * 3.8, formsPlot.Plot.Axes.Right);
+                    if (chkShowVolume?.Checked ?? true)
+                    {
+                        if (visibleMaxVolume <= 0) visibleMaxVolume = 1;
+                        formsPlot.Plot.Axes.SetLimitsY(0, visibleMaxVolume * 3.8, formsPlot.Plot.Axes.Right);
+                    }
                 }
                 else
                 {
@@ -1041,6 +1187,7 @@ namespace Test.PercentageBar.WinForms.Forms
                         _selectedBarIndex = targetIndex;
                         _selectedTrendLine = null;
                         OutputBarDetails(bar);
+                        DisplayBarTickDetails(bar); // 🌟 实时在日志右侧展示该 K 线内部包含的所有 Tick 走势与逐笔明细
                         RedrawCurrentPlot(autoScale: false);
                     }
                 }
@@ -1200,6 +1347,151 @@ namespace Test.PercentageBar.WinForms.Forms
             _logQueue.Enqueue(($"║    • 主动买入成交量: {bar.TakerBuyVolume:N4} ({takerBuyPct:F1}%)  |  主动买入额: {bar.TakerBuyQuoteVolume:N2} USDT", System.Drawing.Color.FromArgb(74, 222, 128)));
             _logQueue.Enqueue(($"║    • 主动卖出成交量: {takerSellVol:N4} ({takerSellPct:F1}%)  |  主动卖出额: {takerSellQuote:N2} USDT", System.Drawing.Color.FromArgb(244, 63, 94)));
             _logQueue.Enqueue(("╚══════════════════════════════════════════════════════════════════════════════════════════", themeColor));
+        }
+
+        /// <summary>
+        /// 🌟 在日志右侧区域渲染选中 Bar 内部的全部 Tick 走势图与逐笔流水表
+        /// </summary>
+        private void DisplayBarTickDetails(in PercentageKline bar)
+        {
+            if (bar.Ticks == null || bar.Ticks.Length == 0)
+            {
+                lblTickInfo.Text = $"Bar #{bar.BarIndex} | 该 Bar 暂无可用 Tick 逐笔数据";
+                formsPlotTick.Plot.Clear();
+                formsPlotTick.Plot.Title($"Bar #{bar.BarIndex} 无 Tick 数据");
+                formsPlotTick.Refresh();
+                dgvTicks.Rows.Clear();
+                return;
+            }
+
+            var ticks = bar.Ticks;
+            int count = ticks.Length;
+
+            decimal openP = bar.Open;
+            decimal highP = bar.High;
+            decimal lowP = bar.Low;
+            decimal closeP = bar.Close;
+
+            string dirStr = closeP >= openP ? "🟢 阳线" : "🔴 阴线";
+            decimal takerBuyRatio = bar.Volume > 0 ? (bar.TakerBuyVolume / bar.Volume * 100m) : 0m;
+
+            lblTickInfo.Text = $"Bar #{bar.BarIndex} ({dirStr}) | 耗时: {bar.GetFormattedDuration()} | Tick: {count:N0} 笔 | 极值: {lowP:F2} ~ {highP:F2} | 主买: {takerBuyRatio:F1}%";
+
+            // 1. 渲染微观 Tick 分时走势图 (ScottPlot 5)
+            formsPlotTick.Plot.Clear();
+            formsPlotTick.Plot.FigureBackground.Color = ScottPlot.Color.FromHex("#0f172a");
+            formsPlotTick.Plot.DataBackground.Color = ScottPlot.Color.FromHex("#1e293b");
+            formsPlotTick.Plot.Grid.MajorLineColor = ScottPlot.Color.FromHex("#334155").WithAlpha(0.6);
+            formsPlotTick.Plot.Grid.MinorLineColor = ScottPlot.Color.FromHex("#1e293b").WithAlpha(0.3);
+
+            formsPlotTick.Plot.Axes.Left.TickLabelStyle.ForeColor = ScottPlot.Color.FromHex("#94a3b8");
+            formsPlotTick.Plot.Axes.Bottom.TickLabelStyle.ForeColor = ScottPlot.Color.FromHex("#94a3b8");
+            formsPlotTick.Plot.Axes.Left.FrameLineStyle.Color = ScottPlot.Color.FromHex("#475569");
+            formsPlotTick.Plot.Axes.Bottom.FrameLineStyle.Color = ScottPlot.Color.FromHex("#475569");
+
+            string fontName = PercentPlotHelper.GetSafeChineseFont();
+            formsPlotTick.Plot.Title($"Bar #{bar.BarIndex} 内部 Tick 价格路径 (共 {count:N0} 笔 Tick, {bar.OpenDateTime.ToLocalTime():HH:mm:ss.fff} ~ {bar.CloseDateTime.ToLocalTime():HH:mm:ss.fff})", 11);
+            formsPlotTick.Plot.Axes.Title.Label.FontName = fontName;
+            formsPlotTick.Plot.Axes.Title.Label.ForeColor = ScottPlot.Color.FromHex("#38bdf8");
+
+            double[] xs = new double[count];
+            double[] ys = new double[count];
+            var volBars = new List<ScottPlot.Bar>(count);
+            double maxVol = 0;
+
+            int maxIdx = 0, minIdx = 0;
+            decimal maxVal = decimal.MinValue, minVal = decimal.MaxValue;
+
+            for (int i = 0; i < count; i++)
+            {
+                xs[i] = i;
+                ys[i] = (double)ticks[i].Price;
+
+                if (ticks[i].Price > maxVal) { maxVal = ticks[i].Price; maxIdx = i; }
+                if (ticks[i].Price < minVal) { minVal = ticks[i].Price; minIdx = i; }
+
+                double v = (double)ticks[i].Qty;
+                if (v > maxVol) maxVol = v;
+
+                bool isBuyer = !ticks[i].IsBuyerMaker;
+                var vCol = isBuyer ? ScottPlot.Color.FromHex("#22c55e").WithAlpha(0.45) : ScottPlot.Color.FromHex("#ef4444").WithAlpha(0.45);
+
+                volBars.Add(new ScottPlot.Bar
+                {
+                    Position = i,
+                    Value = v,
+                    ValueBase = 0,
+                    Size = 0.8,
+                    FillColor = vCol,
+                    LineWidth = 0
+                });
+            }
+
+            // 绘制成交量柱状图 (绑定右侧 Y 轴)
+            if (volBars.Count > 0)
+            {
+                var vPlot = formsPlotTick.Plot.Add.Bars(volBars);
+                vPlot.Axes.YAxis = formsPlotTick.Plot.Axes.Right;
+                formsPlotTick.Plot.Axes.Right.TickLabelStyle.ForeColor = ScottPlot.Color.FromHex("#64748b");
+                formsPlotTick.Plot.Axes.Right.FrameLineStyle.Color = ScottPlot.Color.FromHex("#334155");
+                if (maxVol <= 0) maxVol = 1;
+                formsPlotTick.Plot.Axes.SetLimitsY(0, maxVol * 4.0, formsPlotTick.Plot.Axes.Right);
+            }
+
+            // 绘制主折线走势
+            var scatter = formsPlotTick.Plot.Add.ScatterLine(xs, ys);
+            scatter.Color = closeP >= openP ? ScottPlot.Color.FromHex("#22c55e") : ScottPlot.Color.FromHex("#ef4444");
+            scatter.LineWidth = 1.4f;
+
+            // 标注关键点位 (Open, High, Low, Close)
+            var mOpen = formsPlotTick.Plot.Add.Marker(0, (double)ticks[0].Price);
+            mOpen.Shape = ScottPlot.MarkerShape.FilledCircle;
+            mOpen.Size = 8;
+            mOpen.Color = ScottPlot.Color.FromHex("#38bdf8"); // Cyan (Open)
+
+            var mHigh = formsPlotTick.Plot.Add.Marker(maxIdx, (double)maxVal);
+            mHigh.Shape = ScottPlot.MarkerShape.FilledDiamond;
+            mHigh.Size = 9;
+            mHigh.Color = ScottPlot.Color.FromHex("#facc15"); // Gold (High)
+
+            var mLow = formsPlotTick.Plot.Add.Marker(minIdx, (double)minVal);
+            mLow.Shape = ScottPlot.MarkerShape.FilledDiamond;
+            mLow.Size = 9;
+            mLow.Color = ScottPlot.Color.FromHex("#c084fc"); // Purple (Low)
+
+            var mClose = formsPlotTick.Plot.Add.Marker(count - 1, (double)ticks[count - 1].Price);
+            mClose.Shape = ScottPlot.MarkerShape.FilledSquare;
+            mClose.Size = 8;
+            mClose.Color = ScottPlot.Color.FromHex("#f97316"); // Orange (Close)
+
+            formsPlotTick.Plot.Axes.AutoScale();
+            formsPlotTick.Refresh();
+
+            // 2. 渲染表格流水 (DataGridView)
+            dgvTicks.Rows.Clear();
+            dgvTicks.SuspendLayout();
+            for (int i = 0; i < count; i++)
+            {
+                var t = ticks[i];
+                DateTime dt = TimeHelper.FromUnixTimeMilliseconds(t.Time).ToLocalTime();
+                bool isBuyer = !t.IsBuyerMaker;
+                decimal diffFromOpen = openP > 0 ? (t.Price - openP) / openP * 100m : 0m;
+
+                int rowIdx = dgvTicks.Rows.Add(
+                    i + 1,
+                    dt.ToString("HH:mm:ss.fff"),
+                    t.Price.ToString("F2"),
+                    t.Qty.ToString("F4"),
+                    t.QuoteQty.ToString("F2"),
+                    isBuyer ? "🟢 买方主动" : "🔴 卖方主动",
+                    $"{diffFromOpen:+0.00;-0.00;0.00}%"
+                );
+
+                dgvTicks.Rows[rowIdx].DefaultCellStyle.ForeColor = isBuyer
+                    ? System.Drawing.Color.FromArgb(74, 222, 128)
+                    : System.Drawing.Color.FromArgb(248, 113, 113);
+            }
+            dgvTicks.ResumeLayout();
         }
 
         private void AppendLogInternal(string message, System.Drawing.Color color)

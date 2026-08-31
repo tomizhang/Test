@@ -129,6 +129,11 @@ namespace Test.PercentageBar.WinForms.Models
         public int TickCount { get; init; }
 
         /// <summary>
+        /// 🌟 本根 K 线内部包含的全量逐笔 Tick 数据切片
+        /// </summary>
+        public Common.RawTick[]? Ticks { get; init; }
+
+        /// <summary>
         /// 涨跌额 (Close - Open)
         /// </summary>
         public decimal PriceChange => Close - Open;

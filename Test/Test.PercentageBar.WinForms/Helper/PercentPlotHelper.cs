@@ -25,7 +25,7 @@ namespace Test.PercentageBar.WinForms.Helper
             "Microsoft YaHei", "微软雅黑", "PingFang SC", "SimHei", "Segoe UI", "Arial"
         };
 
-        private static string GetSafeChineseFont()
+        public static string GetSafeChineseFont()
         {
             try
             {
@@ -70,7 +70,8 @@ namespace Test.PercentageBar.WinForms.Helper
             bool showTrendLines = true,
             int pivotWindow = 3,
             TrendLine? selectedTrendLine = null,
-            decimal touchTolerancePct = 0.0003m)
+            decimal touchTolerancePct = 0.0003m,
+            bool showVolume = true)
         {
             if (plot == null || bars == null || bars.Count == 0)
             {
@@ -100,44 +101,54 @@ namespace Test.PercentageBar.WinForms.Helper
 
             int count = bars.Count;
 
-            // 2. 绘制底部成交量柱状图 (Volume Histogram, 与 X 轴对齐, 绑定右侧 Y 轴)
-            var volumeBars = new List<ScottPlot.Bar>(count);
-            double maxVolume = 0;
-            for (int i = 0; i < count; i++)
+            // 2. 绘制底部成交量柱状图 (Volume Histogram, 与 X 轴对齐, 绑定右侧 Y 轴，可自由勾选切换)
+            if (showVolume)
             {
-                var b = bars[i];
-                double vol = (double)b.Volume;
-                if (vol > maxVolume) maxVolume = vol;
-
-                bool isBull = b.Close >= b.Open;
-                var volColor = isBull
-                    ? Color.FromHex("#22c55e").WithAlpha(0.45)
-                    : Color.FromHex("#ef4444").WithAlpha(0.45);
-
-                volumeBars.Add(new ScottPlot.Bar
+                var volumeBars = new List<ScottPlot.Bar>(count);
+                double maxVolume = 0;
+                for (int i = 0; i < count; i++)
                 {
-                    Position = b.BarIndex,
-                    Value = vol,
-                    ValueBase = 0,
-                    Size = 0.75,
-                    FillColor = volColor,
-                    LineWidth = 0
-                });
+                    var b = bars[i];
+                    double vol = (double)b.Volume;
+                    if (vol > maxVolume) maxVolume = vol;
+
+                    bool isBull = b.Close >= b.Open;
+                    var volColor = isBull
+                        ? Color.FromHex("#22c55e").WithAlpha(0.45)
+                        : Color.FromHex("#ef4444").WithAlpha(0.45);
+
+                    volumeBars.Add(new ScottPlot.Bar
+                    {
+                        Position = b.BarIndex,
+                        Value = vol,
+                        ValueBase = 0,
+                        Size = 0.75,
+                        FillColor = volColor,
+                        LineWidth = 0
+                    });
+                }
+
+                var volPlot = plot.Add.Bars(volumeBars);
+                volPlot.Axes.YAxis = plot.Axes.Right;
+
+                // 右侧 Y 轴配置 (成交量专用坐标轴, 颜色偏灰以防视觉喧宾夺主)
+                plot.Axes.Right.TickLabelStyle.ForeColor = Color.FromHex("#64748b");
+                plot.Axes.Right.FrameLineStyle.Color = Color.FromHex("#334155");
+                plot.Axes.Right.Label.Text = "成交量 (Base Volume)";
+                plot.Axes.Right.Label.FontName = chineseFont;
+                plot.Axes.Right.Label.ForeColor = Color.FromHex("#64748b");
+                plot.Axes.Right.Label.FontSize = 11;
+
+                if (maxVolume <= 0) maxVolume = 1;
+                plot.Axes.SetLimitsY(0, maxVolume * 3.8, plot.Axes.Right);
             }
-
-            var volPlot = plot.Add.Bars(volumeBars);
-            volPlot.Axes.YAxis = plot.Axes.Right;
-
-            // 右侧 Y 轴配置 (成交量专用坐标轴, 颜色偏灰以防视觉喧宾夺主)
-            plot.Axes.Right.TickLabelStyle.ForeColor = Color.FromHex("#64748b");
-            plot.Axes.Right.FrameLineStyle.Color = Color.FromHex("#334155");
-            plot.Axes.Right.Label.Text = "成交量 (Base Volume)";
-            plot.Axes.Right.Label.FontName = chineseFont;
-            plot.Axes.Right.Label.ForeColor = Color.FromHex("#64748b");
-            plot.Axes.Right.Label.FontSize = 11;
-
-            if (maxVolume <= 0) maxVolume = 1;
-            plot.Axes.SetLimitsY(0, maxVolume * 3.8, plot.Axes.Right);
+            else
+            {
+                // 不显示成交量时，清空右侧 Y 轴标签
+                plot.Axes.Right.Label.Text = string.Empty;
+                plot.Axes.Right.TickLabelStyle.ForeColor = Color.FromHex("#1e293b");
+                plot.Axes.Right.FrameLineStyle.Color = Color.FromHex("#1e293b");
+            }
 
             // 3. 绘制主图 (蜡烛图 或 收盘折线)
             if (chartType == PercentChartType.Candlestick)

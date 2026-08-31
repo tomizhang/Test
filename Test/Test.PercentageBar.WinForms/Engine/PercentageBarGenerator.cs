@@ -78,6 +78,8 @@ namespace Test.PercentageBar.WinForms.Engine
             int count = ticks.Count;
             int reportInterval = Math.Max(10000, count / 50);
 
+            var currentBarTicks = new List<RawTick>(256);
+
             for (int i = 0; i < count; i++)
             {
                 if ((i & 0x3FFF) == 0 && ct.IsCancellationRequested)
@@ -98,6 +100,9 @@ namespace Test.PercentageBar.WinForms.Engine
                 {
                     // 开启首根/新一根 Bar
                     isBarBuilding = true;
+                    currentBarTicks.Clear();
+                    currentBarTicks.Add(tick);
+
                     open = p;
                     high = p;
                     low = p;
@@ -114,6 +119,7 @@ namespace Test.PercentageBar.WinForms.Engine
                 }
 
                 // 累加当前 Bar 状态
+                currentBarTicks.Add(tick);
                 if (p > high) high = p;
                 if (p < low) low = p;
                 close = p;
@@ -205,7 +211,8 @@ namespace Test.PercentageBar.WinForms.Engine
                         TradeCount = tradeCount,
                         TakerBuyVolume = takerBuyVol,
                         TakerBuyQuoteVolume = takerBuyQuote,
-                        TickCount = tickCount
+                        TickCount = tickCount,
+                        Ticks = currentBarTicks.ToArray()
                     };
 
                     result.Add(completedBar);
@@ -216,6 +223,7 @@ namespace Test.PercentageBar.WinForms.Engine
                     totalDurationMs += (long)dur.TotalMilliseconds;
 
                     // 开启下一根 Bar
+                    currentBarTicks.Clear();
                     open = p;
                     high = p;
                     low = p;
@@ -253,7 +261,8 @@ namespace Test.PercentageBar.WinForms.Engine
                     TradeCount = tradeCount,
                     TakerBuyVolume = takerBuyVol,
                     TakerBuyQuoteVolume = takerBuyQuote,
-                    TickCount = tickCount
+                    TickCount = tickCount,
+                    Ticks = currentBarTicks.ToArray()
                 };
 
                 result.Add(lastBar);
@@ -578,6 +587,7 @@ namespace Test.PercentageBar.WinForms.Engine
         private decimal _volume = 0m, _quoteVolume = 0m, _takerBuyVol = 0m, _takerBuyQuote = 0m;
         private long _tradeCount = 0;
         private int _tickCount = 0;
+        private readonly List<RawTick> _currentBarTicks = new List<RawTick>(256);
 
         // 全局统计累加器
         public PercentBarGenerationStats Stats { get; } = new PercentBarGenerationStats();
@@ -647,6 +657,9 @@ namespace Test.PercentageBar.WinForms.Engine
                 if (!_isBarBuilding)
                 {
                     _isBarBuilding = true;
+                    _currentBarTicks.Clear();
+                    _currentBarTicks.Add(tick);
+
                     _open = p;
                     _high = p;
                     _low = p;
@@ -662,6 +675,7 @@ namespace Test.PercentageBar.WinForms.Engine
                     continue;
                 }
 
+                _currentBarTicks.Add(tick);
                 if (p > _high) _high = p;
                 if (p < _low) _low = p;
                 _close = p;
@@ -751,7 +765,8 @@ namespace Test.PercentageBar.WinForms.Engine
                         TradeCount = _tradeCount,
                         TakerBuyVolume = _takerBuyVol,
                         TakerBuyQuoteVolume = _takerBuyQuote,
-                        TickCount = _tickCount
+                        TickCount = _tickCount,
+                        Ticks = _currentBarTicks.ToArray()
                     };
 
                     var dur = completedBar.Duration;
@@ -777,6 +792,7 @@ namespace Test.PercentageBar.WinForms.Engine
                     }
 
                     // 开启下一根 Bar
+                    _currentBarTicks.Clear();
                     _open = p;
                     _high = p;
                     _low = p;
@@ -814,7 +830,8 @@ namespace Test.PercentageBar.WinForms.Engine
                 TradeCount = _tradeCount,
                 TakerBuyVolume = _takerBuyVol,
                 TakerBuyQuoteVolume = _takerBuyQuote,
-                TickCount = _tickCount
+                TickCount = _tickCount,
+                Ticks = _currentBarTicks.ToArray()
             };
 
             var dur = lastBar.Duration;
