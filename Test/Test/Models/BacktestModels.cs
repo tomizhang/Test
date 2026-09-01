@@ -44,7 +44,12 @@ namespace Common.Models
         /// <summary>
         /// 回测周期结束强制平仓
         /// </summary>
-        EndOfBacktest = 3
+        EndOfBacktest = 3,
+
+        /// <summary>
+        /// 跨Bar首Tick反向信号平仓 (Signal Reversal)
+        /// </summary>
+        SignalReversal = 4
     }
 
     /// <summary>

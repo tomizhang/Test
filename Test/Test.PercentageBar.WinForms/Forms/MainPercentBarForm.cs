@@ -8,6 +8,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -54,6 +55,27 @@ namespace Test.PercentageBar.WinForms.Forms
         private TabControl tabTickViews = null!;
         private FormsPlot formsPlotTick = null!;
         private DataGridView dgvTicks = null!;
+        private readonly List<TickViewModel> _displayedTicks = new();
+
+        private struct TickViewModel
+        {
+            public int BarIndex;
+            public int TickIndex;
+            public long Time;
+            public decimal Price;
+            public decimal Qty;
+            public decimal QuoteQty;
+            public bool IsBuyer;
+            public decimal DiffPct;
+        }
+
+        // 策略报告 Tab 控件
+        private TabPage tabStrategyReport = null!;
+        private Panel panelStrategyHeader = null!;
+        private Label lblStrategyTitle = null!;
+        private Label lblStrategyMetrics = null!;
+        private DataGridView dgvTrades = null!;
+        private Test.PercentageBar.WinForms.Engine.FirstTickBacktestReport? _lastBacktestReport = null;
 
         // 右侧控制面板控件
         private Panel panelRight = null!;
@@ -78,6 +100,15 @@ namespace Test.PercentageBar.WinForms.Forms
         private CheckBox chkShowTrendLines = null!;
         private NumericUpDown numPivotWindow = null!;
         private NumericUpDown numTouchTolerance = null!;
+
+        // 首 Tick 动量策略回测控件
+        private GroupBox grpStrategy = null!;
+        private NumericUpDown numInitialCapital = null!;
+        private NumericUpDown numFeeRate = null!;
+        private CheckBox chkCompound = null!;
+        private CheckBox chkShowStrategyMarkers = null!;
+        private Button btnRunBacktest = null!;
+        private Button btnExportBacktestReport = null!;
 
         private GroupBox grpPlayback = null!;
         private ComboBox cboPlaybackMode = null!;
@@ -105,8 +136,11 @@ namespace Test.PercentageBar.WinForms.Forms
             ApplyDarkTheme();
             SetupUiTimer();
 
-            // 🚀 反射自动加载用户保存的全部历史配置参数
+            // 🚀 1. 反射自动加载用户保存的全部历史配置参数 (多轮依赖感知安全恢复)
             bool configLoaded = FormConfigHelper.LoadFormConfig(this);
+
+            // 🚀 2. 自动绑定全窗体控件变更监听 (修改任何控件即时防抖自动保存至 AppData 及本地，无惧异常退出)
+            FormConfigHelper.BindAutoSave(this);
 
             this.FormClosing += (s, e) =>
             {
@@ -117,7 +151,7 @@ namespace Test.PercentageBar.WinForms.Forms
             AppendLogInternal("🚀 [系统就绪] 百分比变化 K 线生成与可视化引擎已加载，X 轴为纯 Bar 序号，支持逐条动态回放与毫秒级时间跨度计算。", System.Drawing.Color.FromArgb(74, 222, 128));
             if (configLoaded)
             {
-                AppendLogInternal("💾 [配置系统] 已通过反射自动加载历史参数配置 (后续新增控件均支持全自动识别保存)。", System.Drawing.Color.FromArgb(56, 189, 248));
+                AppendLogInternal("💾 [配置系统] 已通过反射自动加载历史参数配置 (已开启实时变更全自动保存，修改即存)。", System.Drawing.Color.FromArgb(56, 189, 248));
             }
         }
 
@@ -271,8 +305,19 @@ namespace Test.PercentageBar.WinForms.Forms
                 ReadOnly = true,
                 SelectionMode = DataGridViewSelectionMode.FullRowSelect,
                 EnableHeadersVisualStyles = false,
-                Font = new Font("Consolas", 9F)
+                Font = new Font("Consolas", 9F),
+                VirtualMode = true
             };
+
+            // 启用双缓冲防止闪烁与卡顿
+            typeof(DataGridView).InvokeMember(
+                "DoubleBuffered",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.SetProperty,
+                null, dgvTicks, new object[] { true });
+
+            dgvTicks.CellValueNeeded += OnDgvTicksCellValueNeeded;
+            dgvTicks.CellFormatting += OnDgvTicksCellFormatting;
+
             dgvTicks.ColumnHeadersDefaultCellStyle.BackColor = System.Drawing.Color.FromArgb(30, 41, 59);
             dgvTicks.ColumnHeadersDefaultCellStyle.ForeColor = System.Drawing.Color.FromArgb(56, 189, 248);
             dgvTicks.ColumnHeadersDefaultCellStyle.Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold);
@@ -300,8 +345,107 @@ namespace Test.PercentageBar.WinForms.Forms
 
             tabTickTable.Controls.Add(dgvTicks);
 
+            // Tab 3: 🏆 策略回测报告与交易清单
+            tabStrategyReport = new TabPage("🏆 首Tick策略回测报告") { BackColor = System.Drawing.Color.FromArgb(15, 23, 42) };
+            panelStrategyHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 36,
+                BackColor = System.Drawing.Color.FromArgb(30, 41, 59)
+            };
+            lblStrategyTitle = new Label
+            {
+                Text = "🏆 策略回测概要:",
+                ForeColor = System.Drawing.Color.FromArgb(250, 204, 21),
+                Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold),
+                Location = new Point(10, 8),
+                AutoSize = true
+            };
+            lblStrategyMetrics = new Label
+            {
+                Text = "尚未运行回测 (请在右侧控制面板点击「🚀 运行首Tick策略回测」)",
+                ForeColor = System.Drawing.Color.FromArgb(226, 232, 240),
+                Font = new Font("Microsoft YaHei", 8.5F),
+                Location = new Point(130, 9),
+                AutoSize = true
+            };
+            panelStrategyHeader.Controls.AddRange(new Control[] { lblStrategyTitle, lblStrategyMetrics });
+
+            dgvTrades = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                BackgroundColor = System.Drawing.Color.FromArgb(15, 23, 42),
+                GridColor = System.Drawing.Color.FromArgb(51, 65, 85),
+                BorderStyle = BorderStyle.None,
+                RowHeadersVisible = false,
+                AllowUserToAddRows = false,
+                ReadOnly = true,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                EnableHeadersVisualStyles = false,
+                Font = new Font("Consolas", 9F)
+            };
+
+            typeof(DataGridView).InvokeMember(
+                "DoubleBuffered",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.SetProperty,
+                null, dgvTrades, new object[] { true });
+            dgvTrades.ColumnHeadersDefaultCellStyle.BackColor = System.Drawing.Color.FromArgb(30, 41, 59);
+            dgvTrades.ColumnHeadersDefaultCellStyle.ForeColor = System.Drawing.Color.FromArgb(56, 189, 248);
+            dgvTrades.ColumnHeadersDefaultCellStyle.Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold);
+            dgvTrades.DefaultCellStyle.BackColor = System.Drawing.Color.FromArgb(15, 23, 42);
+            dgvTrades.DefaultCellStyle.ForeColor = System.Drawing.Color.FromArgb(241, 245, 249);
+            dgvTrades.DefaultCellStyle.SelectionBackColor = System.Drawing.Color.FromArgb(30, 58, 138);
+
+            dgvTrades.Columns.Add("ColTradeId", "#");
+            dgvTrades.Columns.Add("ColEntryBar", "持仓Bar范围");
+            dgvTrades.Columns.Add("ColSide", "方向");
+            dgvTrades.Columns.Add("ColEntryTime", "开仓时间");
+            dgvTrades.Columns.Add("ColEntryPrice", "开仓价 (USDT)");
+            dgvTrades.Columns.Add("ColExitTime", "平仓时间");
+            dgvTrades.Columns.Add("ColExitPrice", "平仓价 (USDT)");
+            dgvTrades.Columns.Add("ColExitReason", "平仓结果");
+            dgvTrades.Columns.Add("ColNetPnL", "净收益 (USDT)");
+            dgvTrades.Columns.Add("ColReturnPct", "收益率 (%)");
+            dgvTrades.Columns.Add("ColEquity", "账户净值 (USDT)");
+
+            dgvTrades.Columns[0].Width = 45;
+            dgvTrades.Columns[1].Width = 110;
+            dgvTrades.Columns[2].Width = 65;
+            dgvTrades.Columns[3].Width = 110;
+            dgvTrades.Columns[4].Width = 95;
+            dgvTrades.Columns[5].Width = 110;
+            dgvTrades.Columns[6].Width = 95;
+            dgvTrades.Columns[7].Width = 95;
+            dgvTrades.Columns[8].Width = 95;
+            dgvTrades.Columns[9].Width = 85;
+            dgvTrades.Columns[10].Width = 110;
+
+            dgvTrades.CellDoubleClick += (s, e) =>
+            {
+                if (e.RowIndex >= 0 && _lastBacktestReport != null && e.RowIndex < _lastBacktestReport.Trades.Count)
+                {
+                    var trade = _lastBacktestReport.Trades[e.RowIndex];
+                    if (trade.EntryBarIndex >= 0 && trade.EntryBarIndex < _currentBars.Count)
+                    {
+                        _selectedBarStart = trade.EntryBarIndex;
+                        _selectedBarEnd = trade.ExitBarIndex;
+                        var selBars = new List<PercentageKline>();
+                        for (int b = _selectedBarStart.Value; b <= _selectedBarEnd.Value; b++)
+                        {
+                            selBars.Add(_currentBars[b]);
+                        }
+                        DisplayBarsTickDetails(selBars);
+                        RedrawCurrentPlot(autoScale: false);
+                    }
+                }
+            };
+
+            tabStrategyReport.Controls.Add(dgvTrades);
+            tabStrategyReport.Controls.Add(panelStrategyHeader);
+
             tabTickViews.TabPages.Add(tabTickPlot);
             tabTickViews.TabPages.Add(tabTickTable);
+            tabTickViews.TabPages.Add(tabStrategyReport);
 
             panelTickDetail.Controls.Add(tabTickViews);
             panelTickDetail.Controls.Add(panelTickHeader);
@@ -731,6 +875,95 @@ namespace Test.PercentageBar.WinForms.Forms
                 });
             }
             panelRight.Controls.Add(grpControl);
+            top += grpControl.Height + 10;
+
+            // Group 6: 🎯 首 Tick 动量策略回测 (1:1 止盈止损)
+            grpStrategy = CreateGroupBox("6. 🎯 首 Tick 动量策略回测 (1:1 止盈止损)", top, 200);
+            {
+                var lblCap = CreateLabel("初始本金(U):", 15, 25);
+                numInitialCapital = new NumericUpDown
+                {
+                    Location = new Point(105, 22),
+                    Width = 90,
+                    Minimum = 100,
+                    Maximum = 10000000,
+                    Value = 10000,
+                    Increment = 1000,
+                    Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold),
+                    ForeColor = System.Drawing.Color.FromArgb(56, 189, 248)
+                };
+
+                var lblFee = CreateLabel("手续费率(%):", 205, 25);
+                numFeeRate = new NumericUpDown
+                {
+                    Location = new Point(285, 22),
+                    Width = 55,
+                    Minimum = 0,
+                    Maximum = 1,
+                    DecimalPlaces = 3,
+                    Increment = 0.01m,
+                    Value = 0.040m,
+                    Font = new Font("Microsoft YaHei", 8.5F)
+                };
+
+                chkCompound = new CheckBox
+                {
+                    Text = "复利模式 (每笔按动态净值开仓)",
+                    Location = new Point(15, 54),
+                    AutoSize = true,
+                    Checked = false,
+                    ForeColor = System.Drawing.Color.FromArgb(226, 232, 240),
+                    Font = new Font("Microsoft YaHei", 8.5F)
+                };
+
+                chkShowStrategyMarkers = new CheckBox
+                {
+                    Text = "在主图表叠加开平仓信号标记 (▲/▼)",
+                    Location = new Point(15, 78),
+                    AutoSize = true,
+                    Checked = true,
+                    ForeColor = System.Drawing.Color.FromArgb(74, 222, 128),
+                    Font = new Font("Microsoft YaHei", 8.5F)
+                };
+                chkShowStrategyMarkers.CheckedChanged += (s, e) => RedrawCurrentPlot(autoScale: false, autoFollow: chkAutoFollow.Checked);
+
+                btnRunBacktest = new Button
+                {
+                    Text = "🚀 运行策略回测并生成 HTML 报告",
+                    Location = new Point(15, 108),
+                    Size = new Size(325, 38),
+                    BackColor = System.Drawing.Color.FromArgb(16, 185, 129), // Emerald 500
+                    ForeColor = System.Drawing.Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Microsoft YaHei", 9.5F, FontStyle.Bold),
+                    Cursor = Cursors.Hand
+                };
+                btnRunBacktest.FlatAppearance.BorderSize = 0;
+                btnRunBacktest.Click += (s, e) => RunFirstTickStrategyBacktest();
+
+                btnExportBacktestReport = new Button
+                {
+                    Text = "🌐 导出 / 另存 HTML 交互回测报告",
+                    Location = new Point(15, 152),
+                    Size = new Size(325, 32),
+                    BackColor = System.Drawing.Color.FromArgb(14, 116, 144), // Cyan 700
+                    ForeColor = System.Drawing.Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold),
+                    Cursor = Cursors.Hand
+                };
+                btnExportBacktestReport.FlatAppearance.BorderSize = 0;
+                btnExportBacktestReport.Click += (s, e) => ExportBacktestReportToFile();
+
+                grpStrategy.Controls.AddRange(new Control[]
+                {
+                    lblCap, numInitialCapital,
+                    lblFee, numFeeRate,
+                    chkCompound, chkShowStrategyMarkers,
+                    btnRunBacktest, btnExportBacktestReport
+                });
+            }
+            panelRight.Controls.Add(grpStrategy);
         }
 
         private void SetupUiTimer()
@@ -1078,7 +1311,9 @@ namespace Test.PercentageBar.WinForms.Forms
                 pivotWindow: (int)(numPivotWindow?.Value ?? 3),
                 selectedTrendLine: _selectedTrendLine,
                 touchTolerancePct: (numTouchTolerance?.Value ?? 0.030m) / 100m,
-                showVolume: chkShowVolume?.Checked ?? true);
+                showVolume: chkShowVolume?.Checked ?? true,
+                strategyTrades: _lastBacktestReport?.Trades,
+                showStrategyMarkers: chkShowStrategyMarkers?.Checked ?? true);
 
             int total = _currentBars.Count;
 
@@ -1449,7 +1684,7 @@ namespace Test.PercentageBar.WinForms.Forms
         }
 
         /// <summary>
-        /// 🌟 在日志右侧区域渲染选中单根或 Shift 连续多根 Bar 内部的全部 Tick 走势图与逐笔流水表
+        /// 🌟 在日志右侧区域极速渲染选中单根或 Shift 连续多根 Bar 内部的全部 Tick 走势图与逐笔流水表 (采用 VirtualMode 与量能聚合，零延迟瞬开)
         /// </summary>
         private void DisplayBarsTickDetails(IReadOnlyList<PercentageKline> bars)
         {
@@ -1459,7 +1694,8 @@ namespace Test.PercentageBar.WinForms.Forms
                 formsPlotTick.Plot.Clear();
                 formsPlotTick.Plot.Title("未选择 K 线");
                 formsPlotTick.Refresh();
-                dgvTicks.Rows.Clear();
+                _displayedTicks.Clear();
+                dgvTicks.RowCount = 0;
                 return;
             }
 
@@ -1485,7 +1721,8 @@ namespace Test.PercentageBar.WinForms.Forms
                 formsPlotTick.Plot.Clear();
                 formsPlotTick.Plot.Title($"{barRangeStr} 无 Tick 数据");
                 formsPlotTick.Refresh();
-                dgvTicks.Rows.Clear();
+                _displayedTicks.Clear();
+                dgvTicks.RowCount = 0;
                 return;
             }
 
@@ -1543,7 +1780,6 @@ namespace Test.PercentageBar.WinForms.Forms
 
             double[] xs = new double[totalTicks];
             double[] ys = new double[totalTicks];
-            var volBars = new List<ScottPlot.Bar>(totalTicks);
             double maxVol = 0;
 
             int maxIdx = 0, minIdx = 0;
@@ -1559,19 +1795,66 @@ namespace Test.PercentageBar.WinForms.Forms
 
                 double v = (double)allTicks[i].Qty;
                 if (v > maxVol) maxVol = v;
+            }
 
-                bool isBuyer = !allTicks[i].IsBuyerMaker;
-                var vCol = isBuyer ? ScottPlot.Color.FromHex("#22c55e").WithAlpha(0.45) : ScottPlot.Color.FromHex("#ef4444").WithAlpha(0.45);
+            // 🌟 成交量柱状图极速聚合渲染 (若 Tick 超过 250 笔则自动像素级分箱聚合，避免为几万个 Tick 单独分配多边形导致 CPU 爆满)
+            int maxVolBins = 250;
+            var volBars = new List<ScottPlot.Bar>(Math.Min(totalTicks, maxVolBins));
 
-                volBars.Add(new ScottPlot.Bar
+            if (totalTicks <= maxVolBins)
+            {
+                for (int i = 0; i < totalTicks; i++)
                 {
-                    Position = i,
-                    Value = v,
-                    ValueBase = 0,
-                    Size = 0.8,
-                    FillColor = vCol,
-                    LineWidth = 0
-                });
+                    double v = (double)allTicks[i].Qty;
+                    bool isBuyer = !allTicks[i].IsBuyerMaker;
+                    var vCol = isBuyer ? ScottPlot.Color.FromHex("#22c55e").WithAlpha(0.45) : ScottPlot.Color.FromHex("#ef4444").WithAlpha(0.45);
+
+                    volBars.Add(new ScottPlot.Bar
+                    {
+                        Position = i,
+                        Value = v,
+                        ValueBase = 0,
+                        Size = 0.8,
+                        FillColor = vCol,
+                        LineWidth = 0
+                    });
+                }
+            }
+            else
+            {
+                double binSize = (double)totalTicks / maxVolBins;
+                for (int bin = 0; bin < maxVolBins; bin++)
+                {
+                    int startT = (int)(bin * binSize);
+                    int endT = Math.Min(totalTicks - 1, (int)((bin + 1) * binSize));
+                    if (startT > endT) continue;
+
+                    double binVol = 0;
+                    double binBuyVol = 0;
+                    double binSellVol = 0;
+
+                    for (int t = startT; t <= endT; t++)
+                    {
+                        double q = (double)allTicks[t].Qty;
+                        binVol += q;
+                        if (!allTicks[t].IsBuyerMaker) binBuyVol += q;
+                        else binSellVol += q;
+                    }
+
+                    double binPos = (startT + endT) / 2.0;
+                    bool isBuyer = binBuyVol >= binSellVol;
+                    var vCol = isBuyer ? ScottPlot.Color.FromHex("#22c55e").WithAlpha(0.45) : ScottPlot.Color.FromHex("#ef4444").WithAlpha(0.45);
+
+                    volBars.Add(new ScottPlot.Bar
+                    {
+                        Position = binPos,
+                        Value = binVol,
+                        ValueBase = 0,
+                        Size = binSize * 0.85,
+                        FillColor = vCol,
+                        LineWidth = 0
+                    });
+                }
             }
 
             // 绘制成交量柱状图 (绑定右侧 Y 轴)
@@ -1585,10 +1868,11 @@ namespace Test.PercentageBar.WinForms.Forms
                 formsPlotTick.Plot.Axes.SetLimitsY(0, maxVol * 4.0, formsPlotTick.Plot.Axes.Right);
             }
 
-            // 绘制主折线走势
+            // 绘制主折线走势 (禁用点阵标记以实现 1ms 极限刷新)
             var scatter = formsPlotTick.Plot.Add.ScatterLine(xs, ys);
             scatter.Color = overallClose >= overallOpen ? ScottPlot.Color.FromHex("#22c55e") : ScottPlot.Color.FromHex("#ef4444");
-            scatter.LineWidth = 1.4f;
+            scatter.LineWidth = 1.3f;
+            scatter.MarkerSize = 0;
 
             // 🌟 绘制多根 Bar 之间的分界虚线与 Bar 序号标签
             if (bars.Count > 1 && barBoundaries.Count > 1)
@@ -1613,11 +1897,10 @@ namespace Test.PercentageBar.WinForms.Forms
             }
 
             // 🌟 标注关键最高与最低点位：红色正三角 (▲) 与 红色倒三角 (▼)
-            // 1. 最高极值点：红色正三角 ▲ (FilledTriangleUp)
             var mHigh = formsPlotTick.Plot.Add.Marker(maxIdx, (double)maxVal);
             mHigh.Shape = ScottPlot.MarkerShape.FilledTriangleUp;
             mHigh.Size = 11;
-            mHigh.Color = ScottPlot.Color.FromHex("#ef4444"); // 红色正三角
+            mHigh.Color = ScottPlot.Color.FromHex("#ef4444");
 
             var textHigh = formsPlotTick.Plot.Add.Text($"▲ 最高 {maxVal:F2}", maxIdx, (double)maxVal);
             textHigh.LabelFontName = fontName;
@@ -1628,11 +1911,10 @@ namespace Test.PercentageBar.WinForms.Forms
             textHigh.LabelBorderColor = ScottPlot.Color.FromHex("#ef4444");
             textHigh.LabelBorderWidth = 1f;
 
-            // 2. 最低极值点：红色倒三角 ▼ (FilledTriangleDown)
             var mLow = formsPlotTick.Plot.Add.Marker(minIdx, (double)minVal);
             mLow.Shape = ScottPlot.MarkerShape.FilledTriangleDown;
             mLow.Size = 11;
-            mLow.Color = ScottPlot.Color.FromHex("#ef4444"); // 红色倒三角
+            mLow.Color = ScottPlot.Color.FromHex("#ef4444");
 
             var textLow = formsPlotTick.Plot.Add.Text($"▼ 最低 {minVal:F2}", minIdx, (double)minVal);
             textLow.LabelFontName = fontName;
@@ -1643,24 +1925,27 @@ namespace Test.PercentageBar.WinForms.Forms
             textLow.LabelBorderColor = ScottPlot.Color.FromHex("#ef4444");
             textLow.LabelBorderWidth = 1f;
 
-            // 3. 开盘与收盘点
+            // 开盘与收盘点标记
             var mOpen = formsPlotTick.Plot.Add.Marker(0, (double)allTicks[0].Price);
             mOpen.Shape = ScottPlot.MarkerShape.FilledCircle;
             mOpen.Size = 8;
-            mOpen.Color = ScottPlot.Color.FromHex("#38bdf8"); // 亮蓝 (Open)
+            mOpen.Color = ScottPlot.Color.FromHex("#38bdf8");
 
             var mClose = formsPlotTick.Plot.Add.Marker(totalTicks - 1, (double)allTicks[totalTicks - 1].Price);
             mClose.Shape = ScottPlot.MarkerShape.FilledSquare;
             mClose.Size = 8;
-            mClose.Color = ScottPlot.Color.FromHex("#f97316"); // 橙色 (Close)
+            mClose.Color = ScottPlot.Color.FromHex("#f97316");
 
             formsPlotTick.Plot.Axes.Margins(0.02, 0.12);
             formsPlotTick.Plot.Axes.AutoScale();
             formsPlotTick.Refresh();
 
-            // 2. 渲染逐笔流水表格 (DataGridView)
-            dgvTicks.Rows.Clear();
-            dgvTicks.SuspendLayout();
+            // 2. 🌟 极速装载 VirtualMode 虚拟数据源 (内存构建毫秒级完成，杜绝百万控件分配与阻塞)
+            _displayedTicks.Clear();
+            if (_displayedTicks.Capacity < totalTicks)
+            {
+                _displayedTicks.Capacity = totalTicks;
+            }
 
             int tickCounter = 0;
             for (int b = 0; b < bars.Count; b++)
@@ -1672,28 +1957,53 @@ namespace Test.PercentageBar.WinForms.Forms
                 {
                     var tick = curBar.Ticks[t];
                     tickCounter++;
-                    DateTime dt = TimeHelper.FromUnixTimeMilliseconds(tick.Time).ToLocalTime();
                     bool isBuyer = !tick.IsBuyerMaker;
                     decimal diffFromOpen = overallOpen > 0 ? (tick.Price - overallOpen) / overallOpen * 100m : 0m;
 
-                    int rowIdx = dgvTicks.Rows.Add(
-                        $"Bar #{curBar.BarIndex}",
-                        tickCounter,
-                        dt.ToString("HH:mm:ss.fff"),
-                        tick.Price.ToString("F2"),
-                        tick.Qty.ToString("F4"),
-                        tick.QuoteQty.ToString("F2"),
-                        isBuyer ? "🟢 买方主动" : "🔴 卖方主动",
-                        $"{diffFromOpen:+0.00;-0.00;0.00}%"
-                    );
-
-                    dgvTicks.Rows[rowIdx].DefaultCellStyle.ForeColor = isBuyer
-                        ? System.Drawing.Color.FromArgb(74, 222, 128)
-                        : System.Drawing.Color.FromArgb(248, 113, 113);
+                    _displayedTicks.Add(new TickViewModel
+                    {
+                        BarIndex = curBar.BarIndex,
+                        TickIndex = tickCounter,
+                        Time = tick.Time,
+                        Price = tick.Price,
+                        Qty = tick.Qty,
+                        QuoteQty = tick.QuoteQty,
+                        IsBuyer = isBuyer,
+                        DiffPct = diffFromOpen
+                    });
                 }
             }
 
-            dgvTicks.ResumeLayout();
+            dgvTicks.RowCount = _displayedTicks.Count;
+            dgvTicks.Invalidate();
+        }
+
+        private void OnDgvTicksCellValueNeeded(object? sender, DataGridViewCellValueEventArgs e)
+        {
+            if (e.RowIndex < 0 || e.RowIndex >= _displayedTicks.Count) return;
+            var tick = _displayedTicks[e.RowIndex];
+
+            e.Value = e.ColumnIndex switch
+            {
+                0 => $"Bar #{tick.BarIndex}",
+                1 => tick.TickIndex,
+                2 => TimeHelper.FromUnixTimeMilliseconds(tick.Time).ToLocalTime().ToString("HH:mm:ss.fff"),
+                3 => tick.Price.ToString("F2"),
+                4 => tick.Qty.ToString("F4"),
+                5 => tick.QuoteQty.ToString("F2"),
+                6 => tick.IsBuyer ? "🟢 买方主动" : "🔴 卖方主动",
+                7 => $"{tick.DiffPct:+0.00;-0.00;0.00}%",
+                _ => null
+            };
+        }
+
+        private void OnDgvTicksCellFormatting(object? sender, DataGridViewCellFormattingEventArgs e)
+        {
+            if (e.RowIndex < 0 || e.RowIndex >= _displayedTicks.Count || e.CellStyle == null) return;
+            bool isBuyer = _displayedTicks[e.RowIndex].IsBuyer;
+            e.CellStyle.ForeColor = isBuyer
+                ? System.Drawing.Color.FromArgb(74, 222, 128)
+                : System.Drawing.Color.FromArgb(248, 113, 113);
         }
 
         private void AppendLogInternal(string message, System.Drawing.Color color)
@@ -1712,6 +2022,160 @@ namespace Test.PercentageBar.WinForms.Forms
         {
             this.BackColor = System.Drawing.Color.FromArgb(15, 23, 42);
             this.ForeColor = System.Drawing.Color.FromArgb(248, 250, 252);
+        }
+
+        /// <summary>
+        /// 🚀 运行首 Tick 动量策略回测并生成全量 HTML 综合报告与交易明细
+        /// </summary>
+        private void RunFirstTickStrategyBacktest()
+        {
+            if (_currentBars.Count == 0)
+            {
+                MessageBox.Show("请先点击「▶ 开始回放」或生成 K 线数据后再执行策略回测！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            string coin = cboCoin.SelectedItem?.ToString() ?? "BTCUSDT";
+            SliceUnitType sliceUnit = (SliceUnitType)cboSliceUnit.SelectedIndex;
+            decimal threshold = numThresholdValue.Value;
+            decimal initialCapital = numInitialCapital.Value;
+            decimal feeRate = numFeeRate.Value / 100.0m;
+            bool compound = chkCompound.Checked;
+
+            // 运行首 Tick 动量策略回测计算
+            _lastBacktestReport = Test.PercentageBar.WinForms.Engine.FirstTickStrategyEngine.RunBacktest(
+                _currentBars,
+                coin: coin,
+                thresholdValue: threshold,
+                sliceUnit: sliceUnit,
+                initialCapital: initialCapital,
+                positionSizePct: 100m,
+                feeRate: feeRate,
+                compoundInterest: compound);
+
+            // 1. 生成专业交互式 HTML 量化回测报告
+            string htmlReportPath = _lastBacktestReport.GenerateHtmlReport();
+
+            // 2. 输出控制台格式化结构报告卡片
+            string textReport = _lastBacktestReport.GenerateTextReport();
+            var reportColor = _lastBacktestReport.TotalNetProfit >= 0
+                ? System.Drawing.Color.FromArgb(74, 222, 128)
+                : System.Drawing.Color.FromArgb(244, 63, 94);
+
+            _logQueue.Enqueue(("\n" + textReport, reportColor));
+            _logQueue.Enqueue(($"🌐 交互式 HTML 回测报告已成功生成:\n   {htmlReportPath}\n", System.Drawing.Color.FromArgb(56, 189, 248)));
+
+            // 3. 刷新 Tab 3 回测报告界面
+            string retSign = _lastBacktestReport.TotalNetProfit >= 0 ? "+" : "";
+            lblStrategyMetrics.Text = $"胜率: {_lastBacktestReport.WinRatePct:F2}% ({_lastBacktestReport.WinTrades}胜/{_lastBacktestReport.LossTrades}负) | 净收益: {retSign}{_lastBacktestReport.TotalNetProfit:N2} U ({retSign}{_lastBacktestReport.TotalReturnPct:F2}%) | 利润因子: {_lastBacktestReport.ProfitFactor:F2} | 最大回撤: -{_lastBacktestReport.MaxDrawdownPct:F2}% | 总交易: {_lastBacktestReport.TotalTrades:N0}笔";
+            lblStrategyMetrics.ForeColor = reportColor;
+
+            dgvTrades.Rows.Clear();
+            dgvTrades.SuspendLayout();
+
+            foreach (var trade in _lastBacktestReport.Trades)
+            {
+                bool isLong = trade.Side == Common.Models.TradeSide.Buy;
+                bool isWin = trade.IsWin;
+                string sideStr = isLong ? "🟢 开多 (Buy)" : "🔴 开空 (Sell)";
+                string exitReasonStr = trade.ExitReason switch
+                {
+                    Common.Models.PositionExitReason.StopLoss => "🛑 阈值止损",
+                    Common.Models.PositionExitReason.SignalReversal => trade.IsWin ? $"🔄 反向平仓 (+{trade.ReturnPct:F2}%)" : $"🔄 反向平仓 ({trade.ReturnPct:F2}%)",
+                    _ => "⌛ 期末平仓"
+                };
+
+                int rowIdx = dgvTrades.Rows.Add(
+                    trade.TradeId,
+                    trade.BarRangeDesc,
+                    sideStr,
+                    trade.EntryDateTime.ToString("HH:mm:ss.fff"),
+                    trade.EntryPrice.ToString("F2"),
+                    trade.ExitDateTime.ToString("HH:mm:ss.fff"),
+                    trade.ExitPrice.ToString("F2"),
+                    exitReasonStr,
+                    $"{trade.NetPnL:+0.00;-0.00;0.00}",
+                    $"{trade.ReturnPct:+0.00;-0.00;0.00}%",
+                    trade.AccountEquityAfter.ToString("N2")
+                );
+
+                dgvTrades.Rows[rowIdx].DefaultCellStyle.ForeColor = isWin
+                    ? System.Drawing.Color.FromArgb(74, 222, 128)
+                    : System.Drawing.Color.FromArgb(248, 113, 113);
+            }
+
+            dgvTrades.ResumeLayout();
+
+            // 自动切换到策略报告 Tab
+            tabTickViews.SelectedTab = tabStrategyReport;
+
+            // 4. 刷新主图叠加标记
+            RedrawCurrentPlot(autoScale: false, autoFollow: false);
+
+            // 5. 自动在浏览器中打开 HTML 回测报告
+            try
+            {
+                Process.Start(new ProcessStartInfo(htmlReportPath) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                _logQueue.Enqueue(($"[提示] 自动打开浏览器报告失败: {ex.Message}，您可直接访问上述路径查看。", System.Drawing.Color.FromArgb(148, 163, 184)));
+            }
+        }
+
+        /// <summary>
+        /// 🌐 导出 / 另存 HTML 交互回测报告、CSV 交易流水或文本报告
+        /// </summary>
+        private void ExportBacktestReportToFile()
+        {
+            if (_lastBacktestReport == null || _lastBacktestReport.Trades.Count == 0)
+            {
+                MessageBox.Show("暂无回测报告数据，请先运行策略回测！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            try
+            {
+                using var sfd = new SaveFileDialog
+                {
+                    Title = "导出策略量化回测报告与交易明细",
+                    Filter = "HTML 交互式图表报告 (*.html)|*.html|CSV 交易流水明细 (*.csv)|*.csv|文本分析报告 (*.txt)|*.txt",
+                    FilterIndex = 1,
+                    FileName = $"{_lastBacktestReport.Coin}_FirstTick_Backtest_{DateTime.Now:yyyyMMdd_HHmmss}.html"
+                };
+
+                if (sfd.ShowDialog() == DialogResult.OK)
+                {
+                    if (sfd.FilterIndex == 1 || sfd.FileName.EndsWith(".html", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _lastBacktestReport.GenerateHtmlReport(sfd.FileName);
+                        if (MessageBox.Show($"HTML 回测报告已成功导出至:\n{sfd.FileName}\n\n是否立即在默认浏览器中打开？", "导出成功", MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes)
+                        {
+                            Process.Start(new ProcessStartInfo(sfd.FileName) { UseShellExecute = true });
+                        }
+                    }
+                    else if (sfd.FilterIndex == 3 || sfd.FileName.EndsWith(".txt", StringComparison.OrdinalIgnoreCase))
+                    {
+                        File.WriteAllText(sfd.FileName, _lastBacktestReport.GenerateTextReport(), Encoding.UTF8);
+                        MessageBox.Show($"文本报告已成功导出至:\n{sfd.FileName}", "导出成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    else
+                    {
+                        var sb = new StringBuilder();
+                        sb.AppendLine("TradeId,EntryBar,ExitBar,HoldingBars,Side,EntryTime,EntryPrice,ExitTime,ExitPrice,ExitReason,PositionValue,GrossPnL,Fee,NetPnL,ReturnPct,AccountEquity");
+                        foreach (var t in _lastBacktestReport.Trades)
+                        {
+                            sb.AppendLine($"{t.TradeId},{t.EntryBarIndex},{t.ExitBarIndex},{t.HoldingBarsCount},{(t.Side == Common.Models.TradeSide.Buy ? "Buy" : "Sell")},{t.EntryDateTime:yyyy-MM-dd HH:mm:ss.fff},{t.EntryPrice:F2},{t.ExitDateTime:yyyy-MM-dd HH:mm:ss.fff},{t.ExitPrice:F2},{t.ExitReason},{t.PositionValue:F2},{t.GrossPnL:F2},{t.Fee:F4},{t.NetPnL:F2},{t.ReturnPct:F4},{t.AccountEquityAfter:F2}");
+                        }
+                        File.WriteAllText(sfd.FileName, sb.ToString(), Encoding.UTF8);
+                        MessageBox.Show($"CSV 交易流水已成功导出至:\n{sfd.FileName}", "导出成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"导出失败: {ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private GroupBox CreateGroupBox(string text, int top, int height)

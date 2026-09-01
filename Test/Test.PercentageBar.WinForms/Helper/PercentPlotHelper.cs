@@ -72,7 +72,9 @@ namespace Test.PercentageBar.WinForms.Helper
             int pivotWindow = 3,
             TrendLine? selectedTrendLine = null,
             decimal touchTolerancePct = 0.0003m,
-            bool showVolume = true)
+            bool showVolume = true,
+            IReadOnlyList<Test.PercentageBar.WinForms.Engine.FirstTickTrade>? strategyTrades = null,
+            bool showStrategyMarkers = false)
         {
             if (plot == null || bars == null || bars.Count == 0)
             {
@@ -422,6 +424,50 @@ namespace Test.PercentageBar.WinForms.Helper
                         text.LabelBackgroundColor = Color.FromHex("#0f172a").WithAlpha(0.85);
                         text.LabelBorderColor = isHigh ? Color.FromHex("#ef4444") : Color.FromHex("#22c55e");
                         text.LabelBorderWidth = 1f;
+                    }
+                }
+            }
+
+            // 4.5 绘制首 Tick 动量策略开仓与平仓信号标记 (支持跨 Bar 轨迹连线)
+            if (showStrategyMarkers && strategyTrades != null && strategyTrades.Count > 0)
+            {
+                foreach (var trade in strategyTrades)
+                {
+                    if (trade.EntryBarIndex < 0 || trade.EntryBarIndex >= count) continue;
+
+                    bool isLong = trade.Side == Common.Models.TradeSide.Buy;
+                    var entryMarker = plot.Add.Marker(trade.EntryBarIndex, (double)trade.EntryPrice);
+                    entryMarker.Shape = isLong ? MarkerShape.FilledTriangleUp : MarkerShape.FilledTriangleDown;
+                    entryMarker.Size = 7;
+                    entryMarker.Color = isLong ? Color.FromHex("#22c55e") : Color.FromHex("#ef4444");
+
+                    if (trade.ExitBarIndex >= 0 && trade.ExitBarIndex < count)
+                    {
+                        var exitMarker = plot.Add.Marker(trade.ExitBarIndex, (double)trade.ExitPrice);
+                        exitMarker.Shape = trade.ExitReason switch
+                        {
+                            Common.Models.PositionExitReason.TakeProfit => MarkerShape.FilledCircle,
+                            Common.Models.PositionExitReason.StopLoss => MarkerShape.Cross,
+                            Common.Models.PositionExitReason.SignalReversal => MarkerShape.FilledDiamond,
+                            _ => MarkerShape.OpenCircle
+                        };
+                        exitMarker.Size = 6;
+                        exitMarker.Color = trade.ExitReason switch
+                        {
+                            Common.Models.PositionExitReason.TakeProfit => Color.FromHex("#22c55e"),
+                            Common.Models.PositionExitReason.StopLoss => Color.FromHex("#ef4444"),
+                            Common.Models.PositionExitReason.SignalReversal => Color.FromHex("#f59e0b"),
+                            _ => Color.FromHex("#94a3b8")
+                        };
+
+                        // 若跨越了多根 Bar，绘制虚线连线展示持仓生命周期轨迹
+                        if (trade.EntryBarIndex != trade.ExitBarIndex)
+                        {
+                            var tradePath = plot.Add.Line(trade.EntryBarIndex, (double)trade.EntryPrice, trade.ExitBarIndex, (double)trade.ExitPrice);
+                            tradePath.LinePattern = LinePattern.Dotted;
+                            tradePath.LineWidth = 1.2f;
+                            tradePath.Color = trade.IsWin ? Color.FromHex("#22c55e").WithAlpha(0.6) : Color.FromHex("#ef4444").WithAlpha(0.6);
+                        }
                     }
                 }
             }
