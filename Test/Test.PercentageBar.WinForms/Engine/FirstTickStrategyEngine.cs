@@ -93,7 +93,13 @@ namespace Test.PercentageBar.WinForms.Engine
         public string GenerateTextReport()
         {
             var sb = new StringBuilder();
-            string unitDesc = SliceUnit == SliceUnitType.Percentage ? $"±{ThresholdValue:F2}%" : $"±{ThresholdValue:F2} USDT";
+            string unitDesc = SliceUnit switch
+            {
+                SliceUnitType.Percentage => $"±{ThresholdValue:F2}%",
+                SliceUnitType.FixedPrice => $"±{ThresholdValue:F2} USDT",
+                SliceUnitType.MinuteTime => $"{ThresholdValue:F0}m 分钟周期",
+                _ => $"{ThresholdValue}"
+            };
             string retSign = TotalNetProfit >= 0 ? "+" : "";
 
             sb.AppendLine("╔══════════════════════════════════════════════════════════════════════════════════════════");
@@ -692,9 +698,13 @@ namespace Test.PercentageBar.WinForms.Engine
                 {
                     delta = entryPrice * (thresholdValue / 100.0m);
                 }
-                else
+                else if (sliceUnit == SliceUnitType.FixedPrice)
                 {
                     delta = thresholdValue;
+                }
+                else // MinuteTime: 默认按 1% 幅度作为止损
+                {
+                    delta = entryPrice * 0.01m;
                 }
 
                 decimal slPrice = side == TradeSide.Buy ? (entryPrice - delta) : (entryPrice + delta);

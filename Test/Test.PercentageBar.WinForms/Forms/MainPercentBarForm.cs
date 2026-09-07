@@ -67,6 +67,17 @@ namespace Test.PercentageBar.WinForms.Forms
             public decimal QuoteQty;
             public bool IsBuyer;
             public decimal DiffPct;
+            public bool IsPurpleTrendLinePoint;
+            public string? PurpleTag;
+        }
+
+        private struct PurplePointDetail
+        {
+            public int BarIndex;
+            public decimal Price;
+            public TrendLineType Type;
+            public int TouchCount;
+            public int MatchTickIndex;
         }
 
         // 策略报告 Tab 控件
@@ -479,7 +490,7 @@ namespace Test.PercentageBar.WinForms.Forms
             {
                 var lblCoin = CreateLabel("交易对:", 15, 25);
                 cboCoin = new ComboBox { Location = new Point(90, 22), Width = 250, DropDownStyle = ComboBoxStyle.DropDownList };
-                cboCoin.Items.AddRange(new object[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "XRPUSDT" });
+                cboCoin.Items.AddRange(new object[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "XRPUSDT", "BRUSDT" });
                 cboCoin.SelectedIndex = 0;
 
                 var lblStart = CreateLabel("起始日期:", 15, 60);
@@ -509,7 +520,8 @@ namespace Test.PercentageBar.WinForms.Forms
                 cboSliceUnit.Items.AddRange(new object[]
                 {
                     "📊 百分比涨跌切分 (%)",
-                    "💰 固定价格/价差切分 (USDT)"
+                    "💰 固定价格/价差切分 (USDT)",
+                    "⏱️ 固定时间/分钟周期切分 (Minute/Time)"
                 });
                 cboSliceUnit.SelectedIndex = 0;
                 cboSliceUnit.SelectedIndexChanged += OnSliceUnitChanged;
@@ -569,7 +581,7 @@ namespace Test.PercentageBar.WinForms.Forms
 
                 var lblTip = new Label
                 {
-                    Text = "💡 说明: X 轴不依赖时间，价格每达到设定的百分比或固定价差即生成一根 Bar。\n点击图表任意 K 线可查看其起止时间与耗时跨度。",
+                    Text = "💡 说明: 支持百分比幅度(%)、固定价差(USDT)或任意分钟时间周期(1m/5m/15m/60m等)回放。\n点击图表任意 K 线可查看其起止时间与耗时跨度。",
                     Location = new Point(15, 205),
                     Size = new Size(325, 55),
                     ForeColor = System.Drawing.Color.FromArgb(148, 163, 184),
@@ -1007,17 +1019,29 @@ namespace Test.PercentageBar.WinForms.Forms
             flowPresets.Controls.Clear();
             var sliceUnit = (SliceUnitType)(cboSliceUnit?.SelectedIndex ?? 0);
 
-            decimal[] presets = sliceUnit == SliceUnitType.Percentage
-                ? new decimal[] { 0.2m, 0.5m, 1.0m, 2.0m, 3.0m, 5.0m }
-                : new decimal[] { 20m, 50m, 100m, 200m, 500m, 1000m };
-
-            foreach (var pVal in presets)
+            (string label, decimal val)[] presets = sliceUnit switch
             {
-                string text = sliceUnit == SliceUnitType.Percentage ? $"{pVal}%" : $"{pVal:F0}U";
+                SliceUnitType.Percentage => new (string, decimal)[]
+                {
+                    ("0.2%", 0.2m), ("0.5%", 0.5m), ("1.0%", 1.0m), ("2.0%", 2.0m), ("3.0%", 3.0m), ("5.0%", 5.0m)
+                },
+                SliceUnitType.FixedPrice => new (string, decimal)[]
+                {
+                    ("20U", 20m), ("50U", 50m), ("100U", 100m), ("200U", 200m), ("500U", 500m), ("1000U", 1000m)
+                },
+                SliceUnitType.MinuteTime => new (string, decimal)[]
+                {
+                    ("1m", 1m), ("3m", 3m), ("5m", 5m), ("15m", 15m), ("30m", 30m), ("1h", 60m), ("4h", 240m), ("1d", 1440m)
+                },
+                _ => Array.Empty<(string, decimal)>()
+            };
+
+            foreach (var (text, pVal) in presets)
+            {
                 var btnPreset = new Button
                 {
                     Text = text,
-                    Size = new Size(38, 26),
+                    Size = new Size(sliceUnit == SliceUnitType.MinuteTime ? 32 : 38, 26),
                     BackColor = System.Drawing.Color.FromArgb(51, 65, 85),
                     ForeColor = System.Drawing.Color.FromArgb(241, 245, 249),
                     FlatStyle = FlatStyle.Flat,
@@ -1060,7 +1084,7 @@ namespace Test.PercentageBar.WinForms.Forms
                 });
                 cboBarMode.SelectedIndex = Math.Clamp(prevModeIdx, 0, 2);
             }
-            else
+            else if (sliceUnit == SliceUnitType.FixedPrice)
             {
                 lblThreshold.Text = "固定价差 (USDT):";
                 numThresholdValue.DecimalPlaces = 2;
@@ -1081,6 +1105,27 @@ namespace Test.PercentageBar.WinForms.Forms
                     "Renko 固定价差砖块 (Renko USDT)"
                 });
                 cboBarMode.SelectedIndex = Math.Clamp(prevModeIdx, 0, 2);
+            }
+            else // SliceUnitType.MinuteTime
+            {
+                lblThreshold.Text = "时间周期 (Min):";
+                numThresholdValue.DecimalPlaces = 0;
+                numThresholdValue.Minimum = 1m;
+                numThresholdValue.Maximum = 1440m;
+                numThresholdValue.Increment = 1m;
+                if (numThresholdValue.Value > 1440m || numThresholdValue.Value < 1m)
+                {
+                    numThresholdValue.Value = 1m;
+                }
+
+                int prevModeIdx = cboBarMode.SelectedIndex;
+                cboBarMode.Items.Clear();
+                cboBarMode.Items.AddRange(new object[]
+                {
+                    "自然时间对齐 (Aligned 00:00)",
+                    "滚动时间窗口 (Rolling Window)"
+                });
+                cboBarMode.SelectedIndex = Math.Clamp(prevModeIdx, 0, 1);
             }
 
             UpdatePresetsUI();
@@ -1137,7 +1182,13 @@ namespace Test.PercentageBar.WinForms.Forms
                 }
             }
 
-            string unitDesc = sliceUnit == SliceUnitType.Percentage ? $"±{thresholdValue:F2}%" : $"±{thresholdValue:F2} USDT";
+            string unitDesc = sliceUnit switch
+            {
+                SliceUnitType.Percentage => $"±{thresholdValue:F2}%",
+                SliceUnitType.FixedPrice => $"±{thresholdValue:F2} USDT",
+                SliceUnitType.MinuteTime => $"{thresholdValue:F0}m 分钟周期",
+                _ => $"{thresholdValue}"
+            };
             _logQueue.Enqueue(($"[引擎启动] 正在以 {unitDesc} 切分基准开始【分批流式{(isStreamingMode ? "动态回放" : "极速生成")}】(币种: {coin}, 日期: {startDate:yyyy-MM-dd} ~ {endDate:yyyy-MM-dd})...", System.Drawing.Color.FromArgb(250, 204, 21)));
 
             var session = new IncrementalPercentageBarSession(thresholdValue, sliceUnit, mode);
@@ -1232,7 +1283,7 @@ namespace Test.PercentageBar.WinForms.Forms
                         lblProgress.Text = $"全部分批处理完毕！共 {_currentBars.Count:N0} 根 K 线";
                     });
 
-                    _logQueue.Enqueue(($"[完成] 成功分批处理完成！生成 {_currentBars.Count:N0} 根 K 线，平均每根跨度: {FormatTimeSpan(_currentStats?.AverageBarDuration ?? TimeSpan.Zero)} | 速率: {_currentStats?.TicksPerSecond:N0} ticks/s", System.Drawing.Color.FromArgb(74, 222, 128)));
+                    _logQueue.Enqueue(($"[完成] 成功分批处理完成！生成 {_currentBars.Count:N0} 根 K 线，平均每根跨度: {PercentPlotHelper.FormatTimeSpan(_currentStats?.AverageBarDuration ?? TimeSpan.Zero)} | 速率: {_currentStats?.TicksPerSecond:N0} ticks/s", System.Drawing.Color.FromArgb(74, 222, 128)));
                 }
             }
             catch (OperationCanceledException)
@@ -1260,8 +1311,8 @@ namespace Test.PercentageBar.WinForms.Forms
         {
             lblStatTicks.Text = $"读取 Tick: {stats.TotalTicks:N0} 笔 | 耗时: {stats.ElapsedMilliseconds} ms";
             lblStatBars.Text = $"生成 K 线: {stats.TotalBars:N0} 根 (纯序号 X 轴)";
-            lblStatAvgDuration.Text = $"平均时间跨度: {FormatTimeSpan(stats.AverageBarDuration)}";
-            lblStatMinMaxDuration.Text = $"最快突破: {FormatTimeSpan(stats.MinBarDuration)} | 最长: {FormatTimeSpan(stats.MaxBarDuration)}";
+            lblStatAvgDuration.Text = $"平均时间跨度: {PercentPlotHelper.FormatTimeSpan(stats.AverageBarDuration)}";
+            lblStatMinMaxDuration.Text = $"最快突破: {PercentPlotHelper.FormatTimeSpan(stats.MinBarDuration)} | 最长: {PercentPlotHelper.FormatTimeSpan(stats.MaxBarDuration)}";
             lblStatPriceRange.Text = $"最高价: {stats.MaxPrice:F2} | 最低价: {stats.MinPrice:F2}";
             lblStatThroughput.Text = $"吞吐速率: {stats.TicksPerSecond:N0} ticks/s";
         }
@@ -1289,7 +1340,22 @@ namespace Test.PercentageBar.WinForms.Forms
             SliceUnitType sliceUnit = (SliceUnitType)cboSliceUnit.SelectedIndex;
             decimal threshold = numThresholdValue.Value;
             PercentBarMode mode = (PercentBarMode)cboBarMode.SelectedIndex;
-            string unitDesc = sliceUnit == SliceUnitType.Percentage ? $"涨跌每达到 ±{threshold:F2}%" : $"价格每变化 ±{threshold:F2} USDT";
+
+            string unitDesc = sliceUnit switch
+            {
+                SliceUnitType.Percentage => $"涨跌每达到 ±{threshold:F2}%",
+                SliceUnitType.FixedPrice => $"价格每变化 ±{threshold:F2} USDT",
+                SliceUnitType.MinuteTime => $"时间周期 {threshold:F0} 分钟 ({(threshold >= 60 ? (threshold / 60) + "h" : threshold + "m")})",
+                _ => $"周期 {threshold}"
+            };
+
+            string typeName = sliceUnit switch
+            {
+                SliceUnitType.Percentage => "百分比",
+                SliceUnitType.FixedPrice => "固定价格",
+                SliceUnitType.MinuteTime => "分钟周期",
+                _ => "K线"
+            };
 
             PercentPlotHelper.BuildPlot(
                 formsPlot.Plot,
@@ -1299,7 +1365,7 @@ namespace Test.PercentageBar.WinForms.Forms
                 sliceUnit: sliceUnit,
                 mode: mode,
                 stats: _currentStats,
-                title: $"{coin} 基于 Tick 数据的 {(sliceUnit == SliceUnitType.Percentage ? "百分比" : "固定价格")} K 线走势图 ({unitDesc} 递增)",
+                title: $"{coin} 基于 Tick 数据的 {typeName} K 线走势图 ({unitDesc} 递增)",
                 autoScaleAxes: autoScale,
                 selectedBarStartIndex: _selectedBarStart,
                 selectedBarEndIndex: _selectedBarEnd,
@@ -1748,6 +1814,86 @@ namespace Test.PercentageBar.WinForms.Forms
             decimal takerBuyRatio = totalVol > 0 ? (totalTakerBuyVol / totalVol * 100m) : 0m;
             TimeSpan totalSpan = lastBar.CloseDateTime - firstBar.OpenDateTime;
 
+            // 🌟 检查选中 Bar 是否包含 3点及以上共线【🟣 紫色趋势线】锚点/触碰点位
+            var purplePoints = new List<PurplePointDetail>();
+            if (_currentBars != null && _currentBars.Count >= 3)
+            {
+                var pivotResult = PivotDetector.CalculatePivots(_currentBars, window: (int)(numPivotWindow?.Value ?? 3), alternateHighLow: true);
+                var trendlines = PivotDetector.CalculateTrendLines(
+                    _currentBars,
+                    pivotResult,
+                    maxLines: 1000,
+                    maxSpanBars: 1000,
+                    extensionBars: 8,
+                    strictWickPenetration: true,
+                    touchTolerancePct: (numTouchTolerance?.Value ?? 0.030m) / 100m);
+
+                var selBarIndices = new HashSet<int>(bars.Select(b => b.BarIndex));
+
+                foreach (var tl in trendlines)
+                {
+                    if (!tl.IsThreePointConfirmed) continue;
+
+                    var touchList = tl.TouchBarIndices ?? new[] { tl.StartBarIndex, tl.EndBarIndex };
+                    foreach (int bIdx in touchList)
+                    {
+                        if (selBarIndices.Contains(bIdx))
+                        {
+                            decimal ptPrice = tl.StartPrice + tl.Slope * (bIdx - tl.StartBarIndex);
+                            purplePoints.Add(new PurplePointDetail
+                            {
+                                BarIndex = bIdx,
+                                Price = ptPrice,
+                                Type = tl.Type,
+                                TouchCount = tl.TouchCount,
+                                MatchTickIndex = -1
+                            });
+                        }
+                    }
+                }
+            }
+
+            // 精准匹配每个紫色点位在全局 allTicks 中的 Tick 索引
+            var matchedPurpleTickIndices = new Dictionary<int, PurplePointDetail>();
+            for (int p = 0; p < purplePoints.Count; p++)
+            {
+                var pt = purplePoints[p];
+                int bestTickIdx = -1;
+                decimal bestPriceDiff = decimal.MaxValue;
+
+                int barStartTick = -1;
+                int barEndTick = -1;
+                for (int bb = 0; bb < barBoundaries.Count; bb++)
+                {
+                    if (barBoundaries[bb].BarIndex == pt.BarIndex)
+                    {
+                        barStartTick = barBoundaries[bb].TickIndex;
+                        barEndTick = (bb + 1 < barBoundaries.Count) ? barBoundaries[bb + 1].TickIndex : totalTicks;
+                        break;
+                    }
+                }
+
+                if (barStartTick >= 0 && barEndTick > barStartTick)
+                {
+                    for (int t = barStartTick; t < barEndTick; t++)
+                    {
+                        decimal diff = Math.Abs(allTicks[t].Price - pt.Price);
+                        if (diff < bestPriceDiff)
+                        {
+                            bestPriceDiff = diff;
+                            bestTickIdx = t;
+                        }
+                    }
+                }
+
+                if (bestTickIdx >= 0)
+                {
+                    pt.MatchTickIndex = bestTickIdx;
+                    purplePoints[p] = pt;
+                    matchedPurpleTickIndices[bestTickIdx] = pt;
+                }
+            }
+
             if (bars.Count == 1)
             {
                 lblTickInfo.Text = $"Bar #{firstBar.BarIndex} ({dirStr}) | 耗时: {firstBar.GetFormattedDuration()} | Tick: {totalTicks:N0} 笔 | 极值: {overallLow:F2} ~ {overallHigh:F2} | 主买: {takerBuyRatio:F1}%";
@@ -1755,6 +1901,12 @@ namespace Test.PercentageBar.WinForms.Forms
             else
             {
                 lblTickInfo.Text = $"★ 选中连续 {bars.Count} 根 K 线 (Bar #{firstBar.BarIndex} ~ #{lastBar.BarIndex}, {dirStr}) | 跨度: {FormatTimeSpan(totalSpan)} | Tick: {totalTicks:N0} 笔 | 极值: {overallLow:F2} ~ {overallHigh:F2} | 主买: {takerBuyRatio:F1}%";
+            }
+
+            if (purplePoints.Count > 0)
+            {
+                var ptSummaries = purplePoints.Select(p => $"Bar #{p.BarIndex} @ {p.Price:F2}U ({(p.Type == TrendLineType.Resistance ? "3点阻力" : "3点支撑")})");
+                lblTickInfo.Text += $" | 🟣 包含紫色趋势线锚点 ({purplePoints.Count}处): {string.Join("; ", ptSummaries)}";
             }
 
             // 1. 渲染微观 Tick 分时走势图 (ScottPlot 5)
@@ -1896,36 +2048,98 @@ namespace Test.PercentageBar.WinForms.Forms
                 }
             }
 
-            // 🌟 标注关键最高与最低点位：红色正三角 (▲) 与 红色倒三角 (▼)
+            // 🌟 计算价格动态范围与安全偏移量 (确保文字、标记、基准线多层分立，绝对不重叠掩盖)
+            double priceRange = (double)(maxVal - minVal);
+            if (priceRange <= 1e-6) priceRange = (double)maxVal * 0.005;
+            if (priceRange <= 0) priceRange = 1.0;
+
+            double yOffsetMarker = priceRange * 0.024; // 极值标记与第一层文字间的垂直安全间距
+            double yOffsetTier2 = priceRange * 0.078;  // 多层重合时的第二层文字外延高位间距
+
+            static ScottPlot.Alignment GetSafeAlign(int tickIdx, int total, bool isUpper)
+            {
+                if (tickIdx < total * 0.12)
+                    return isUpper ? ScottPlot.Alignment.UpperLeft : ScottPlot.Alignment.LowerLeft;
+                if (tickIdx > total * 0.88)
+                    return isUpper ? ScottPlot.Alignment.UpperRight : ScottPlot.Alignment.LowerRight;
+                return isUpper ? ScottPlot.Alignment.UpperCenter : ScottPlot.Alignment.LowerCenter;
+            }
+
+            int thresholdNear = Math.Max(2, totalTicks / 25);
+
+            // 1. 🌟 标注关键最高与最低点位：红色正三角 (▲) 与 红色倒三角 (▼)
             var mHigh = formsPlotTick.Plot.Add.Marker(maxIdx, (double)maxVal);
             mHigh.Shape = ScottPlot.MarkerShape.FilledTriangleUp;
-            mHigh.Size = 11;
+            mHigh.Size = 10;
             mHigh.Color = ScottPlot.Color.FromHex("#ef4444");
 
-            var textHigh = formsPlotTick.Plot.Add.Text($"▲ 最高 {maxVal:F2}", maxIdx, (double)maxVal);
+            double textHighY = (double)maxVal + yOffsetMarker;
+            var textHigh = formsPlotTick.Plot.Add.Text($"▲ 最高 {maxVal:F2}", maxIdx, textHighY);
             textHigh.LabelFontName = fontName;
-            textHigh.LabelFontSize = 8.5f;
+            textHigh.LabelFontSize = 8.0f;
             textHigh.LabelFontColor = ScottPlot.Color.FromHex("#fca5a5");
-            textHigh.LabelAlignment = ScottPlot.Alignment.LowerCenter;
-            textHigh.LabelBackgroundColor = ScottPlot.Color.FromHex("#0f172a").WithAlpha(0.85);
+            textHigh.LabelAlignment = GetSafeAlign(maxIdx, totalTicks, isUpper: false);
+            textHigh.LabelBackgroundColor = ScottPlot.Color.FromHex("#0f172a").WithAlpha(0.9);
             textHigh.LabelBorderColor = ScottPlot.Color.FromHex("#ef4444");
             textHigh.LabelBorderWidth = 1f;
 
             var mLow = formsPlotTick.Plot.Add.Marker(minIdx, (double)minVal);
             mLow.Shape = ScottPlot.MarkerShape.FilledTriangleDown;
-            mLow.Size = 11;
+            mLow.Size = 10;
             mLow.Color = ScottPlot.Color.FromHex("#ef4444");
 
-            var textLow = formsPlotTick.Plot.Add.Text($"▼ 最低 {minVal:F2}", minIdx, (double)minVal);
+            double textLowY = (double)minVal - yOffsetMarker;
+            var textLow = formsPlotTick.Plot.Add.Text($"▼ 最低 {minVal:F2}", minIdx, textLowY);
             textLow.LabelFontName = fontName;
-            textLow.LabelFontSize = 8.5f;
+            textLow.LabelFontSize = 8.0f;
             textLow.LabelFontColor = ScottPlot.Color.FromHex("#fca5a5");
-            textLow.LabelAlignment = ScottPlot.Alignment.UpperCenter;
-            textLow.LabelBackgroundColor = ScottPlot.Color.FromHex("#0f172a").WithAlpha(0.85);
+            textLow.LabelAlignment = GetSafeAlign(minIdx, totalTicks, isUpper: true);
+            textLow.LabelBackgroundColor = ScottPlot.Color.FromHex("#0f172a").WithAlpha(0.9);
             textLow.LabelBorderColor = ScottPlot.Color.FromHex("#ef4444");
             textLow.LabelBorderWidth = 1f;
 
-            // 开盘与收盘点标记
+            // 2. 🌟 绘制【🟣 紫色趋势线点位】标记与水平基准虚线 (多层错落分离，绝不遮挡)
+            if (purplePoints.Count > 0)
+            {
+                foreach (var pt in purplePoints)
+                {
+                    // (1) 水平参考基准线
+                    var pGuide = formsPlotTick.Plot.Add.HorizontalLine((double)pt.Price);
+                    pGuide.Color = ScottPlot.Color.FromHex("#c084fc").WithAlpha(0.85);
+                    pGuide.LineWidth = 1.2f;
+                    pGuide.LinePattern = ScottPlot.LinePattern.Dashed;
+
+                    // (2) 关键 Tick 上的紫色菱形标记
+                    int mTickIdx = pt.MatchTickIndex >= 0 ? pt.MatchTickIndex : 0;
+                    var pMarker = formsPlotTick.Plot.Add.Marker(mTickIdx, (double)pt.Price);
+                    pMarker.Shape = ScottPlot.MarkerShape.FilledDiamond;
+                    pMarker.Size = 12;
+                    pMarker.Color = ScottPlot.Color.FromHex("#c084fc");
+
+                    // (3) 错落分层文本标签：若与最高/最低点重叠，则向外延展到第二层高位，彻底拉开空间
+                    bool isRes = pt.Type == TrendLineType.Resistance;
+                    bool isNearExtreme = isRes
+                        ? Math.Abs(mTickIdx - maxIdx) <= thresholdNear
+                        : Math.Abs(mTickIdx - minIdx) <= thresholdNear;
+
+                    double pTextY = isRes
+                        ? (double)pt.Price + (isNearExtreme ? yOffsetTier2 : yOffsetMarker)
+                        : (double)pt.Price - (isNearExtreme ? yOffsetTier2 : yOffsetMarker);
+
+                    string typeDesc = isRes ? "🟣 3点阻力" : "🟣 3点支撑";
+                    string tagStr = $"{typeDesc}: {pt.Price:F2} ({pt.TouchCount}点共线)";
+                    var pText = formsPlotTick.Plot.Add.Text(tagStr, mTickIdx, pTextY);
+                    pText.LabelFontName = fontName;
+                    pText.LabelFontSize = 8.5f;
+                    pText.LabelFontColor = ScottPlot.Color.FromHex("#fdf4ff");
+                    pText.LabelAlignment = GetSafeAlign(mTickIdx, totalTicks, isUpper: !isRes);
+                    pText.LabelBackgroundColor = ScottPlot.Color.FromHex("#581c87").WithAlpha(0.95);
+                    pText.LabelBorderColor = ScottPlot.Color.FromHex("#c084fc");
+                    pText.LabelBorderWidth = 1.2f;
+                }
+            }
+
+            // 3. 开盘与收盘点标记
             var mOpen = formsPlotTick.Plot.Add.Marker(0, (double)allTicks[0].Price);
             mOpen.Shape = ScottPlot.MarkerShape.FilledCircle;
             mOpen.Size = 8;
@@ -1936,7 +2150,7 @@ namespace Test.PercentageBar.WinForms.Forms
             mClose.Size = 8;
             mClose.Color = ScottPlot.Color.FromHex("#f97316");
 
-            formsPlotTick.Plot.Axes.Margins(0.02, 0.12);
+            formsPlotTick.Plot.Axes.Margins(0.03, 0.28);
             formsPlotTick.Plot.Axes.AutoScale();
             formsPlotTick.Refresh();
 
@@ -1956,9 +2170,13 @@ namespace Test.PercentageBar.WinForms.Forms
                 for (int t = 0; t < curBar.Ticks.Length; t++)
                 {
                     var tick = curBar.Ticks[t];
+                    int globalTickIdx = tickCounter;
                     tickCounter++;
                     bool isBuyer = !tick.IsBuyerMaker;
                     decimal diffFromOpen = overallOpen > 0 ? (tick.Price - overallOpen) / overallOpen * 100m : 0m;
+
+                    bool isPurple = matchedPurpleTickIndices.TryGetValue(globalTickIdx, out var pInfo);
+                    string? purpleTag = isPurple ? $"🟣 紫色{(pInfo.Type == TrendLineType.Resistance ? "阻力" : "支撑")}锚点 ({pInfo.Price:F2})" : null;
 
                     _displayedTicks.Add(new TickViewModel
                     {
@@ -1969,7 +2187,9 @@ namespace Test.PercentageBar.WinForms.Forms
                         Qty = tick.Qty,
                         QuoteQty = tick.QuoteQty,
                         IsBuyer = isBuyer,
-                        DiffPct = diffFromOpen
+                        DiffPct = diffFromOpen,
+                        IsPurpleTrendLinePoint = isPurple,
+                        PurpleTag = purpleTag
                     });
                 }
             }
@@ -1985,14 +2205,16 @@ namespace Test.PercentageBar.WinForms.Forms
 
             e.Value = e.ColumnIndex switch
             {
-                0 => $"Bar #{tick.BarIndex}",
+                0 => tick.IsPurpleTrendLinePoint ? $"Bar #{tick.BarIndex} 🟣" : $"Bar #{tick.BarIndex}",
                 1 => tick.TickIndex,
                 2 => TimeHelper.FromUnixTimeMilliseconds(tick.Time).ToLocalTime().ToString("HH:mm:ss.fff"),
                 3 => tick.Price.ToString("F2"),
                 4 => tick.Qty.ToString("F4"),
                 5 => tick.QuoteQty.ToString("F2"),
-                6 => tick.IsBuyer ? "🟢 买方主动" : "🔴 卖方主动",
-                7 => $"{tick.DiffPct:+0.00;-0.00;0.00}%",
+                6 => tick.IsPurpleTrendLinePoint
+                    ? (tick.IsBuyer ? "🟢 买方 [🟣紫色锚点]" : "🔴 卖方 [🟣紫色锚点]")
+                    : (tick.IsBuyer ? "🟢 买方主动" : "🔴 卖方主动"),
+                7 => tick.IsPurpleTrendLinePoint ? $"{tick.DiffPct:+0.00;-0.00;0.00}% ⭐" : $"{tick.DiffPct:+0.00;-0.00;0.00}%",
                 _ => null
             };
         }
@@ -2000,10 +2222,22 @@ namespace Test.PercentageBar.WinForms.Forms
         private void OnDgvTicksCellFormatting(object? sender, DataGridViewCellFormattingEventArgs e)
         {
             if (e.RowIndex < 0 || e.RowIndex >= _displayedTicks.Count || e.CellStyle == null) return;
-            bool isBuyer = _displayedTicks[e.RowIndex].IsBuyer;
-            e.CellStyle.ForeColor = isBuyer
-                ? System.Drawing.Color.FromArgb(74, 222, 128)
-                : System.Drawing.Color.FromArgb(248, 113, 113);
+            var tick = _displayedTicks[e.RowIndex];
+
+            if (tick.IsPurpleTrendLinePoint)
+            {
+                e.CellStyle.BackColor = System.Drawing.Color.FromArgb(88, 28, 135); // 鲜明深紫底色
+                e.CellStyle.ForeColor = System.Drawing.Color.FromArgb(243, 232, 255); // 浅紫亮白文字
+                e.CellStyle.SelectionBackColor = System.Drawing.Color.FromArgb(126, 34, 206);
+                e.CellStyle.SelectionForeColor = System.Drawing.Color.White;
+                e.CellStyle.Font = new Font("Consolas", 9F, FontStyle.Bold);
+            }
+            else
+            {
+                e.CellStyle.ForeColor = tick.IsBuyer
+                    ? System.Drawing.Color.FromArgb(74, 222, 128)
+                    : System.Drawing.Color.FromArgb(248, 113, 113);
+            }
         }
 
         private void AppendLogInternal(string message, System.Drawing.Color color)

@@ -16,7 +16,12 @@ namespace Test.PercentageBar.WinForms.Models
         /// <summary>
         /// 固定价格/价差切分 (USDT)
         /// </summary>
-        FixedPrice = 1
+        FixedPrice = 1,
+
+        /// <summary>
+        /// 分钟时间周期切分 (Minute/Time)
+        /// </summary>
+        MinuteTime = 2
     }
 
     /// <summary>

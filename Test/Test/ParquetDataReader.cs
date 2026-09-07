@@ -534,6 +534,65 @@ namespace Common
 
         #endregion
 
+        #region 静态点对点单日 Tick 快速切片查询 (支持内存快速缓存)
+
+        private static readonly ConcurrentDictionary<string, RawTick[]> _cachedDayTicks = new ConcurrentDictionary<string, RawTick[]>();
+
+        /// <summary>
+        /// 根据币种和时间范围，快速读取并截取指定 K 线周期内的所有 Tick 数据
+        /// </summary>
+        public static async Task<RawTick[]> ReadTicksForTimeRangeAsync(string coin, long openTimeMs, long closeTimeMs, CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(coin) || openTimeMs <= 0 || closeTimeMs < openTimeMs)
+            {
+                return Array.Empty<RawTick>();
+            }
+
+            DateTime startDate = TimeHelper.FromUnixTimeMilliseconds(openTimeMs).Date;
+            DateTime endDate = TimeHelper.FromUnixTimeMilliseconds(closeTimeMs).Date;
+
+            var resultTicks = new List<RawTick>();
+
+            for (DateTime d = startDate; d <= endDate; d = d.AddDays(1))
+            {
+                string cacheKey = $"{coin.ToUpper()}_{d:yyyyMMdd}";
+                if (!_cachedDayTicks.TryGetValue(cacheKey, out var dayTicks))
+                {
+                    string filePath = Config.GetTradeFilePath(coin, d, ".parquet");
+                    dayTicks = await ReadTickFileInternalAsync(filePath, ct).ConfigureAwait(false);
+
+                    if (_cachedDayTicks.Count > 10)
+                    {
+                        _cachedDayTicks.Clear();
+                    }
+                    if (dayTicks.Length > 0)
+                    {
+                        _cachedDayTicks[cacheKey] = dayTicks;
+                    }
+                }
+
+                if (dayTicks != null && dayTicks.Length > 0)
+                {
+                    for (int i = 0; i < dayTicks.Length; i++)
+                    {
+                        var t = dayTicks[i];
+                        if (t.Time >= openTimeMs && t.Time <= closeTimeMs)
+                        {
+                            resultTicks.Add(t);
+                        }
+                        else if (t.Time > closeTimeMs && d == endDate)
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            return resultTicks.ToArray();
+        }
+
+        #endregion
+
         #region 队列快速消费与清空方法
 
         public bool TryDequeueTick(out RawTick tick) => TickQueue.TryDequeue(out tick);

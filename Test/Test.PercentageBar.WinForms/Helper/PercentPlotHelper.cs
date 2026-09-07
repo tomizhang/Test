@@ -552,13 +552,21 @@ namespace Test.PercentageBar.WinForms.Helper
                 _ => "切分模式"
             };
 
-            string sliceUnitStr = sliceUnit == SliceUnitType.Percentage
-                ? $"涨跌幅 ±{thresholdValue:F2}%"
-                : $"固定价差 ±{thresholdValue:F2} USDT";
+            string sliceUnitStr = sliceUnit switch
+            {
+                SliceUnitType.Percentage => $"涨跌幅 ±{thresholdValue:F2}%",
+                SliceUnitType.FixedPrice => $"固定价差 ±{thresholdValue:F2} USDT",
+                SliceUnitType.MinuteTime => $"分钟周期 {thresholdValue:F0} 分钟 ({(thresholdValue >= 60 ? (thresholdValue / 60) + "h" : thresholdValue + "m")})",
+                _ => $"周期 {thresholdValue}"
+            };
 
-            string headerTitle = sliceUnit == SliceUnitType.Percentage
-                ? "【百分比 K 线特征指标】"
-                : "【固定价格 K 线特征指标】";
+            string headerTitle = sliceUnit switch
+            {
+                SliceUnitType.Percentage => "【百分比 K 线特征指标】",
+                SliceUnitType.FixedPrice => "【固定价格 K 线特征指标】",
+                SliceUnitType.MinuteTime => "【分钟时间周期 K 线特征指标】",
+                _ => "【K 线特征指标】"
+            };
 
             string pivotSummary = pivotResult.GlobalHigh.HasValue
                 ? $"• 高低极值: 👑最高={pivotResult.GlobalHigh.Value.Price:F2} (Bar #{pivotResult.GlobalHigh.Value.BarIndex}) | 👑最低={pivotResult.GlobalLow?.Price:F2} (Bar #{pivotResult.GlobalLow?.BarIndex}) | 识别波峰高点 {pivotResult.TotalHighPivots} 个, 波谷低点 {pivotResult.TotalLowPivots} 个\n"

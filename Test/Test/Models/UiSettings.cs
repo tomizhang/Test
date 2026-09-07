@@ -40,6 +40,9 @@ namespace Common.Models
         public bool RealtimeChart { get; set; } = true;
         public bool AutoScale { get; set; } = true;
         public bool EnableUiLogs { get; set; } = true;
+        public bool ShowTpSl { get; set; } = true;
+        public bool ShowPivots { get; set; } = true;
+        public bool ShowTrendLines { get; set; } = true;
 
         // 3. 窗体与布局记忆
         public int FormWidth { get; set; } = 1600;

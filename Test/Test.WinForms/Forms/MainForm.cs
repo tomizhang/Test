@@ -62,10 +62,34 @@ namespace Test.WinForms.Forms
         private SplitContainer splitMain = null!;
         private SplitContainer splitLeft = null!;
         private FormsPlot formsPlot = null!;
+        private SplitContainer splitBottom = null!;
         private RichTextBox txtLogs = null!;
         private Panel panelLogHeader = null!;
         private Label lblLogTitle = null!;
         private Button btnClearLogsTop = null!;
+
+        // 🌟 K线微观逐笔 Tick 详情与走势图控件 (位于日志右侧)
+        private Panel panelTickDetail = null!;
+        private Panel panelTickHeader = null!;
+        private Label lblTickTitle = null!;
+        private Label lblTickInfo = null!;
+        private TabControl tabTickViews = null!;
+        private TabPage tabTickPlot = null!;
+        private TabPage tabTickTable = null!;
+        private FormsPlot formsPlotTick = null!;
+        private DataGridView dgvTicks = null!;
+        private readonly List<TickViewModel> _displayedTicks = new();
+
+        private struct TickViewModel
+        {
+            public int TickIndex;
+            public long Time;
+            public decimal Price;
+            public decimal Qty;
+            public decimal QuoteQty;
+            public bool IsBuyer;
+            public decimal DiffPct;
+        }
 
         // 右侧控制面板控件
         private Panel panelRight = null!;
@@ -100,6 +124,8 @@ namespace Test.WinForms.Forms
         private CheckBox chkAutoScale = null!;
         private CheckBox chkEnableUiLogs = null!;
         private CheckBox chkShowTpSl = null!;
+        private CheckBox chkShowPivots = null!;
+        private CheckBox chkShowTrendLines = null!;
 
         private GroupBox grpControl = null!;
         private Button btnStart = null!;
@@ -176,7 +202,14 @@ namespace Test.WinForms.Forms
             formsPlot.MouseMove += OnFormsPlotMouseMove;
             splitLeft.Panel1.Controls.Add(formsPlot);
 
-            // ② 左下：日志控制面板与 RichTextBox
+            // ② 左下：日志控制面板与微观 Tick 详情分析 (水平左右分割)
+            splitBottom = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical,
+                SplitterWidth = 6
+            };
+
             txtLogs = new RichTextBox
             {
                 Dock = DockStyle.Fill,
@@ -197,7 +230,7 @@ namespace Test.WinForms.Forms
 
             lblLogTitle = new Label
             {
-                Text = "⚡ 关键日志、平仓收益与信号监控",
+                Text = "⚡ 关键日志与信号监控",
                 Font = new Font("Microsoft YaHei", 9.5F, FontStyle.Bold),
                 ForeColor = Color.FromArgb(226, 232, 240),
                 AutoSize = true,
@@ -208,7 +241,7 @@ namespace Test.WinForms.Forms
             {
                 Text = "清空日志",
                 Size = new Size(70, 24),
-                Location = new Point(235, 4),
+                Location = new Point(190, 4),
                 FlatStyle = FlatStyle.Flat,
                 Font = new Font("Microsoft YaHei", 8F),
                 BackColor = Color.FromArgb(51, 65, 85),
@@ -224,8 +257,111 @@ namespace Test.WinForms.Forms
             var panelLogContainer = new Panel { Dock = DockStyle.Fill };
             panelLogContainer.Controls.Add(txtLogs);
             panelLogContainer.Controls.Add(panelLogHeader);
+            splitBottom.Panel1.Controls.Add(panelLogContainer);
 
-            splitLeft.Panel2.Controls.Add(panelLogContainer);
+            // ③ 日志右侧：微观 Tick 详情视口 (Tick 折线走势图 + 逐笔流水明细表)
+            panelTickDetail = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.FromArgb(15, 23, 42)
+            };
+
+            panelTickHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 32,
+                BackColor = Color.FromArgb(30, 41, 59)
+            };
+
+            lblTickTitle = new Label
+            {
+                Text = "⚡ K线微观逐笔 Tick 明细:",
+                Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(56, 189, 248),
+                Location = new Point(8, 7),
+                AutoSize = true
+            };
+
+            lblTickInfo = new Label
+            {
+                Text = "未选择 K 线 (点击上方图表中的任意一根 K 线查看详细 Tick 走势)",
+                Font = new Font("Microsoft YaHei", 8.5F),
+                ForeColor = Color.FromArgb(203, 213, 225),
+                Location = new Point(195, 8),
+                AutoSize = true
+            };
+            panelTickHeader.Controls.AddRange(new Control[] { lblTickTitle, lblTickInfo });
+
+            tabTickViews = new TabControl
+            {
+                Dock = DockStyle.Fill
+            };
+
+            tabTickPlot = new TabPage("📈 内部 Tick 价格路径") { BackColor = Color.FromArgb(15, 23, 42) };
+            formsPlotTick = new FormsPlot
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.FromArgb(15, 23, 42)
+            };
+            tabTickPlot.Controls.Add(formsPlotTick);
+
+            tabTickTable = new TabPage("📑 逐笔 Tick 流水明细表") { BackColor = Color.FromArgb(15, 23, 42) };
+            dgvTicks = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                BackgroundColor = Color.FromArgb(15, 23, 42),
+                GridColor = Color.FromArgb(51, 65, 85),
+                BorderStyle = BorderStyle.None,
+                RowHeadersVisible = false,
+                AllowUserToAddRows = false,
+                ReadOnly = true,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                EnableHeadersVisualStyles = false,
+                Font = new Font("Consolas", 9F),
+                VirtualMode = true
+            };
+
+            typeof(DataGridView).InvokeMember(
+                "DoubleBuffered",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.SetProperty,
+                null, dgvTicks, new object[] { true });
+
+            dgvTicks.CellValueNeeded += OnDgvTicksCellValueNeeded;
+            dgvTicks.CellFormatting += OnDgvTicksCellFormatting;
+
+            dgvTicks.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(30, 41, 59);
+            dgvTicks.ColumnHeadersDefaultCellStyle.ForeColor = Color.FromArgb(56, 189, 248);
+            dgvTicks.ColumnHeadersDefaultCellStyle.Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold);
+            dgvTicks.DefaultCellStyle.BackColor = Color.FromArgb(15, 23, 42);
+            dgvTicks.DefaultCellStyle.ForeColor = Color.FromArgb(241, 245, 249);
+            dgvTicks.DefaultCellStyle.SelectionBackColor = Color.FromArgb(30, 58, 138);
+
+            dgvTicks.Columns.Add("ColIdx", "#");
+            dgvTicks.Columns.Add("ColTime", "精确时间 (UTC+8)");
+            dgvTicks.Columns.Add("ColPrice", "价格 (USDT)");
+            dgvTicks.Columns.Add("ColQty", "数量 (Qty)");
+            dgvTicks.Columns.Add("ColQuote", "成交额 (USDT)");
+            dgvTicks.Columns.Add("ColSide", "主动买卖");
+            dgvTicks.Columns.Add("ColChange", "偏离开盘 (%)");
+
+            dgvTicks.Columns[0].Width = 50;
+            dgvTicks.Columns[1].Width = 140;
+            dgvTicks.Columns[2].Width = 100;
+            dgvTicks.Columns[3].Width = 90;
+            dgvTicks.Columns[4].Width = 100;
+            dgvTicks.Columns[5].Width = 100;
+            dgvTicks.Columns[6].Width = 100;
+
+            tabTickTable.Controls.Add(dgvTicks);
+
+            tabTickViews.TabPages.Add(tabTickPlot);
+            tabTickViews.TabPages.Add(tabTickTable);
+
+            panelTickDetail.Controls.Add(tabTickViews);
+            panelTickDetail.Controls.Add(panelTickHeader);
+            splitBottom.Panel2.Controls.Add(panelTickDetail);
+
+            splitLeft.Panel2.Controls.Add(splitBottom);
             splitMain.Panel1.Controls.Add(splitLeft);
 
             // 3. 右侧控制面板
@@ -367,11 +503,13 @@ namespace Test.WinForms.Forms
                 var lblSpan = CreateLabel("最大配对跨度:", 15, 249);
                 numMaxSpan = new NumericUpDown { Location = new Point(130, 246), Width = 210, Minimum = 10, Maximum = 2000, Value = 100 };
 
-                var lblSignalSpan = CreateLabel("开仓跨度≥(X1X2):", 15, 277);
-                numMinSignalSpan = new NumericUpDown { Location = new Point(130, 274), Width = 210, Minimum = 1, Maximum = 500, Value = 40 };
+                var lblSignalSpan = CreateLabel("趋势线跨度≥(X1X2):", 15, 277);
+                numMinSignalSpan = new NumericUpDown { Location = new Point(130, 274), Width = 210, Minimum = 1, Maximum = 1000, Value = 40 };
+                numMinSignalSpan.ValueChanged += (s, e) => RedrawCurrentPlot(autoScale: false);
 
-                var lblSignalAge = CreateLabel("开仓寿命≥(Age):", 15, 305);
-                numMinSignalAge = new NumericUpDown { Location = new Point(130, 302), Width = 210, Minimum = 1, Maximum = 100, Value = 4 };
+                var lblSignalAge = CreateLabel("趋势线寿命≥(Age):", 15, 305);
+                numMinSignalAge = new NumericUpDown { Location = new Point(130, 302), Width = 210, Minimum = 0, Maximum = 500, Value = 4 };
+                numMinSignalAge.ValueChanged += (s, e) => RedrawCurrentPlot(autoScale: false);
 
                 var lblMinSlope = CreateLabel("开仓整体斜率≥(%):", 15, 333);
                 numMinSlope = new NumericUpDown { Location = new Point(130, 330), Width = 210, Minimum = 0.00m, Maximum = 50.00m, DecimalPlaces = 2, Increment = 0.10m, Value = 0.50m };
@@ -391,6 +529,7 @@ namespace Test.WinForms.Forms
                 var lblLineWidth = CreateLabel("趋势线线宽 (px):", 15, 445);
                 numLineWidth = new NumericUpDown { Location = new Point(130, 442), Width = 210, Minimum = 0.1m, Maximum = 10.0m, DecimalPlaces = 1, Increment = 0.1m, Value = 0.8m };
                 numLineWidth.ForeColor = Color.FromArgb(56, 189, 248); // Sky Blue
+                numLineWidth.ValueChanged += (s, e) => RedrawCurrentPlot(autoScale: false);
 
                 chkEnableTrading = new CheckBox
                 {
@@ -432,10 +571,32 @@ namespace Test.WinForms.Forms
                 };
                 chkShowTpSl.CheckedChanged += (s, e) => RedrawCurrentPlot(autoScale: false);
 
+                chkShowPivots = new CheckBox
+                {
+                    Text = "📍 显示波段极值高低点 (Peaks / Valleys)",
+                    Location = new Point(15, 647),
+                    Width = 320,
+                    Checked = true,
+                    Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold),
+                    ForeColor = Color.FromArgb(56, 189, 248) // Sky Blue 400
+                };
+                chkShowPivots.CheckedChanged += (s, e) => RedrawCurrentPlot(autoScale: false);
+
+                chkShowTrendLines = new CheckBox
+                {
+                    Text = "📐 显示趋势线与通道 (TrendLines / Channels)",
+                    Location = new Point(15, 672),
+                    Width = 320,
+                    Checked = true,
+                    Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold),
+                    ForeColor = Color.FromArgb(249, 115, 22) // Orange 500
+                };
+                chkShowTrendLines.CheckedChanged += (s, e) => RedrawCurrentPlot(autoScale: false);
+
                 var lblStrategyNote = new Label
                 {
                     Text = "🎯 策略: 触碰回弹 / 紫色穿透(1m穿透跌破开多/突破开空)",
-                    Location = new Point(15, 650),
+                    Location = new Point(15, 700),
                     Size = new Size(325, 36),
                     ForeColor = Color.FromArgb(74, 222, 128), // Green 400
                     Font = new Font("Microsoft YaHei", 8F)
@@ -452,10 +613,11 @@ namespace Test.WinForms.Forms
                     lblCooldown, numCooldown, lblTP, numTakeProfit,
                     lblSL, numStopLoss, lblLineWidth, numLineWidth,
                     chkEnableTrading, chkEnableTickStopLoss, chkStrictEnvelope,
-                    chkRealtimeChart, chkAutoScale, chkEnableUiLogs, chkShowTpSl, lblStrategyNote
+                    chkRealtimeChart, chkAutoScale, chkEnableUiLogs,
+                    chkShowTpSl, chkShowPivots, chkShowTrendLines, lblStrategyNote
                 });
             }
-            grpStrategy.Height = 700;
+            grpStrategy.Height = 745;
             panelRight.Controls.Add(grpStrategy);
             top += grpStrategy.Height + 10;
 
@@ -694,6 +856,9 @@ namespace Test.WinForms.Forms
             chkRealtimeChart.Checked = settings.RealtimeChart;
             chkAutoScale.Checked = settings.AutoScale;
             chkEnableUiLogs.Checked = settings.EnableUiLogs;
+            chkShowTpSl.Checked = settings.ShowTpSl;
+            chkShowPivots.Checked = settings.ShowPivots;
+            chkShowTrendLines.Checked = settings.ShowTrendLines;
 
             _isRealtimeChartEnabled = chkRealtimeChart.Checked;
             _isAutoScaleEnabled = chkAutoScale.Checked;
@@ -767,6 +932,9 @@ namespace Test.WinForms.Forms
                     RealtimeChart = chkRealtimeChart.Checked,
                     AutoScale = chkAutoScale.Checked,
                     EnableUiLogs = chkEnableUiLogs.Checked,
+                    ShowTpSl = chkShowTpSl.Checked,
+                    ShowPivots = chkShowPivots.Checked,
+                    ShowTrendLines = chkShowTrendLines.Checked,
                     FormWidth = this.WindowState == FormWindowState.Normal ? this.Width : this.RestoreBounds.Width,
                     FormHeight = this.WindowState == FormWindowState.Normal ? this.Height : this.RestoreBounds.Height,
                     IsMaximized = this.WindowState == FormWindowState.Maximized,
@@ -859,7 +1027,11 @@ namespace Test.WinForms.Forms
                             chartType: _chartType,
                             completedTrades: snap.CompletedTrades,
                             activePositions: snap.ActivePositions,
-                            showTpSl: chkShowTpSl.Checked);
+                            showTpSl: chkShowTpSl.Checked,
+                            minLineX1X2: (int)numMinSignalSpan.Value,
+                            minLineAge: (int)numMinSignalAge.Value,
+                            showPivots: chkShowPivots.Checked,
+                            showTrendLines: chkShowTrendLines.Checked);
 
                         formsPlot.Refresh();
                     }
@@ -1177,7 +1349,11 @@ namespace Test.WinForms.Forms
                         chartType: _chartType,
                         completedTrades: strat.CompletedTrades,
                         activePositions: strat.ActivePositions,
-                        showTpSl: chkShowTpSl.Checked);
+                        showTpSl: chkShowTpSl.Checked,
+                        minLineX1X2: (int)numMinSignalSpan.Value,
+                        minLineAge: (int)numMinSignalAge.Value,
+                        showPivots: chkShowPivots.Checked,
+                        showTrendLines: chkShowTrendLines.Checked);
 
                     formsPlot.Refresh();
 
@@ -1406,6 +1582,8 @@ namespace Test.WinForms.Forms
 
         private bool HitTestTrendLine(double mouseX, double mouseY)
         {
+            if (!chkShowTrendLines.Checked) return false;
+
             var candidateLines = GetCandidateTrendLines();
             if (candidateLines == null || candidateLines.Count == 0) return false;
 
@@ -1443,6 +1621,13 @@ namespace Test.WinForms.Forms
 
                 // 过滤完全不在视口范围内的趋势线
                 if (effectiveEndX < plotLeft - 100 || line.X1 > plotRight + 100)
+                    continue;
+
+                // 过滤未满足界面参数跨度与寿命要求的趋势线
+                int minSpan = (int)numMinSignalSpan.Value;
+                int minAge = (int)numMinSignalAge.Value;
+                int currentAge = Math.Max(line.LineAge, effectiveEndX - line.X2);
+                if (line.LineX1X2 < minSpan || currentAge < minAge)
                     continue;
 
                 double xStart = line.X1;
@@ -1568,6 +1753,7 @@ namespace Test.WinForms.Forms
 
                         OutputKlineDetails(kline, targetGlobalIndex);
                         RedrawCurrentPlot(autoScale: false);
+                        _ = DisplayKlineTickDetailsAsync(kline, targetGlobalIndex);
 
                         while (_logQueue.TryDequeue(out var item))
                         {
@@ -1687,7 +1873,11 @@ namespace Test.WinForms.Forms
                         chartType: _chartType,
                         completedTrades: snap.CompletedTrades,
                         activePositions: snap.ActivePositions,
-                        showTpSl: chkShowTpSl.Checked);
+                        showTpSl: chkShowTpSl.Checked,
+                        minLineX1X2: (int)numMinSignalSpan.Value,
+                        minLineAge: (int)numMinSignalAge.Value,
+                        showPivots: chkShowPivots.Checked,
+                        showTrendLines: chkShowTrendLines.Checked);
 
                     formsPlot.Refresh();
                     return;
@@ -1729,7 +1919,11 @@ namespace Test.WinForms.Forms
                         chartType: _chartType,
                         completedTrades: strat.CompletedTrades,
                         activePositions: strat.ActivePositions,
-                        showTpSl: chkShowTpSl.Checked);
+                        showTpSl: chkShowTpSl.Checked,
+                        minLineX1X2: (int)numMinSignalSpan.Value,
+                        minLineAge: (int)numMinSignalAge.Value,
+                        showPivots: chkShowPivots.Checked,
+                        showTrendLines: chkShowTrendLines.Checked);
 
                     formsPlot.Refresh();
                 }
@@ -1742,6 +1936,8 @@ namespace Test.WinForms.Forms
 
         private bool IsNearAnyTrendLine(double mouseX, double mouseY, double tolerancePixels)
         {
+            if (!chkShowTrendLines.Checked) return false;
+
             var candidateLines = GetCandidateTrendLines();
             if (candidateLines == null || candidateLines.Count == 0) return false;
 
@@ -1754,6 +1950,13 @@ namespace Test.WinForms.Forms
                 var line = candidateLines[i];
                 int effectiveEndX = line.CollidedKlineIndex >= 0 ? line.CollidedKlineIndex : Math.Max(line.X2, (int)Math.Ceiling(plotRight));
                 if (effectiveEndX < plotLeft - 50 || line.X1 > plotRight + 50) continue;
+
+                // 过滤未满足界面参数跨度与寿命要求的趋势线
+                int minSpan = (int)numMinSignalSpan.Value;
+                int minAge = (int)numMinSignalAge.Value;
+                int currentAge = Math.Max(line.LineAge, effectiveEndX - line.X2);
+                if (line.LineX1X2 < minSpan || currentAge < minAge)
+                    continue;
 
                 try
                 {
@@ -1926,6 +2129,309 @@ namespace Test.WinForms.Forms
             }
 
             _logQueue.Enqueue(("========================================================", themeColor));
+        }
+
+        #endregion
+
+        #region 微观逐笔 Tick 走势渲染与流水加载 (K线点击右侧明细联动)
+
+        private async Task DisplayKlineTickDetailsAsync(RawKline kline, int globalIndex)
+        {
+            try
+            {
+                string coin = _currentRunningCoin;
+                if (string.IsNullOrWhiteSpace(coin) && cboCoin != null)
+                {
+                    coin = cboCoin.Text;
+                }
+                if (string.IsNullOrWhiteSpace(coin)) coin = "BTCUSDT";
+
+                lblTickInfo.Text = $"正在读取 Bar #{globalIndex} 内部微观逐笔 Tick 数据...";
+
+                var ticks = await ParquetDataReader.ReadTicksForTimeRangeAsync(coin, kline.OpenTime, kline.CloseTime).ConfigureAwait(true);
+                DisplayTicksInternal(kline, globalIndex, ticks);
+            }
+            catch (Exception ex)
+            {
+                lblTickInfo.Text = $"Bar #{globalIndex} | 读取 Tick 数据异常: {ex.Message}";
+            }
+        }
+
+        private void DisplayTicksInternal(RawKline kline, int globalIndex, RawTick[]? ticks)
+        {
+            if (ticks == null || ticks.Length == 0)
+            {
+                DateTime openTime = TimeHelper.FromUnixTimeMilliseconds(kline.OpenTime);
+                DateTime closeTime = TimeHelper.FromUnixTimeMilliseconds(kline.CloseTime);
+                string dir = kline.Close >= kline.Open ? "🟢 阳线" : "🔴 阴线";
+                lblTickInfo.Text = $"Bar #{globalIndex} ({dir}) | {openTime:yyyy-MM-dd HH:mm:ss} ~ {closeTime:HH:mm:ss} | 本地暂无该周期的逐笔 Tick 数据";
+                formsPlotTick.Plot.Clear();
+                formsPlotTick.Plot.Title($"Bar #{globalIndex} 暂无可用 Tick 数据");
+                formsPlotTick.Refresh();
+                _displayedTicks.Clear();
+                dgvTicks.RowCount = 0;
+                return;
+            }
+
+            int totalTicks = ticks.Length;
+            DateTime kOpenTime = TimeHelper.FromUnixTimeMilliseconds(kline.OpenTime);
+            DateTime kCloseTime = TimeHelper.FromUnixTimeMilliseconds(kline.CloseTime);
+            TimeSpan duration = kCloseTime - kOpenTime;
+
+            decimal totalVol = 0m;
+            decimal totalTakerBuyVol = 0m;
+            decimal overallHigh = decimal.MinValue;
+            decimal overallLow = decimal.MaxValue;
+
+            for (int i = 0; i < totalTicks; i++)
+            {
+                var t = ticks[i];
+                if (t.Price > overallHigh) overallHigh = t.Price;
+                if (t.Price < overallLow) overallLow = t.Price;
+                totalVol += t.Qty;
+                if (!t.IsBuyerMaker) totalTakerBuyVol += t.Qty;
+            }
+
+            string dirStr = kline.Close >= kline.Open ? "🟢 阳线/涨" : "🔴 阴线/跌";
+            decimal takerBuyRatio = totalVol > 0 ? (totalTakerBuyVol / totalVol * 100m) : 0m;
+
+            lblTickInfo.Text = $"Bar #{globalIndex} ({dirStr}) | 耗时: {FormatDuration(duration)} | Tick: {totalTicks:N0} 笔 | 极值: {overallLow:F2} ~ {overallHigh:F2} | 主买: {takerBuyRatio:F1}%";
+
+            // 1. 渲染微观 Tick 分时走势图 (ScottPlot 5)
+            formsPlotTick.Plot.Clear();
+            formsPlotTick.Plot.FigureBackground.Color = ScottPlot.Color.FromHex("#0f172a");
+            formsPlotTick.Plot.DataBackground.Color = ScottPlot.Color.FromHex("#1e293b");
+            formsPlotTick.Plot.Grid.MajorLineColor = ScottPlot.Color.FromHex("#334155").WithAlpha(0.6);
+            formsPlotTick.Plot.Grid.MinorLineColor = ScottPlot.Color.FromHex("#1e293b").WithAlpha(0.3);
+
+            formsPlotTick.Plot.Axes.Left.TickLabelStyle.ForeColor = ScottPlot.Color.FromHex("#94a3b8");
+            formsPlotTick.Plot.Axes.Bottom.TickLabelStyle.ForeColor = ScottPlot.Color.FromHex("#94a3b8");
+            formsPlotTick.Plot.Axes.Left.FrameLineStyle.Color = ScottPlot.Color.FromHex("#475569");
+            formsPlotTick.Plot.Axes.Bottom.FrameLineStyle.Color = ScottPlot.Color.FromHex("#475569");
+
+            string fontName = PlotHelper.GetInstalledChineseFont();
+            string chartTitle = $"Bar #{globalIndex} 内部 Tick 价格路径 (共 {totalTicks:N0} 笔 Tick, {kOpenTime.ToLocalTime():HH:mm:ss.fff} ~ {kCloseTime.ToLocalTime():HH:mm:ss.fff})";
+
+            formsPlotTick.Plot.Title(chartTitle, 11);
+            formsPlotTick.Plot.Axes.Title.Label.FontName = fontName;
+            formsPlotTick.Plot.Axes.Title.Label.ForeColor = ScottPlot.Color.FromHex("#38bdf8");
+
+            double[] xs = new double[totalTicks];
+            double[] ys = new double[totalTicks];
+            double maxVol = 0;
+
+            int maxIdx = 0, minIdx = 0;
+            decimal maxVal = decimal.MinValue, minVal = decimal.MaxValue;
+
+            for (int i = 0; i < totalTicks; i++)
+            {
+                xs[i] = i;
+                ys[i] = (double)ticks[i].Price;
+
+                if (ticks[i].Price > maxVal) { maxVal = ticks[i].Price; maxIdx = i; }
+                if (ticks[i].Price < minVal) { minVal = ticks[i].Price; minIdx = i; }
+
+                double v = (double)ticks[i].Qty;
+                if (v > maxVol) maxVol = v;
+            }
+
+            // 成交量柱状图极速聚合渲染 (最大 250 个 bin，杜绝百万图形对象卡死)
+            int maxVolBins = 250;
+            var volBars = new List<ScottPlot.Bar>(Math.Min(totalTicks, maxVolBins));
+
+            if (totalTicks <= maxVolBins)
+            {
+                for (int i = 0; i < totalTicks; i++)
+                {
+                    double v = (double)ticks[i].Qty;
+                    bool isBuyer = !ticks[i].IsBuyerMaker;
+                    var vCol = isBuyer ? ScottPlot.Color.FromHex("#22c55e").WithAlpha(0.45) : ScottPlot.Color.FromHex("#ef4444").WithAlpha(0.45);
+
+                    volBars.Add(new ScottPlot.Bar
+                    {
+                        Position = i,
+                        Value = v,
+                        ValueBase = 0,
+                        Size = 0.8,
+                        FillColor = vCol,
+                        LineWidth = 0
+                    });
+                }
+            }
+            else
+            {
+                double binSize = (double)totalTicks / maxVolBins;
+                for (int bin = 0; bin < maxVolBins; bin++)
+                {
+                    int startT = (int)(bin * binSize);
+                    int endT = Math.Min(totalTicks - 1, (int)((bin + 1) * binSize));
+                    if (startT > endT) continue;
+
+                    double binVol = 0;
+                    double binBuyVol = 0;
+                    double binSellVol = 0;
+
+                    for (int t = startT; t <= endT; t++)
+                    {
+                        double q = (double)ticks[t].Qty;
+                        binVol += q;
+                        if (!ticks[t].IsBuyerMaker) binBuyVol += q;
+                        else binSellVol += q;
+                    }
+
+                    double binPos = (startT + endT) / 2.0;
+                    bool isBuyer = binBuyVol >= binSellVol;
+                    var vCol = isBuyer ? ScottPlot.Color.FromHex("#22c55e").WithAlpha(0.45) : ScottPlot.Color.FromHex("#ef4444").WithAlpha(0.45);
+
+                    volBars.Add(new ScottPlot.Bar
+                    {
+                        Position = binPos,
+                        Value = binVol,
+                        ValueBase = 0,
+                        Size = binSize * 0.85,
+                        FillColor = vCol,
+                        LineWidth = 0
+                    });
+                }
+            }
+
+            if (volBars.Count > 0)
+            {
+                var vPlot = formsPlotTick.Plot.Add.Bars(volBars);
+                vPlot.Axes.YAxis = formsPlotTick.Plot.Axes.Right;
+                formsPlotTick.Plot.Axes.Right.TickLabelStyle.ForeColor = ScottPlot.Color.FromHex("#64748b");
+                formsPlotTick.Plot.Axes.Right.FrameLineStyle.Color = ScottPlot.Color.FromHex("#334155");
+                if (maxVol <= 0) maxVol = 1;
+                formsPlotTick.Plot.Axes.SetLimitsY(0, maxVol * 4.0, formsPlotTick.Plot.Axes.Right);
+            }
+
+            var scatter = formsPlotTick.Plot.Add.ScatterLine(xs, ys);
+            scatter.Color = kline.Close >= kline.Open ? ScottPlot.Color.FromHex("#22c55e") : ScottPlot.Color.FromHex("#ef4444");
+            scatter.LineWidth = 1.3f;
+            scatter.MarkerSize = 0;
+
+            // 标注最高与最低点位 (防重叠安全间距)
+            double priceRange = (double)(maxVal - minVal);
+            if (priceRange <= 1e-6) priceRange = (double)maxVal * 0.005;
+            if (priceRange <= 0) priceRange = 1.0;
+            double yOffsetMarker = priceRange * 0.024;
+
+            static ScottPlot.Alignment GetSafeAlign(int tickIdx, int total, bool isUpper)
+            {
+                if (tickIdx < total * 0.12)
+                    return isUpper ? ScottPlot.Alignment.UpperLeft : ScottPlot.Alignment.LowerLeft;
+                if (tickIdx > total * 0.88)
+                    return isUpper ? ScottPlot.Alignment.UpperRight : ScottPlot.Alignment.LowerRight;
+                return isUpper ? ScottPlot.Alignment.UpperCenter : ScottPlot.Alignment.LowerCenter;
+            }
+
+            var mHigh = formsPlotTick.Plot.Add.Marker(maxIdx, (double)maxVal);
+            mHigh.Shape = ScottPlot.MarkerShape.FilledTriangleUp;
+            mHigh.Size = 10;
+            mHigh.Color = ScottPlot.Color.FromHex("#ef4444");
+
+            var textHigh = formsPlotTick.Plot.Add.Text($"▲ 最高 {maxVal:F2}", maxIdx, (double)maxVal + yOffsetMarker);
+            textHigh.LabelFontName = fontName;
+            textHigh.LabelFontSize = 8.0f;
+            textHigh.LabelFontColor = ScottPlot.Color.FromHex("#fca5a5");
+            textHigh.LabelAlignment = GetSafeAlign(maxIdx, totalTicks, isUpper: false);
+            textHigh.LabelBackgroundColor = ScottPlot.Color.FromHex("#0f172a").WithAlpha(0.9);
+            textHigh.LabelBorderColor = ScottPlot.Color.FromHex("#ef4444");
+            textHigh.LabelBorderWidth = 1f;
+
+            var mLow = formsPlotTick.Plot.Add.Marker(minIdx, (double)minVal);
+            mLow.Shape = ScottPlot.MarkerShape.FilledTriangleDown;
+            mLow.Size = 10;
+            mLow.Color = ScottPlot.Color.FromHex("#ef4444");
+
+            var textLow = formsPlotTick.Plot.Add.Text($"▼ 最低 {minVal:F2}", minIdx, (double)minVal - yOffsetMarker);
+            textLow.LabelFontName = fontName;
+            textLow.LabelFontSize = 8.0f;
+            textLow.LabelFontColor = ScottPlot.Color.FromHex("#fca5a5");
+            textLow.LabelAlignment = GetSafeAlign(minIdx, totalTicks, isUpper: true);
+            textLow.LabelBackgroundColor = ScottPlot.Color.FromHex("#0f172a").WithAlpha(0.9);
+            textLow.LabelBorderColor = ScottPlot.Color.FromHex("#ef4444");
+            textLow.LabelBorderWidth = 1f;
+
+            var mOpen = formsPlotTick.Plot.Add.Marker(0, (double)ticks[0].Price);
+            mOpen.Shape = ScottPlot.MarkerShape.FilledCircle;
+            mOpen.Size = 8;
+            mOpen.Color = ScottPlot.Color.FromHex("#38bdf8");
+
+            var mClose = formsPlotTick.Plot.Add.Marker(totalTicks - 1, (double)ticks[totalTicks - 1].Price);
+            mClose.Shape = ScottPlot.MarkerShape.FilledSquare;
+            mClose.Size = 8;
+            mClose.Color = ScottPlot.Color.FromHex("#f97316");
+
+            formsPlotTick.Plot.Axes.Margins(0.03, 0.28);
+            formsPlotTick.Plot.Axes.AutoScale();
+            formsPlotTick.Refresh();
+
+            // 2. 极速装载 VirtualMode 虚拟数据源
+            _displayedTicks.Clear();
+            if (_displayedTicks.Capacity < totalTicks)
+            {
+                _displayedTicks.Capacity = totalTicks;
+            }
+
+            decimal kOpen = kline.Open;
+            for (int t = 0; t < totalTicks; t++)
+            {
+                var tick = ticks[t];
+                bool isBuyer = !tick.IsBuyerMaker;
+                decimal diffFromOpen = kOpen > 0 ? (tick.Price - kOpen) / kOpen * 100m : 0m;
+
+                _displayedTicks.Add(new TickViewModel
+                {
+                    TickIndex = t + 1,
+                    Time = tick.Time,
+                    Price = tick.Price,
+                    Qty = tick.Qty,
+                    QuoteQty = tick.QuoteQty,
+                    IsBuyer = isBuyer,
+                    DiffPct = diffFromOpen
+                });
+            }
+
+            dgvTicks.RowCount = _displayedTicks.Count;
+            dgvTicks.Invalidate();
+        }
+
+        private void OnDgvTicksCellValueNeeded(object? sender, DataGridViewCellValueEventArgs e)
+        {
+            if (e.RowIndex < 0 || e.RowIndex >= _displayedTicks.Count) return;
+            var tick = _displayedTicks[e.RowIndex];
+
+            e.Value = e.ColumnIndex switch
+            {
+                0 => tick.TickIndex,
+                1 => TimeHelper.FromUnixTimeMilliseconds(tick.Time).ToLocalTime().ToString("HH:mm:ss.fff"),
+                2 => tick.Price.ToString("F2"),
+                3 => tick.Qty.ToString("F4"),
+                4 => tick.QuoteQty.ToString("F2"),
+                5 => tick.IsBuyer ? "🟢 买方主动" : "🔴 卖方主动",
+                6 => $"{tick.DiffPct:+0.00;-0.00;0.00}%",
+                _ => null
+            };
+        }
+
+        private void OnDgvTicksCellFormatting(object? sender, DataGridViewCellFormattingEventArgs e)
+        {
+            if (e.RowIndex < 0 || e.RowIndex >= _displayedTicks.Count || e.CellStyle == null) return;
+            var tick = _displayedTicks[e.RowIndex];
+
+            e.CellStyle.ForeColor = tick.IsBuyer
+                ? Color.FromArgb(74, 222, 128)
+                : Color.FromArgb(248, 113, 113);
+        }
+
+        private static string FormatDuration(TimeSpan span)
+        {
+            if (span.TotalDays >= 1) return $"{(int)span.TotalDays}天{span.Hours}小时";
+            if (span.TotalHours >= 1) return $"{(int)span.TotalHours}小时{span.Minutes}分";
+            if (span.TotalMinutes >= 1) return $"{(int)span.TotalMinutes}分{span.Seconds}秒";
+            if (span.TotalSeconds >= 1) return $"{span.TotalSeconds:F2}秒";
+            return $"{span.TotalMilliseconds:F0}ms";
         }
 
         #endregion

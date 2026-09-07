@@ -51,7 +51,11 @@ namespace Common.Helper
             ChartType chartType = ChartType.Candlestick,
             IReadOnlyList<TradeRecord>? completedTrades = null,
             IReadOnlyList<Position>? activePositions = null,
-            bool showTpSl = true)
+            bool showTpSl = true,
+            int minLineX1X2 = 0,
+            int minLineAge = 0,
+            bool showPivots = true,
+            bool showTrendLines = true)
         {
             if (plot == null || klines == null || klines.Count == 0)
             {
@@ -119,7 +123,7 @@ namespace Common.Helper
             var p2Xs = new List<double>(); var p2Ys = new List<double>();
             var p3Xs = new List<double>(); var p3Ys = new List<double>();
 
-            if (peaks != null && peaks.Count > 0)
+            if (showPivots && peaks != null && peaks.Count > 0)
             {
                 foreach (var p in peaks)
                 {
@@ -185,7 +189,7 @@ namespace Common.Helper
             var v2Xs = new List<double>(); var v2Ys = new List<double>();
             var v3Xs = new List<double>(); var v3Ys = new List<double>();
 
-            if (valleys != null && valleys.Count > 0)
+            if (showPivots && valleys != null && valleys.Count > 0)
             {
                 foreach (var v in valleys)
                 {
@@ -260,7 +264,7 @@ namespace Common.Helper
             var thirdPointXs = new List<double>();
             var thirdPointYs = new List<double>();
 
-            if (trendLines != null && trendLines.Count > 0)
+            if (showTrendLines && trendLines != null && trendLines.Count > 0)
             {
                 int maxLinesToDraw = 200;
                 int drawnTotal = 0;
@@ -291,12 +295,21 @@ namespace Common.Helper
                     double yStart = (double)line.Y1;
                     double yEnd = (double)line.GetPriceAt(effectiveEndX);
 
-                    var linePlot = plot.Add.Line(xStart, yStart, xEnd, yEnd);
-
                     bool isSelected = selectedTrendLine.HasValue &&
                                       line.X1 == selectedTrendLine.Value.X1 &&
                                       line.X2 == selectedTrendLine.Value.X2 &&
                                       line.Type == selectedTrendLine.Value.Type;
+
+                    // 🌟 跨度与寿命参数化显示过滤 (x1x2 跨度与 LineAge 寿命)
+                    int currentSpan = line.LineX1X2;
+                    int currentAge = Math.Max(line.LineAge, effectiveEndX - line.X2);
+
+                    if (!isSelected && (currentSpan < minLineX1X2 || currentAge < minLineAge))
+                    {
+                        continue;
+                    }
+
+                    var linePlot = plot.Add.Line(xStart, yStart, xEnd, yEnd);
 
                     if (isSelected)
                     {
@@ -870,7 +883,11 @@ namespace Common.Helper
             ChartType chartType = ChartType.Candlestick,
             IReadOnlyList<TradeRecord>? completedTrades = null,
             IReadOnlyList<Position>? activePositions = null,
-            bool showTpSl = true)
+            bool showTpSl = true,
+            int minLineX1X2 = 0,
+            int minLineAge = 0,
+            bool showPivots = true,
+            bool showTrendLines = true)
         {
             var allLines = new List<TrendLine>();
             if (resistanceLines != null) allLines.AddRange(resistanceLines);
@@ -891,7 +908,11 @@ namespace Common.Helper
                 chartType: chartType,
                 completedTrades: completedTrades,
                 activePositions: activePositions,
-                showTpSl: showTpSl);
+                showTpSl: showTpSl,
+                minLineX1X2: minLineX1X2,
+                minLineAge: minLineAge,
+                showPivots: showPivots,
+                showTrendLines: showTrendLines);
         }
 
         public static string PlotTrendLineChart(
@@ -911,7 +932,11 @@ namespace Common.Helper
             ChartType chartType = ChartType.Candlestick,
             IReadOnlyList<TradeRecord>? completedTrades = null,
             IReadOnlyList<Position>? activePositions = null,
-            bool showTpSl = true)
+            bool showTpSl = true,
+            int minLineX1X2 = 0,
+            int minLineAge = 0,
+            bool showPivots = true,
+            bool showTrendLines = true)
         {
             if (klines == null || klines.Count == 0)
             {
@@ -936,7 +961,11 @@ namespace Common.Helper
                 chartType: chartType,
                 completedTrades: completedTrades,
                 activePositions: activePositions,
-                showTpSl: showTpSl);
+                showTpSl: showTpSl,
+                minLineX1X2: minLineX1X2,
+                minLineAge: minLineAge,
+                showPivots: showPivots,
+                showTrendLines: showTrendLines);
 
             if (string.IsNullOrWhiteSpace(outputFilePath))
             {

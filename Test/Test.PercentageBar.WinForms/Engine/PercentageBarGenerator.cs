@@ -56,6 +56,9 @@ namespace Test.PercentageBar.WinForms.Engine
             }
 
             decimal thresholdFrac = thresholdValue / 100.0m;
+            long intervalMs = sliceUnit == SliceUnitType.MinuteTime
+                ? Math.Max(1000L, (long)(thresholdValue * 60 * 1000L))
+                : 60000L;
             int barIndex = 0;
 
             // 当前正在构建的 Bar 状态 (纯值类型寄存)
@@ -107,7 +110,9 @@ namespace Test.PercentageBar.WinForms.Engine
                     high = p;
                     low = p;
                     close = p;
-                    openTime = tick.Time;
+                    openTime = (sliceUnit == SliceUnitType.MinuteTime && mode == PercentBarMode.ChangeFromOpen)
+                        ? (tick.Time / intervalMs) * intervalMs
+                        : tick.Time;
                     closeTime = tick.Time;
                     volume = tick.Qty;
                     quoteVolume = tick.QuoteQty;
@@ -165,7 +170,7 @@ namespace Test.PercentageBar.WinForms.Engine
                             break;
                     }
                 }
-                else // SliceUnitType.FixedPrice
+                else if (sliceUnit == SliceUnitType.FixedPrice)
                 {
                     switch (mode)
                     {
@@ -191,6 +196,24 @@ namespace Test.PercentageBar.WinForms.Engine
                                 isTriggered = true;
                             }
                             break;
+                    }
+                }
+                else // SliceUnitType.MinuteTime
+                {
+                    if (mode == PercentBarMode.ChangeFromOpen)
+                    {
+                        long tickAligned = (tick.Time / intervalMs) * intervalMs;
+                        if (tickAligned > openTime)
+                        {
+                            isTriggered = true;
+                        }
+                    }
+                    else
+                    {
+                        if (tick.Time >= openTime + intervalMs)
+                        {
+                            isTriggered = true;
+                        }
                     }
                 }
 
@@ -224,18 +247,21 @@ namespace Test.PercentageBar.WinForms.Engine
 
                     // 开启下一根 Bar
                     currentBarTicks.Clear();
+                    currentBarTicks.Add(tick);
                     open = p;
                     high = p;
                     low = p;
                     close = p;
-                    openTime = tick.Time;
+                    openTime = (sliceUnit == SliceUnitType.MinuteTime && mode == PercentBarMode.ChangeFromOpen)
+                        ? (tick.Time / intervalMs) * intervalMs
+                        : tick.Time;
                     closeTime = tick.Time;
-                    volume = 0m;
-                    quoteVolume = 0m;
-                    tradeCount = 0;
-                    takerBuyVol = 0m;
-                    takerBuyQuote = 0m;
-                    tickCount = 0;
+                    volume = tick.Qty;
+                    quoteVolume = tick.QuoteQty;
+                    tradeCount = 1;
+                    takerBuyVol = (!tick.IsBuyerMaker) ? tick.Qty : 0m;
+                    takerBuyQuote = (!tick.IsBuyerMaker) ? tick.QuoteQty : 0m;
+                    tickCount = 1;
                 }
 
                 if (progressCallback != null && (i % reportInterval == 0 || i == count - 1))
@@ -323,6 +349,9 @@ namespace Test.PercentageBar.WinForms.Engine
             }
 
             decimal thresholdFrac = thresholdValue / 100.0m;
+            long intervalMs = sliceUnit == SliceUnitType.MinuteTime
+                ? Math.Max(1000L, (long)(thresholdValue * 60 * 1000L))
+                : 60000L;
             int barIndex = 0;
 
             bool isBarBuilding = false;
@@ -373,7 +402,9 @@ namespace Test.PercentageBar.WinForms.Engine
                     high = p;
                     low = p;
                     close = p;
-                    openTime = tick.Time;
+                    openTime = (sliceUnit == SliceUnitType.MinuteTime && mode == PercentBarMode.ChangeFromOpen)
+                        ? (tick.Time / intervalMs) * intervalMs
+                        : tick.Time;
                     closeTime = tick.Time;
                     volume = tick.Qty;
                     quoteVolume = tick.QuoteQty;
@@ -428,7 +459,7 @@ namespace Test.PercentageBar.WinForms.Engine
                             break;
                     }
                 }
-                else
+                else if (sliceUnit == SliceUnitType.FixedPrice)
                 {
                     switch (mode)
                     {
@@ -454,6 +485,24 @@ namespace Test.PercentageBar.WinForms.Engine
                                 isTriggered = true;
                             }
                             break;
+                    }
+                }
+                else // SliceUnitType.MinuteTime
+                {
+                    if (mode == PercentBarMode.ChangeFromOpen)
+                    {
+                        long tickAligned = (tick.Time / intervalMs) * intervalMs;
+                        if (tickAligned > openTime)
+                        {
+                            isTriggered = true;
+                        }
+                    }
+                    else
+                    {
+                        if (tick.Time >= openTime + intervalMs)
+                        {
+                            isTriggered = true;
+                        }
                     }
                 }
 
@@ -513,14 +562,16 @@ namespace Test.PercentageBar.WinForms.Engine
                     high = p;
                     low = p;
                     close = p;
-                    openTime = tick.Time;
+                    openTime = (sliceUnit == SliceUnitType.MinuteTime && mode == PercentBarMode.ChangeFromOpen)
+                        ? (tick.Time / intervalMs) * intervalMs
+                        : tick.Time;
                     closeTime = tick.Time;
-                    volume = 0m;
-                    quoteVolume = 0m;
-                    tradeCount = 0;
-                    takerBuyVol = 0m;
-                    takerBuyQuote = 0m;
-                    tickCount = 0;
+                    volume = tick.Qty;
+                    quoteVolume = tick.QuoteQty;
+                    tradeCount = 1;
+                    takerBuyVol = (!tick.IsBuyerMaker) ? tick.Qty : 0m;
+                    takerBuyQuote = (!tick.IsBuyerMaker) ? tick.QuoteQty : 0m;
+                    tickCount = 1;
                 }
             }
 
@@ -576,6 +627,7 @@ namespace Test.PercentageBar.WinForms.Engine
     {
         private readonly decimal _thresholdValue;
         private readonly decimal _thresholdFrac;
+        private readonly long _intervalMs;
         private readonly SliceUnitType _sliceUnit;
         private readonly PercentBarMode _mode;
         private int _barIndex = 0;
@@ -609,6 +661,9 @@ namespace Test.PercentageBar.WinForms.Engine
         {
             _thresholdValue = thresholdValue;
             _thresholdFrac = thresholdValue / 100.0m;
+            _intervalMs = sliceUnit == SliceUnitType.MinuteTime
+                ? Math.Max(1000L, (long)(thresholdValue * 60 * 1000L))
+                : 60000L;
             _sliceUnit = sliceUnit;
             _mode = mode;
             _sw.Start();
@@ -664,7 +719,9 @@ namespace Test.PercentageBar.WinForms.Engine
                     _high = p;
                     _low = p;
                     _close = p;
-                    _openTime = tick.Time;
+                    _openTime = (_sliceUnit == SliceUnitType.MinuteTime && _mode == PercentBarMode.ChangeFromOpen)
+                        ? (tick.Time / _intervalMs) * _intervalMs
+                        : tick.Time;
                     _closeTime = tick.Time;
                     _volume = tick.Qty;
                     _quoteVolume = tick.QuoteQty;
@@ -720,7 +777,7 @@ namespace Test.PercentageBar.WinForms.Engine
                             break;
                     }
                 }
-                else // SliceUnitType.FixedPrice
+                else if (_sliceUnit == SliceUnitType.FixedPrice)
                 {
                     switch (_mode)
                     {
@@ -746,6 +803,24 @@ namespace Test.PercentageBar.WinForms.Engine
                                 isTriggered = true;
                             }
                             break;
+                    }
+                }
+                else // SliceUnitType.MinuteTime
+                {
+                    if (_mode == PercentBarMode.ChangeFromOpen)
+                    {
+                        long tickAligned = (tick.Time / _intervalMs) * _intervalMs;
+                        if (tickAligned > _openTime)
+                        {
+                            isTriggered = true;
+                        }
+                    }
+                    else
+                    {
+                        if (tick.Time >= _openTime + _intervalMs)
+                        {
+                            isTriggered = true;
+                        }
                     }
                 }
 
@@ -793,18 +868,21 @@ namespace Test.PercentageBar.WinForms.Engine
 
                     // 开启下一根 Bar
                     _currentBarTicks.Clear();
+                    _currentBarTicks.Add(tick);
                     _open = p;
                     _high = p;
                     _low = p;
                     _close = p;
-                    _openTime = tick.Time;
+                    _openTime = (_sliceUnit == SliceUnitType.MinuteTime && _mode == PercentBarMode.ChangeFromOpen)
+                        ? (tick.Time / _intervalMs) * _intervalMs
+                        : tick.Time;
                     _closeTime = tick.Time;
-                    _volume = 0m;
-                    _quoteVolume = 0m;
-                    _tradeCount = 0;
-                    _takerBuyVol = 0m;
-                    _takerBuyQuote = 0m;
-                    _tickCount = 0;
+                    _volume = tick.Qty;
+                    _quoteVolume = tick.QuoteQty;
+                    _tradeCount = 1;
+                    _takerBuyVol = (!tick.IsBuyerMaker) ? tick.Qty : 0m;
+                    _takerBuyQuote = (!tick.IsBuyerMaker) ? tick.QuoteQty : 0m;
+                    _tickCount = 1;
                 }
             }
         }
