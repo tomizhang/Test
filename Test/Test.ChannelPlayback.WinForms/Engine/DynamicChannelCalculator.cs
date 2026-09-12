@@ -7,11 +7,12 @@ namespace Test.ChannelPlayback.WinForms.Engine
 {
     public enum ChannelCalculationMode
     {
-        ThreePointAuto = 0,             // 三点智能自适应 (2低1高 / 2高1低 自动择优) [默认推荐]
-        ThreePointTwoLowsOneHigh = 1,   // 三点通道 (强制 2低点1高点 · 支撑基准/上升优先)
-        ThreePointTwoHighsOneLow = 2,   // 三点通道 (强制 2高点1低点 · 阻力基准/下降优先)
-        LinearRegression = 3,           // 经典线性回归外包络 (全量回归均值)
-        MinimumHeight = 4               // 极小高度包络 (紧密契合)
+        ThreePointTrendDirectional = 0, // 三点趋势定向 (向上2低1高 / 向下2高1低 严格定向) [默认推荐]
+        ThreePointAuto = 1,             // 三点智能自适应 (2低1高 / 2高1低 紧凑择优)
+        ThreePointTwoLowsOneHigh = 2,   // 三点通道 (强制 2低点1高点 · 支撑基准/上升优先)
+        ThreePointTwoHighsOneLow = 3,   // 三点通道 (强制 2高点1低点 · 阻力基准/下降优先)
+        LinearRegression = 4,           // 经典线性回归外包络 (全量回归均值)
+        MinimumHeight = 5               // 极小高度包络 (紧密契合)
     }
 
     /// <summary>
@@ -50,7 +51,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
             int leftLength = 100,
             int rightExtendLength = 100,
             bool cumulativeMode = false,
-            ChannelCalculationMode mode = ChannelCalculationMode.ThreePointAuto)
+            ChannelCalculationMode mode = ChannelCalculationMode.ThreePointTrendDirectional)
         {
             if (klines == null || klines.Count < 2)
             {
@@ -76,8 +77,12 @@ namespace Test.ChannelPlayback.WinForms.Engine
                 return new DynamicChannelResult { IsValid = false };
             }
 
-            // 根据模式分流：三点通道计算 或 经典回归计算
-            if (mode == ChannelCalculationMode.LinearRegression || mode == ChannelCalculationMode.MinimumHeight)
+            // 根据模式分流：三点趋势定向、三点自适应/强制、或经典回归计算
+            if (mode == ChannelCalculationMode.ThreePointTrendDirectional)
+            {
+                return CalculateTrendDirectionalChannel(klines, startIdx, curr, rightExtendLength);
+            }
+            else if (mode == ChannelCalculationMode.LinearRegression || mode == ChannelCalculationMode.MinimumHeight)
             {
                 return CalculateLinearRegressionChannel(klines, startIdx, curr, rightExtendLength, mode);
             }
@@ -88,6 +93,151 @@ namespace Test.ChannelPlayback.WinForms.Engine
         }
 
         #region 三点通道确认核心算法 (2低1高 或 2高1低)
+
+        /// <summary>
+        /// 三点趋势定向算法：
+        /// 1. 若当前窗口基准趋势向上 (回归斜率 k_macro >= 0)，严格取两个低点和一个高点计算 (支撑基准上升通道)
+        /// 2. 若当前窗口基准趋势向下 (回归斜率 k_macro < 0)，严格取两个高点和一个低点计算 (阻力基准下降通道)
+        /// 3. 上下轨严格 100% 包含所有已出现 K 线的高低点，零越界违规
+        /// </summary>
+        private static DynamicChannelResult CalculateTrendDirectionalChannel(
+            IReadOnlyList<RawKline> klines,
+            int startIdx,
+            int curr,
+            int rightExtendLength)
+        {
+            // 1. 判断宏观窗口基准趋势方向 (全量线性回归斜率)
+            decimal kMacro = CalculateLinearRegressionSlope(klines, startIdx, curr);
+            bool isUpward = kMacro >= 0m;
+
+            var lowerHull = ComputeLowerConvexHull(klines, startIdx, curr);
+            var upperHull = ComputeUpperConvexHull(klines, startIdx, curr);
+
+            var candidates = new List<Candidate3Point>();
+
+            if (isUpward)
+            {
+                // 通道向上：严格取【2个低点 + 1个高点】进行计算 (以两低点支撑线为基准，对侧极高点确定高度)
+                for (int i = 0; i < lowerHull.Count - 1; i++)
+                {
+                    int idx1 = lowerHull[i];
+                    int idx2 = lowerHull[i + 1];
+                    decimal low1 = klines[idx1].Low;
+                    decimal low2 = klines[idx2].Low;
+                    int span = idx2 - idx1;
+                    if (span <= 0) continue;
+
+                    decimal k = (low2 - low1) / (decimal)span;
+                    decimal bLower = low1 - k * idx1;
+
+                    // 寻找对侧最高触碰点 (1个高点)
+                    decimal maxDiffH = decimal.MinValue;
+                    int highIdx = startIdx;
+                    decimal highPrice = 0m;
+
+                    for (int j = startIdx; j <= curr; j++)
+                    {
+                        decimal diffH = klines[j].High - k * j;
+                        if (diffH > maxDiffH)
+                        {
+                            maxDiffH = diffH;
+                            highIdx = j;
+                            highPrice = klines[j].High;
+                        }
+                    }
+
+                    decimal bUpper = maxDiffH;
+                    decimal h = bUpper - bLower;
+
+                    // 评分机制：优先契合紧密，适度奖励支撑跨度 Span，并在向上趋势中强化向上支撑底 (k >= 0)
+                    double spanWeight = Math.Min(1.0, span / 25.0);
+                    double slopePenalty = k < 0m ? 3.0 : 1.0;
+                    double score = ((double)h * slopePenalty) / (1.0 + 0.35 * spanWeight);
+
+                    candidates.Add(new Candidate3Point
+                    {
+                        IsTwoLows = true,
+                        P1Idx = idx1,
+                        P1Price = low1,
+                        P2Idx = idx2,
+                        P2Price = low2,
+                        P3Idx = highIdx,
+                        P3Price = highPrice,
+                        SlopeK = k,
+                        UpperIntercept = bUpper,
+                        LowerIntercept = bLower,
+                        Score = score
+                    });
+                }
+            }
+            else
+            {
+                // 通道向下：严格取【2个高点 + 1个低点】进行计算 (以两高点阻力线为基准，对侧极低点确定高度)
+                for (int i = 0; i < upperHull.Count - 1; i++)
+                {
+                    int idx1 = upperHull[i];
+                    int idx2 = upperHull[i + 1];
+                    decimal high1 = klines[idx1].High;
+                    decimal high2 = klines[idx2].High;
+                    int span = idx2 - idx1;
+                    if (span <= 0) continue;
+
+                    decimal k = (high2 - high1) / (decimal)span;
+                    decimal bUpper = high1 - k * idx1;
+
+                    // 寻找对侧最低触碰点 (1个低点)
+                    decimal minDiffL = decimal.MaxValue;
+                    int lowIdx = startIdx;
+                    decimal lowPrice = 0m;
+
+                    for (int j = startIdx; j <= curr; j++)
+                    {
+                        decimal diffL = klines[j].Low - k * j;
+                        if (diffL < minDiffL)
+                        {
+                            minDiffL = diffL;
+                            lowIdx = j;
+                            lowPrice = klines[j].Low;
+                        }
+                    }
+
+                    decimal bLower = minDiffL;
+                    decimal h = bUpper - bLower;
+
+                    // 评分机制：优先契合紧密，适度奖励阻力跨度 Span，并在向下趋势中强化向下阻力顶 (k <= 0)
+                    double spanWeight = Math.Min(1.0, span / 25.0);
+                    double slopePenalty = k > 0m ? 3.0 : 1.0;
+                    double score = ((double)h * slopePenalty) / (1.0 + 0.35 * spanWeight);
+
+                    candidates.Add(new Candidate3Point
+                    {
+                        IsTwoLows = false,
+                        P1Idx = idx1,
+                        P1Price = high1,
+                        P2Idx = idx2,
+                        P2Price = high2,
+                        P3Idx = lowIdx,
+                        P3Price = lowPrice,
+                        SlopeK = k,
+                        UpperIntercept = bUpper,
+                        LowerIntercept = bLower,
+                        Score = score
+                    });
+                }
+            }
+
+            // 若候选为空，安全降级至三点自适应或经典线性回归
+            if (candidates.Count == 0)
+            {
+                return CalculateThreePointChannel(klines, startIdx, curr, rightExtendLength, ChannelCalculationMode.ThreePointAuto);
+            }
+
+            // 排序选出得分最优的候选三点通道
+            candidates.Sort((a, b) => a.Score.CompareTo(b.Score));
+            var best = candidates[0];
+
+            return BuildChannelResultFromCandidate(klines, startIdx, curr, rightExtendLength, best);
+        }
 
         private static DynamicChannelResult CalculateThreePointChannel(
             IReadOnlyList<RawKline> klines,
@@ -220,6 +370,16 @@ namespace Test.ChannelPlayback.WinForms.Engine
             candidates.Sort((a, b) => a.Score.CompareTo(b.Score));
             var best = candidates[0];
 
+            return BuildChannelResultFromCandidate(klines, startIdx, curr, rightExtendLength, best);
+        }
+
+        private static DynamicChannelResult BuildChannelResultFromCandidate(
+            IReadOnlyList<RawKline> klines,
+            int startIdx,
+            int curr,
+            int rightExtendLength,
+            Candidate3Point best)
+        {
             decimal centerPriceAtCurr = (decimal)curr * best.SlopeK + (best.UpperIntercept + best.LowerIntercept) / 2m;
             if (centerPriceAtCurr <= 0m)
             {

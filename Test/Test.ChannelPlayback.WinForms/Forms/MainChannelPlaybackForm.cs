@@ -415,9 +415,10 @@ namespace Test.ChannelPlayback.WinForms.Forms
                 };
 
                 var lblMode = CreateLabel("通道确认算法:", 15, 108);
-                cboCalcMode = new ComboBox { Location = new Point(125, 105), Width = 190, DropDownStyle = ComboBoxStyle.DropDownList };
+                cboCalcMode = new ComboBox { Location = new Point(125, 105), Width = 190, DropDownWidth = 275, DropDownStyle = ComboBoxStyle.DropDownList };
                 cboCalcMode.Items.AddRange(new object[] {
-                    "三点智能自适应 (2低1高/2高1低)",
+                    "三点趋势定向 (向上2低1高/向下2高1低) [推荐]",
+                    "三点智能自适应 (紧凑优先)",
                     "强制 2低点1高点 (支撑优先)",
                     "强制 2高点1低点 (阻力优先)",
                     "线性回归包络 (全量均值)",

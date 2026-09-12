@@ -25,7 +25,7 @@ namespace Test.ChannelPlayback.WinForms.Models
         // 通道核心参数
         public int LeftLength { get; set; } = 100;
         public int RightExtendLength { get; set; } = 100;
-        public int CalculationMode { get; set; } = 0; // 0: 三点自适应(2低1高/2高1低), 1: 强制2低1高, 2: 强制2高1低, 3: 线性回归, 4: 极小高度
+        public int CalculationMode { get; set; } = 0; // 0: 三点趋势定向(向上2低1高/向下2高1低), 1: 三点紧凑自适应, 2: 强制2低1高, 3: 强制2高1低, 4: 线性回归, 5: 极小高度
         public int WindowMode { get; set; } = 0;      // 0: 滑动窗口, 1: 全量累计
         public bool AutoScale { get; set; } = true;
         public bool FollowLatest { get; set; } = true;
