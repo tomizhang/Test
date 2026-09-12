@@ -33,7 +33,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
         public int LeftLength { get; set; } = 100;
         public int RightExtendLength { get; set; } = 100;
         public bool CumulativeMode { get; set; } = false;
-        public ChannelCalculationMode CalculationMode { get; set; } = ChannelCalculationMode.LinearRegression;
+        public ChannelCalculationMode CalculationMode { get; set; } = ChannelCalculationMode.ThreePointAuto;
 
         // 状态读取
         public PlaybackState State => _state;
