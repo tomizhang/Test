@@ -400,7 +400,7 @@ namespace Test.WinForms.Forms
             {
                 var lblCoin = CreateLabel("交易对:", 15, 25);
                 cboCoin = new ComboBox { Location = new Point(90, 22), Width = 250, DropDownStyle = ComboBoxStyle.DropDownList };
-                cboCoin.Items.AddRange(new object[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "XRPUSDT" });
+                cboCoin.Items.AddRange(new object[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "XRPUSDT","NEARUSDT" });
                 cboCoin.SelectedIndex = 0;
 
                 var lblInterval = CreateLabel("K线周期:", 15, 58);

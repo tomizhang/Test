@@ -7,7 +7,7 @@ namespace Common
     public static class Config
     {
         // 统一数据根目录 (默认 D:\data\binance_market_data，具备自动创建与备用回退机制)
-        public static string TickDataRoot = "D:\\data\\binance_market_data"; 
+        public static string TickDataRoot = "I:\\data\\binance_market_data"; 
 
         public static string GetRootPath()
         {

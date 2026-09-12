@@ -13,6 +13,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Test.TickPlayback.WinForms"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Test.MultiChart.WinForms", "Test.MultiChart.WinForms\Test.MultiChart.WinForms.csproj", "{0CD1735E-54B8-4629-BB29-F7B16D49E877}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Test.ChannelPlayback.WinForms", "Test.ChannelPlayback.WinForms\Test.ChannelPlayback.WinForms.csproj", "{536F3A0B-0229-4756-B44E-117B6AD2C8E4}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -83,6 +85,18 @@ Global
 		{0CD1735E-54B8-4629-BB29-F7B16D49E877}.Release|x64.Build.0 = Release|Any CPU
 		{0CD1735E-54B8-4629-BB29-F7B16D49E877}.Release|x86.ActiveCfg = Release|Any CPU
 		{0CD1735E-54B8-4629-BB29-F7B16D49E877}.Release|x86.Build.0 = Release|Any CPU
+		{536F3A0B-0229-4756-B44E-117B6AD2C8E4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{536F3A0B-0229-4756-B44E-117B6AD2C8E4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{536F3A0B-0229-4756-B44E-117B6AD2C8E4}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{536F3A0B-0229-4756-B44E-117B6AD2C8E4}.Debug|x64.Build.0 = Debug|Any CPU
+		{536F3A0B-0229-4756-B44E-117B6AD2C8E4}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{536F3A0B-0229-4756-B44E-117B6AD2C8E4}.Debug|x86.Build.0 = Debug|Any CPU
+		{536F3A0B-0229-4756-B44E-117B6AD2C8E4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{536F3A0B-0229-4756-B44E-117B6AD2C8E4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{536F3A0B-0229-4756-B44E-117B6AD2C8E4}.Release|x64.ActiveCfg = Release|Any CPU
+		{536F3A0B-0229-4756-B44E-117B6AD2C8E4}.Release|x64.Build.0 = Release|Any CPU
+		{536F3A0B-0229-4756-B44E-117B6AD2C8E4}.Release|x86.ActiveCfg = Release|Any CPU
+		{536F3A0B-0229-4756-B44E-117B6AD2C8E4}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -112,10 +112,15 @@ namespace Test.PercentageBar.WinForms.Forms
         private NumericUpDown numPivotWindow = null!;
         private NumericUpDown numTouchTolerance = null!;
 
-        // 首 Tick 动量策略回测控件
+        // 紫色趋势线触碰 15-Tick 反弹策略回测控件
         private GroupBox grpStrategy = null!;
         private NumericUpDown numInitialCapital = null!;
         private NumericUpDown numFeeRate = null!;
+        private NumericUpDown numReboundTicks = null!;
+        private NumericUpDown numStopLossPct = null!;
+        private NumericUpDown numTakeProfitPct = null!;
+        private ComboBox cboTradeSide = null!;
+        private ComboBox cboTouchMode = null!;
         private CheckBox chkCompound = null!;
         private CheckBox chkShowStrategyMarkers = null!;
         private Button btnRunBacktest = null!;
@@ -357,7 +362,7 @@ namespace Test.PercentageBar.WinForms.Forms
             tabTickTable.Controls.Add(dgvTicks);
 
             // Tab 3: 🏆 策略回测报告与交易清单
-            tabStrategyReport = new TabPage("🏆 首Tick策略回测报告") { BackColor = System.Drawing.Color.FromArgb(15, 23, 42) };
+            tabStrategyReport = new TabPage("🏆 紫色趋势线策略回测报告") { BackColor = System.Drawing.Color.FromArgb(15, 23, 42) };
             panelStrategyHeader = new Panel
             {
                 Dock = DockStyle.Top,
@@ -374,7 +379,7 @@ namespace Test.PercentageBar.WinForms.Forms
             };
             lblStrategyMetrics = new Label
             {
-                Text = "尚未运行回测 (请在右侧控制面板点击「🚀 运行首Tick策略回测」)",
+                Text = "尚未运行回测 (请在右侧控制面板点击「🚀 运行紫色趋势线策略回测」)",
                 ForeColor = System.Drawing.Color.FromArgb(226, 232, 240),
                 Font = new Font("Microsoft YaHei", 8.5F),
                 Location = new Point(130, 9),
@@ -409,6 +414,7 @@ namespace Test.PercentageBar.WinForms.Forms
 
             dgvTrades.Columns.Add("ColTradeId", "#");
             dgvTrades.Columns.Add("ColEntryBar", "持仓Bar范围");
+            dgvTrades.Columns.Add("ColTouchInfo", "触碰来源");
             dgvTrades.Columns.Add("ColSide", "方向");
             dgvTrades.Columns.Add("ColEntryTime", "开仓时间");
             dgvTrades.Columns.Add("ColEntryPrice", "开仓价 (USDT)");
@@ -420,16 +426,17 @@ namespace Test.PercentageBar.WinForms.Forms
             dgvTrades.Columns.Add("ColEquity", "账户净值 (USDT)");
 
             dgvTrades.Columns[0].Width = 45;
-            dgvTrades.Columns[1].Width = 110;
-            dgvTrades.Columns[2].Width = 65;
-            dgvTrades.Columns[3].Width = 110;
-            dgvTrades.Columns[4].Width = 95;
-            dgvTrades.Columns[5].Width = 110;
-            dgvTrades.Columns[6].Width = 95;
-            dgvTrades.Columns[7].Width = 95;
-            dgvTrades.Columns[8].Width = 95;
-            dgvTrades.Columns[9].Width = 85;
-            dgvTrades.Columns[10].Width = 110;
+            dgvTrades.Columns[1].Width = 100;
+            dgvTrades.Columns[2].Width = 135;
+            dgvTrades.Columns[3].Width = 65;
+            dgvTrades.Columns[4].Width = 100;
+            dgvTrades.Columns[5].Width = 90;
+            dgvTrades.Columns[6].Width = 100;
+            dgvTrades.Columns[7].Width = 90;
+            dgvTrades.Columns[8].Width = 130;
+            dgvTrades.Columns[9].Width = 95;
+            dgvTrades.Columns[10].Width = 85;
+            dgvTrades.Columns[11].Width = 105;
 
             dgvTrades.CellDoubleClick += (s, e) =>
             {
@@ -490,7 +497,7 @@ namespace Test.PercentageBar.WinForms.Forms
             {
                 var lblCoin = CreateLabel("交易对:", 15, 25);
                 cboCoin = new ComboBox { Location = new Point(90, 22), Width = 250, DropDownStyle = ComboBoxStyle.DropDownList };
-                cboCoin.Items.AddRange(new object[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "XRPUSDT", "BRUSDT" });
+                cboCoin.Items.AddRange(new object[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "XRPUSDT", "BRUSDT", "NEARUSDT" });
                 cboCoin.SelectedIndex = 0;
 
                 var lblStart = CreateLabel("起始日期:", 15, 60);
@@ -889,14 +896,14 @@ namespace Test.PercentageBar.WinForms.Forms
             panelRight.Controls.Add(grpControl);
             top += grpControl.Height + 10;
 
-            // Group 6: 🎯 首 Tick 动量策略回测 (1:1 止盈止损)
-            grpStrategy = CreateGroupBox("6. 🎯 首 Tick 动量策略回测 (1:1 止盈止损)", top, 200);
+            // Group 6: 🎯 紫色趋势线触碰 15-Tick 反弹策略回测
+            grpStrategy = CreateGroupBox("6. 🎯 紫色趋势线触碰 15-Tick 反弹策略回测", top, 265);
             {
                 var lblCap = CreateLabel("初始本金(U):", 15, 25);
                 numInitialCapital = new NumericUpDown
                 {
-                    Location = new Point(105, 22),
-                    Width = 90,
+                    Location = new Point(95, 22),
+                    Width = 75,
                     Minimum = 100,
                     Maximum = 10000000,
                     Value = 10000,
@@ -905,11 +912,11 @@ namespace Test.PercentageBar.WinForms.Forms
                     ForeColor = System.Drawing.Color.FromArgb(56, 189, 248)
                 };
 
-                var lblFee = CreateLabel("手续费率(%):", 205, 25);
+                var lblFee = CreateLabel("手续费率(%):", 185, 25);
                 numFeeRate = new NumericUpDown
                 {
-                    Location = new Point(285, 22),
-                    Width = 55,
+                    Location = new Point(265, 22),
+                    Width = 75,
                     Minimum = 0,
                     Maximum = 1,
                     DecimalPlaces = 3,
@@ -918,10 +925,73 @@ namespace Test.PercentageBar.WinForms.Forms
                     Font = new Font("Microsoft YaHei", 8.5F)
                 };
 
+                var lblRebound = CreateLabel("反弹Tick数:", 15, 57);
+                numReboundTicks = new NumericUpDown
+                {
+                    Location = new Point(95, 54),
+                    Width = 75,
+                    Minimum = 1,
+                    Maximum = 1000,
+                    Value = 15,
+                    Increment = 1,
+                    Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold),
+                    ForeColor = System.Drawing.Color.FromArgb(192, 132, 252)
+                };
+
+                var lblSide = CreateLabel("交易方向:", 185, 57);
+                cboTradeSide = new ComboBox
+                {
+                    Location = new Point(250, 54),
+                    Width = 90,
+                    DropDownStyle = ComboBoxStyle.DropDownList,
+                    Font = new Font("Microsoft YaHei", 8.5F)
+                };
+                cboTradeSide.Items.AddRange(new object[] { "🟢 仅做多", "🔴 仅做空", "⚡ 双向" });
+                cboTradeSide.SelectedIndex = 0; // 默认仅做多 (低点支撑线反弹)
+
+                var lblSl = CreateLabel("趋势止损(%):", 15, 89);
+                numStopLossPct = new NumericUpDown
+                {
+                    Location = new Point(95, 86),
+                    Width = 75,
+                    Minimum = 0.001m,
+                    Maximum = 10m,
+                    DecimalPlaces = 3,
+                    Increment = 0.005m,
+                    Value = 0.010m, // 紫色趋势线下方 0.01%
+                    Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold),
+                    ForeColor = System.Drawing.Color.FromArgb(248, 113, 113)
+                };
+
+                var lblTp = CreateLabel("目标止盈(%):", 185, 89);
+                numTakeProfitPct = new NumericUpDown
+                {
+                    Location = new Point(265, 86),
+                    Width = 75,
+                    Minimum = 0.01m,
+                    Maximum = 50m,
+                    DecimalPlaces = 2,
+                    Increment = 0.1m,
+                    Value = 1.00m, // 止盈 1%
+                    Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold),
+                    ForeColor = System.Drawing.Color.FromArgb(74, 222, 128)
+                };
+
+                var lblTouchMode = CreateLabel("触碰起点:", 15, 121);
+                cboTouchMode = new ComboBox
+                {
+                    Location = new Point(80, 117),
+                    Width = 148,
+                    DropDownStyle = ComboBoxStyle.DropDownList,
+                    Font = new Font("Microsoft YaHei", 8F)
+                };
+                cboTouchMode.Items.AddRange(new object[] { "🟣 从第3点起 (x3+)", "⏩ 仅第3点后 (>x3)" });
+                cboTouchMode.SelectedIndex = 0; // 默认从第3点起 (严格排除 x1, x2)
+
                 chkCompound = new CheckBox
                 {
-                    Text = "复利模式 (每笔按动态净值开仓)",
-                    Location = new Point(15, 54),
+                    Text = "复利模式",
+                    Location = new Point(238, 118),
                     AutoSize = true,
                     Checked = false,
                     ForeColor = System.Drawing.Color.FromArgb(226, 232, 240),
@@ -930,8 +1000,8 @@ namespace Test.PercentageBar.WinForms.Forms
 
                 chkShowStrategyMarkers = new CheckBox
                 {
-                    Text = "在主图表叠加开平仓信号标记 (▲/▼)",
-                    Location = new Point(15, 78),
+                    Text = "在主图表叠加信号标记 (▲/▼)",
+                    Location = new Point(15, 148),
                     AutoSize = true,
                     Checked = true,
                     ForeColor = System.Drawing.Color.FromArgb(74, 222, 128),
@@ -941,10 +1011,10 @@ namespace Test.PercentageBar.WinForms.Forms
 
                 btnRunBacktest = new Button
                 {
-                    Text = "🚀 运行策略回测并生成 HTML 报告",
-                    Location = new Point(15, 108),
+                    Text = "🚀 运行紫色趋势线策略回测并生成 HTML 报告",
+                    Location = new Point(15, 176),
                     Size = new Size(325, 38),
-                    BackColor = System.Drawing.Color.FromArgb(16, 185, 129), // Emerald 500
+                    BackColor = System.Drawing.Color.FromArgb(147, 51, 234), // Purple 600
                     ForeColor = System.Drawing.Color.White,
                     FlatStyle = FlatStyle.Flat,
                     Font = new Font("Microsoft YaHei", 9.5F, FontStyle.Bold),
@@ -956,7 +1026,7 @@ namespace Test.PercentageBar.WinForms.Forms
                 btnExportBacktestReport = new Button
                 {
                     Text = "🌐 导出 / 另存 HTML 交互回测报告",
-                    Location = new Point(15, 152),
+                    Location = new Point(15, 220),
                     Size = new Size(325, 32),
                     BackColor = System.Drawing.Color.FromArgb(14, 116, 144), // Cyan 700
                     ForeColor = System.Drawing.Color.White,
@@ -971,6 +1041,11 @@ namespace Test.PercentageBar.WinForms.Forms
                 {
                     lblCap, numInitialCapital,
                     lblFee, numFeeRate,
+                    lblRebound, numReboundTicks,
+                    lblSide, cboTradeSide,
+                    lblSl, numStopLossPct,
+                    lblTp, numTakeProfitPct,
+                    lblTouchMode, cboTouchMode,
                     chkCompound, chkShowStrategyMarkers,
                     btnRunBacktest, btnExportBacktestReport
                 });
@@ -2259,7 +2334,7 @@ namespace Test.PercentageBar.WinForms.Forms
         }
 
         /// <summary>
-        /// 🚀 运行首 Tick 动量策略回测并生成全量 HTML 综合报告与交易明细
+        /// 🚀 运行紫色趋势线触碰 15-Tick 反弹量化策略回测并生成全量 HTML 综合报告与交易明细
         /// </summary>
         private void RunFirstTickStrategyBacktest()
         {
@@ -2275,8 +2350,15 @@ namespace Test.PercentageBar.WinForms.Forms
             decimal initialCapital = numInitialCapital.Value;
             decimal feeRate = numFeeRate.Value / 100.0m;
             bool compound = chkCompound.Checked;
+            int reboundTicks = (int)(numReboundTicks?.Value ?? 15);
+            decimal stopLossPct = numStopLossPct?.Value ?? 0.010m;
+            decimal takeProfitPct = numTakeProfitPct?.Value ?? 1.00m;
+            int pivotWindow = (int)(numPivotWindow?.Value ?? 3);
+            decimal touchTolerance = (numTouchTolerance?.Value ?? 0.030m) / 100m;
+            int tradeSideMode = cboTradeSide?.SelectedIndex ?? 0; // 0: 仅做多, 1: 仅做空, 2: 双向
+            int touchEntryMode = cboTouchMode?.SelectedIndex ?? 0; // 0: 从第3点起 (排除x1/x2), 1: 仅第3点后 (排除x1/x2/x3)
 
-            // 运行首 Tick 动量策略回测计算
+            // 运行紫色趋势线触碰 15-Tick 反弹策略回测计算
             _lastBacktestReport = Test.PercentageBar.WinForms.Engine.FirstTickStrategyEngine.RunBacktest(
                 _currentBars,
                 coin: coin,
@@ -2285,7 +2367,14 @@ namespace Test.PercentageBar.WinForms.Forms
                 initialCapital: initialCapital,
                 positionSizePct: 100m,
                 feeRate: feeRate,
-                compoundInterest: compound);
+                compoundInterest: compound,
+                reboundTicks: reboundTicks,
+                stopLossPct: stopLossPct,
+                takeProfitPct: takeProfitPct,
+                pivotWindow: pivotWindow,
+                touchTolerancePct: touchTolerance,
+                tradeSideMode: tradeSideMode,
+                touchEntryMode: touchEntryMode);
 
             // 1. 生成专业交互式 HTML 量化回测报告
             string htmlReportPath = _lastBacktestReport.GenerateHtmlReport();
@@ -2297,11 +2386,11 @@ namespace Test.PercentageBar.WinForms.Forms
                 : System.Drawing.Color.FromArgb(244, 63, 94);
 
             _logQueue.Enqueue(("\n" + textReport, reportColor));
-            _logQueue.Enqueue(($"🌐 交互式 HTML 回测报告已成功生成:\n   {htmlReportPath}\n", System.Drawing.Color.FromArgb(56, 189, 248)));
+            _logQueue.Enqueue(($"🌐 交互式 HTML 回测报告已成功生成:\n   {htmlReportPath}\n", System.Drawing.Color.FromArgb(192, 132, 252)));
 
             // 3. 刷新 Tab 3 回测报告界面
             string retSign = _lastBacktestReport.TotalNetProfit >= 0 ? "+" : "";
-            lblStrategyMetrics.Text = $"胜率: {_lastBacktestReport.WinRatePct:F2}% ({_lastBacktestReport.WinTrades}胜/{_lastBacktestReport.LossTrades}负) | 净收益: {retSign}{_lastBacktestReport.TotalNetProfit:N2} U ({retSign}{_lastBacktestReport.TotalReturnPct:F2}%) | 利润因子: {_lastBacktestReport.ProfitFactor:F2} | 最大回撤: -{_lastBacktestReport.MaxDrawdownPct:F2}% | 总交易: {_lastBacktestReport.TotalTrades:N0}笔";
+            lblStrategyMetrics.Text = $"胜率: {_lastBacktestReport.WinRatePct:F2}% ({_lastBacktestReport.WinTrades}胜/{_lastBacktestReport.LossTrades}负) | 净收益: {retSign}{_lastBacktestReport.TotalNetProfit:N2} U ({retSign}{_lastBacktestReport.TotalReturnPct:F2}%) | 利润因子: {_lastBacktestReport.ProfitFactor:F2} | 最大回撤: -{_lastBacktestReport.MaxDrawdownPct:F2}% | 总交易: {_lastBacktestReport.TotalTrades:N0}笔 (止盈{_lastBacktestReport.TakeProfitCount} / 止损{_lastBacktestReport.StopLossCount})";
             lblStrategyMetrics.ForeColor = reportColor;
 
             dgvTrades.Rows.Clear();
@@ -2314,14 +2403,15 @@ namespace Test.PercentageBar.WinForms.Forms
                 string sideStr = isLong ? "🟢 开多 (Buy)" : "🔴 开空 (Sell)";
                 string exitReasonStr = trade.ExitReason switch
                 {
-                    Common.Models.PositionExitReason.StopLoss => "🛑 阈值止损",
-                    Common.Models.PositionExitReason.SignalReversal => trade.IsWin ? $"🔄 反向平仓 (+{trade.ReturnPct:F2}%)" : $"🔄 反向平仓 ({trade.ReturnPct:F2}%)",
+                    Common.Models.PositionExitReason.TakeProfit => $"🎯 1%止盈 (+{trade.ReturnPct:F2}%)",
+                    Common.Models.PositionExitReason.StopLoss => $"🛑 趋势线下0.01%止损 ({trade.ReturnPct:F2}%)",
                     _ => "⌛ 期末平仓"
                 };
 
                 int rowIdx = dgvTrades.Rows.Add(
                     trade.TradeId,
                     trade.BarRangeDesc,
+                    trade.TouchInfo,
                     sideStr,
                     trade.EntryDateTime.ToString("HH:mm:ss.fff"),
                     trade.EntryPrice.ToString("F2"),
@@ -2375,7 +2465,7 @@ namespace Test.PercentageBar.WinForms.Forms
                     Title = "导出策略量化回测报告与交易明细",
                     Filter = "HTML 交互式图表报告 (*.html)|*.html|CSV 交易流水明细 (*.csv)|*.csv|文本分析报告 (*.txt)|*.txt",
                     FilterIndex = 1,
-                    FileName = $"{_lastBacktestReport.Coin}_FirstTick_Backtest_{DateTime.Now:yyyyMMdd_HHmmss}.html"
+                    FileName = $"{_lastBacktestReport.Coin}_PurpleTrendLine_Backtest_{DateTime.Now:yyyyMMdd_HHmmss}.html"
                 };
 
                 if (sfd.ShowDialog() == DialogResult.OK)
