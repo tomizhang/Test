@@ -15,6 +15,7 @@ namespace Test.ChannelPlayback.WinForms.Models
         public bool IsMaximized { get; set; } = false;
         public int SplitterMainDistance { get; set; } = -1;
         public int SplitterLeftDistance { get; set; } = -1;
+        public int SplitterBottomDistance { get; set; } = -1;
 
         // 数据源参数
         public string Coin { get; set; } = "BTCUSDT";
@@ -31,6 +32,32 @@ namespace Test.ChannelPlayback.WinForms.Models
         public bool FollowLatest { get; set; } = true;
         public bool ShowTouchMarkers { get; set; } = true;
         public bool ShowLegend { get; set; } = false;
+        public int ChartType { get; set; } = 0;       // 0: 蜡烛图 (Candlestick), 1: 折线图 (Line Chart)
+
+        // 相对极值通道保留与突破识别配置
+        public bool EnableRetainedChannel { get; set; } = true;
+        public int RetainedConfirmBars { get; set; } = 3;
+        public int BreakoutRule { get; set; } = 0;    // 0: 收盘价突破 (ClosePrice), 1: 极值价突破 (ExtremePrice)
+        public bool EnableSpecialRetainedStyle { get; set; } = true;
+        public int SpecialRetainedMinBars { get; set; } = 100;
+        public double SpecialRetainedMinAngle { get; set; } = 35.0;
+        public float SpecialRetainedLineWidth { get; set; } = 0.8f;
+        public string SpecialRetainedColorHex { get; set; } = "#a855f7"; // 紫色
+
+        // V 形态与倒 V 形态识别配置 (价差 ≥ 5%)
+        public bool EnableVPattern { get; set; } = true;
+        public decimal VPatternMinPriceDiffPct { get; set; } = 5.0m;
+        public bool ShowVPatternLines { get; set; } = true;
+
+        // 连续上涨 / 连续下跌动能形态识别配置 (≥5根且≥2.5%)
+        public bool EnableConsecutiveTrend { get; set; } = true;
+        public int ConsecutiveTrendMinBars { get; set; } = 5;
+        public decimal ConsecutiveTrendMinPct { get; set; } = 2.5m;
+        public bool ShowConsecutiveChannel { get; set; } = true; // 连续走势绿色 0.8f 平行通道
+
+        // Tick 视图周期配置 (0: 原始逐笔 Tick, 1: 1分钟, 2: 5分钟, 3: 15分钟, 4: 自定义分钟)
+        public int TickPeriodMode { get; set; } = 0;
+        public int CustomTickMinutes { get; set; } = 3;
 
         // 回放控制参数
         public int SpeedIntervalMs { get; set; } = 50;

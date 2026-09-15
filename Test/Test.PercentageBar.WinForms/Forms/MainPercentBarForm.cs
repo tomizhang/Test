@@ -695,7 +695,7 @@ namespace Test.PercentageBar.WinForms.Forms
                     Width = 65,
                     DecimalPlaces = 3,
                     Increment = 0.005m,
-                    Minimum = 0.005m,
+                    Minimum = 0.001m,
                     Maximum = 0.100m,
                     Value = 0.030m, // 默认 0.03% 精准共线
                     Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold),

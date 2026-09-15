@@ -35,6 +35,31 @@ namespace Test.ChannelPlayback.WinForms.Engine
         public bool CumulativeMode { get; set; } = false;
         public ChannelCalculationMode CalculationMode { get; set; } = ChannelCalculationMode.ThreePointTrendDirectional;
 
+        // 相对极值通道保留与突破识别配置
+        private readonly ChannelRetentionTracker _retentionTracker = new();
+        public bool EnableRetainedChannel { get; set; } = true;
+        public int RetainedConfirmBars { get; set; } = 3;
+        public BreakoutRule BreakoutRule { get; set; } = BreakoutRule.ClosePrice;
+        public bool EnableSpecialRetainedStyle { get; set; } = true;
+        public int SpecialRetainedMinBars { get; set; } = 100;
+        public double SpecialRetainedMinAngle { get; set; } = 35.0;
+        public ChannelRetentionTracker RetentionTracker => _retentionTracker;
+
+        // V 形态与倒 V 形态识别配置 (价差 ≥ 5%)
+        private readonly VPatternDetector _vPatternDetector = new();
+        public bool EnableVPattern { get; set; } = true;
+        public decimal VPatternMinPriceDiffPct { get; set; } = 5.0m;
+        public bool ShowVPatternLines { get; set; } = true;
+        public VPatternDetector VPatternDetector => _vPatternDetector;
+
+        // 连续上涨 / 连续下跌动能形态识别配置 (≥5根且≥2.5%)
+        private readonly ConsecutiveTrendDetector _consecutiveTrendDetector = new();
+        public bool EnableConsecutiveTrend { get; set; } = true;
+        public int ConsecutiveTrendMinBars { get; set; } = 5;
+        public decimal ConsecutiveTrendMinPct { get; set; } = 2.5m;
+        public bool ShowConsecutiveChannel { get; set; } = true; // 连续走势绿色 0.8f 平行通道
+        public ConsecutiveTrendDetector ConsecutiveTrendDetector => _consecutiveTrendDetector;
+
         // 状态读取
         public PlaybackState State => _state;
         public int CurrentIndex => _currentIndex;
@@ -47,12 +72,48 @@ namespace Test.ChannelPlayback.WinForms.Engine
         public event Action<PlaybackState>? OnStateChanged;
         public event Action<int>? OnDataLoaded;
         public event Action<string>? OnLogMessage;
+        public event Action<RetainedChannel, int, decimal, bool>? OnBreakoutDetected;
+        public event Action<RetainedChannel, int, decimal, bool>? OnExtremeConfirmed;
+        public event Action<VPatternItem, int>? OnVPatternDetected;
+        public event Action<ConsecutiveTrendItem, int>? OnConsecutiveTrendDetected;
 
         public KlinePlaybackEngine()
         {
             _timer = new System.Windows.Forms.Timer();
             _timer.Interval = _speedIntervalMs;
             _timer.Tick += (s, e) => ProcessNextStep();
+
+            _retentionTracker.OnBreakoutDetected += (ch, idx, price, isUp) =>
+            {
+                OnBreakoutDetected?.Invoke(ch, idx, price, isUp);
+                string dir = isUp ? "🚀 向上突破" : "💥 向下跌破";
+                string chType = ch.IsDownward ? "下降通道" : "上升通道";
+                OnLogMessage?.Invoke($"[通道突破提醒] {chType} 在 K线 #{idx} 发生 {dir}！突破价={price:F2} (超越幅度:{ch.BreakoutPct:+0.00;-0.00}%)");
+            };
+
+            _retentionTracker.OnExtremeConfirmed += (ch, idx, price, isPeak) =>
+            {
+                OnExtremeConfirmed?.Invoke(ch, idx, price, isPeak);
+                string extType = isPeak ? "相对高点" : "相对低点";
+                string chType = ch.IsDownward ? "下降通道" : "上升通道";
+                OnLogMessage?.Invoke($"[极值确认保留] 确认 {extType} #{idx} (${price:F2}) 无碰撞延展达标！已锁定并保留该 {chType} 用于监控后续突破。");
+            };
+
+            _vPatternDetector.OnPatternDetected += (p, idx) =>
+            {
+                OnVPatternDetected?.Invoke(p, idx);
+                string pType = p.Type == VPatternType.VBottom ? "🟢 V底形态 (V型反转)" : "🔴 倒V顶形态 (倒V顶反转)";
+                string vertexType = p.Type == VPatternType.VBottom ? "谷底" : "峰顶";
+                OnLogMessage?.Invoke($"[形态识别] ⚡ 在 K线 #{idx} 确认 {pType}！{vertexType}锚点: #{p.VertexIndex} (${p.VertexPrice:F2}), 价差幅度: {p.PriceDiffPct:F2}% (左:{p.LeftSpanPct:F1}%, 右:{p.RightSpanPct:F1}%)");
+            };
+
+            _consecutiveTrendDetector.OnTrendDetected += (t, idx) =>
+            {
+                OnConsecutiveTrendDetected?.Invoke(t, idx);
+                string sign = t.PriceChangePct >= 0m ? "+" : "";
+                string icon = t.Type == ConsecutiveTrendType.Bullish ? "🔥 连续上涨形态" : "❄️ 连续下跌形态";
+                OnLogMessage?.Invoke($"[连涨连跌] ⚡ 在 K线 #{idx} 确认 {icon}！跨度: {t.BarCount} 根 (#{t.StartIndex}..#{t.EndIndex}), 累计涨跌幅: {sign}{t.PriceChangePct:F2}% (基准价:{t.StartPrice:F2} -> 现价:{t.EndPrice:F2})");
+            };
         }
 
         /// <summary>
@@ -65,6 +126,9 @@ namespace Test.ChannelPlayback.WinForms.Engine
             Stop();
             _allKlines.Clear();
             _currentIndex = 0;
+            _retentionTracker.Reset();
+            _vPatternDetector.Reset();
+            _consecutiveTrendDetector.Reset();
 
             if (startDate.Date > endDate.Date)
             {
@@ -288,6 +352,117 @@ namespace Test.ChannelPlayback.WinForms.Engine
             return result;
         }
 
+        /// <summary>
+        /// 将微观逐笔成交 RawTick 序列流式聚合为指定分钟周期的标准 K 线序列
+        /// </summary>
+        /// <param name="ticks">按时间升序排列的 RawTick 序列</param>
+        /// <param name="intervalMinutes">聚合目标分钟周期 (>=1，例如 1m, 5m, 15m, 自定义M分钟)</param>
+        /// <param name="fillEmptyBars">若中间出现无成交空白时段，是否自动填充平价0量延续K线以保持时间轴连续</param>
+        public static List<RawKline> AggregateTicksToKlines(IReadOnlyList<RawTick> ticks, int intervalMinutes, bool fillEmptyBars = true)
+        {
+            if (ticks == null || ticks.Count == 0) return new List<RawKline>();
+            if (intervalMinutes < 1) intervalMinutes = 1;
+
+            long intervalMs = (long)intervalMinutes * 60_000L;
+            var result = new List<RawKline>();
+
+            long minTickTime = ticks[0].Time;
+            long maxTickTime = ticks[ticks.Count - 1].Time;
+
+            long startBucket = (minTickTime / intervalMs) * intervalMs;
+            long endBucket = (maxTickTime / intervalMs) * intervalMs;
+
+            int tickIdx = 0;
+            int totalTicks = ticks.Count;
+            decimal lastClose = ticks[0].Price;
+
+            long totalBucketsEstimate = (endBucket - startBucket) / intervalMs + 1;
+            bool doFill = fillEmptyBars && totalBucketsEstimate <= 2000;
+
+            for (long curBucket = startBucket; curBucket <= endBucket; curBucket += intervalMs)
+            {
+                decimal open = 0m, high = decimal.MinValue, low = decimal.MaxValue, close = 0m;
+                decimal volume = 0m, quoteVolume = 0m;
+                long tradeCount = 0;
+                decimal takerBuyVol = 0m, takerBuyQuoteVol = 0m;
+                bool hasTrades = false;
+
+                while (tickIdx < totalTicks)
+                {
+                    long tTime = ticks[tickIdx].Time;
+                    if (tTime < curBucket)
+                    {
+                        tickIdx++;
+                        continue;
+                    }
+                    if (tTime >= curBucket + intervalMs)
+                    {
+                        break;
+                    }
+
+                    var t = ticks[tickIdx];
+                    if (!hasTrades)
+                    {
+                        open = t.Price;
+                        high = t.Price;
+                        low = t.Price;
+                        hasTrades = true;
+                    }
+                    if (t.Price > high) high = t.Price;
+                    if (t.Price < low) low = t.Price;
+                    close = t.Price;
+                    volume += t.Qty;
+                    decimal tQuote = t.QuoteQty > 0m ? t.QuoteQty : (t.Price * t.Qty);
+                    quoteVolume += tQuote;
+                    tradeCount++;
+                    if (!t.IsBuyerMaker)
+                    {
+                        takerBuyVol += t.Qty;
+                        takerBuyQuoteVol += tQuote;
+                    }
+                    tickIdx++;
+                }
+
+                if (hasTrades)
+                {
+                    lastClose = close;
+                    result.Add(new RawKline
+                    {
+                        OpenTime = curBucket,
+                        Open = open,
+                        High = high,
+                        Low = low,
+                        Close = close,
+                        Volume = volume,
+                        CloseTime = curBucket + intervalMs - 1,
+                        QuoteVolume = quoteVolume,
+                        TradeCount = tradeCount,
+                        TakerBuyVolume = takerBuyVol,
+                        TakerBuyQuoteVolume = takerBuyQuoteVol
+                    });
+                }
+                else if (doFill && result.Count > 0)
+                {
+                    result.Add(new RawKline
+                    {
+                        OpenTime = curBucket,
+                        Open = lastClose,
+                        High = lastClose,
+                        Low = lastClose,
+                        Close = lastClose,
+                        Volume = 0m,
+                        CloseTime = curBucket + intervalMs - 1,
+                        QuoteVolume = 0m,
+                        TradeCount = 0,
+                        TakerBuyVolume = 0m,
+                        TakerBuyQuoteVolume = 0m
+                    });
+                }
+            }
+
+            return result;
+        }
+
         public void Play()
         {
             if (_allKlines.Count == 0) return;
@@ -336,6 +511,9 @@ namespace Test.ChannelPlayback.WinForms.Engine
         public void Reset()
         {
             Pause();
+            _retentionTracker.Reset();
+            _vPatternDetector.Reset();
+            _consecutiveTrendDetector.Reset();
             if (_allKlines.Count >= LeftLength)
             {
                 _currentIndex = LeftLength - 1;
@@ -358,6 +536,9 @@ namespace Test.ChannelPlayback.WinForms.Engine
             if (_currentIndex != clamped)
             {
                 _currentIndex = clamped;
+                _retentionTracker.SyncTo(clamped);
+                _vPatternDetector.SyncTo(clamped);
+                _consecutiveTrendDetector.SyncTo(clamped);
                 TriggerCurrentFrame();
             }
         }
@@ -397,6 +578,29 @@ namespace Test.ChannelPlayback.WinForms.Engine
                 RightExtendLength,
                 CumulativeMode,
                 CalculationMode);
+
+            // 驱动相对极值通道保留与突破实时跟踪器
+            _retentionTracker.ProcessBar(
+                _allKlines,
+                _currentIndex,
+                channel,
+                EnableRetainedChannel,
+                RetainedConfirmBars,
+                BreakoutRule,
+                EnableSpecialRetainedStyle,
+                SpecialRetainedMinBars,
+                SpecialRetainedMinAngle);
+
+            // 驱动 V 形态与倒 V 形态识别 (价差 ≥ 5%)
+            _vPatternDetector.EnableDetection = EnableVPattern;
+            _vPatternDetector.MinPriceDiffPct = VPatternMinPriceDiffPct;
+            _vPatternDetector.ProcessCurrentSequence(_allKlines, _currentIndex);
+
+            // 驱动连续上涨 / 连续下跌形态识别 (≥5根且≥2.5%)
+            _consecutiveTrendDetector.EnableDetection = EnableConsecutiveTrend;
+            _consecutiveTrendDetector.MinBars = ConsecutiveTrendMinBars;
+            _consecutiveTrendDetector.MinPriceChangePct = ConsecutiveTrendMinPct;
+            _consecutiveTrendDetector.ProcessCurrentSequence(_allKlines, _currentIndex);
 
             OnBarReplayed?.Invoke(currentKline, _currentIndex, channel);
         }
