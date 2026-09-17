@@ -71,10 +71,20 @@ namespace Test.PercentageBar.WinForms.Helper
             bool showTrendLines = true,
             int pivotWindow = 3,
             TrendLine? selectedTrendLine = null,
-            decimal touchTolerancePct = 0.0003m,
+            ConsecutiveRecentTrendLine? selectedRecentTrendLine = null,
+            decimal touchTolerancePct = 0.0005m,
             bool showVolume = true,
             IReadOnlyList<Test.PercentageBar.WinForms.Engine.FirstTickTrade>? strategyTrades = null,
-            bool showStrategyMarkers = false)
+            bool showStrategyMarkers = false,
+            bool showConsecutiveTrend = true,
+            int consecutiveMinBars = 5,
+            decimal consecutiveMinPct = 2.5m,
+            bool showConsecutiveChannel = true,
+            bool showRecentTrendLines = true,
+            int recentTrendLineCount = 6,
+            bool show1000BarInteraction = true,
+            ConsecutiveTrendItem? selectedConsecutiveTrend = null,
+            IReadOnlyList<ConsecutiveTrendItem>? consecutiveTrends = null)
         {
             if (plot == null || bars == null || bars.Count == 0)
             {
@@ -282,7 +292,7 @@ namespace Test.PercentageBar.WinForms.Helper
                                 var pMarker = plot.Add.Marker(bIdx, (double)pY);
                                 pMarker.Shape = MarkerShape.FilledCircle;
                                 pMarker.Size = 10;
-                                pMarker.Color = isThreePoint ? Color.FromHex("#c084fc") : Color.FromHex("#38bdf8");
+                                pMarker.Color = isThreePoint ? Color.FromHex("#f472b6") : Color.FromHex("#38bdf8");
                             }
                         }
                         else
@@ -299,33 +309,33 @@ namespace Test.PercentageBar.WinForms.Helper
                         }
 
                         // 选中线端点特别徽章
-                        string tagPrefix = isThreePoint ? $"🟣【{tl.TouchCount}点共线强" : "★ 选中【";
+                        string tagPrefix = isThreePoint ? $"🌸【{tl.TouchCount}点共线强" : "★ 选中【";
                         string selTagText = $"{tagPrefix}{(isRes ? "阻力" : "支撑")}】最新映射: {tl.CurrentBarPrice:F2} USDT";
                         var selTag = plot.Add.Text(selTagText, tl.ExtendedBarIndex, (double)tl.ExtendedPrice);
                         selTag.LabelFontName = chineseFont;
                         selTag.LabelFontSize = 9.5f;
                         selTag.LabelFontColor = Color.FromHex("#f8fafc");
                         selTag.LabelAlignment = isRes ? Alignment.LowerLeft : Alignment.UpperLeft;
-                        selTag.LabelBackgroundColor = Color.FromHex("#0284c7").WithAlpha(0.95);
-                        selTag.LabelBorderColor = Color.FromHex("#38bdf8");
+                        selTag.LabelBackgroundColor = isThreePoint ? Color.FromHex("#831843").WithAlpha(0.95) : Color.FromHex("#0284c7").WithAlpha(0.95);
+                        selTag.LabelBorderColor = isThreePoint ? Color.FromHex("#f472b6") : Color.FromHex("#38bdf8");
                         selTag.LabelBorderWidth = 1.5f;
                         continue;
                     }
 
                     if (isThreePoint)
                     {
-                        // 🟣 3点及以上共线强趋势线：紫色呈现，线宽统一 0.8f
-                        var purpleColor = Color.FromHex("#c084fc");
+                        // 🌸 3点及以上共线强趋势线：粉红色呈现 (Pink 400)，线宽统一 0.9f
+                        var pinkColor = Color.FromHex("#f472b6");
 
                         var mainLine = plot.Add.Line(tl.StartBarIndex, (double)tl.StartPrice, tl.EndBarIndex, (double)tl.EndPrice);
-                        mainLine.Color = purpleColor;
-                        mainLine.LineWidth = 0.8f;
+                        mainLine.Color = pinkColor;
+                        mainLine.LineWidth = 0.9f;
                         mainLine.LinePattern = LinePattern.Solid;
 
                         if (tl.ExtendedBarIndex > tl.EndBarIndex)
                         {
                             var rayLine = plot.Add.Line(tl.EndBarIndex, (double)tl.EndPrice, tl.ExtendedBarIndex, (double)tl.ExtendedPrice);
-                            rayLine.Color = purpleColor;
+                            rayLine.Color = pinkColor;
                             rayLine.LineWidth = 0.8f;
                             rayLine.LinePattern = LinePattern.Dashed;
                         }
@@ -338,11 +348,11 @@ namespace Test.PercentageBar.WinForms.Helper
                                 var touchMarker = plot.Add.Marker(bIdx, (double)pY);
                                 touchMarker.Shape = MarkerShape.FilledDiamond;
                                 touchMarker.Size = 7;
-                                touchMarker.Color = purpleColor;
+                                touchMarker.Color = pinkColor;
                             }
                         }
 
-                        string prefix = isRes ? "🟣阻力" : "🟣支撑";
+                        string prefix = isRes ? "🌸3点阻力" : "🌸3点支撑";
                         string tagText = tl.IsBroken
                             ? $"{prefix}({tl.TouchCount}点破@Bar#{tl.BreakBarIndex}): {tl.ExtendedPrice:F2}"
                             : $"{prefix}({tl.TouchCount}点): {tl.CurrentBarPrice:F2}";
@@ -350,10 +360,10 @@ namespace Test.PercentageBar.WinForms.Helper
                         var tag = plot.Add.Text(tagText, tl.ExtendedBarIndex, (double)tl.ExtendedPrice);
                         tag.LabelFontName = chineseFont;
                         tag.LabelFontSize = 8.5f;
-                        tag.LabelFontColor = Color.FromHex("#f3e8ff");
+                        tag.LabelFontColor = Color.FromHex("#fff1f2");
                         tag.LabelAlignment = isRes ? Alignment.LowerLeft : Alignment.UpperLeft;
-                        tag.LabelBackgroundColor = Color.FromHex("#581c87").WithAlpha(0.9);
-                        tag.LabelBorderColor = purpleColor;
+                        tag.LabelBackgroundColor = Color.FromHex("#831843").WithAlpha(0.92);
+                        tag.LabelBorderColor = pinkColor;
                         tag.LabelBorderWidth = 1f;
                     }
                     else
@@ -467,6 +477,415 @@ namespace Test.PercentageBar.WinForms.Helper
                             tradePath.LinePattern = LinePattern.Dotted;
                             tradePath.LineWidth = 1.2f;
                             tradePath.Color = trade.IsWin ? Color.FromHex("#22c55e").WithAlpha(0.6) : Color.FromHex("#ef4444").WithAlpha(0.6);
+                        }
+                    }
+                }
+            }
+
+            // 4.6 绘制连续上涨 / 连续下跌平行通道 (绿色 0.8f) 与形态标注
+            if (showConsecutiveTrend)
+            {
+                var trends = consecutiveTrends ?? ConsecutiveTrendDetector.ScanTrends(bars, count - 1, consecutiveMinBars, consecutiveMinPct, recentTrendLineCount, touchTolerancePct: touchTolerancePct);
+                var greenColor = Color.FromHex("#10b981"); // Emerald 500
+
+                for (int tIdx = 0; tIdx < trends.Count; tIdx++)
+                {
+                    var tr = trends[tIdx];
+                    int sIdx = tr.StartIndex;
+                    int eIdx = tr.EndIndex;
+                    if (sIdx < 0 || eIdx >= count || sIdx > eIdx) continue;
+
+                    bool isBullish = tr.Type == ConsecutiveTrendType.Bullish;
+                    bool isSelected = selectedConsecutiveTrend != null && selectedConsecutiveTrend.Id == tr.Id;
+
+                    if (showConsecutiveChannel && tr.HasChannel)
+                    {
+                        decimal slopeK = tr.SlopeK;
+                        decimal upperB = tr.UpperIntercept;
+                        decimal lowerB = tr.LowerIntercept;
+
+                        double yUpStart = (double)(slopeK * sIdx + upperB);
+                        double yUpEnd = (double)(slopeK * eIdx + upperB);
+                        double yLowStart = (double)(slopeK * sIdx + lowerB);
+                        double yLowEnd = (double)(slopeK * eIdx + lowerB);
+                        double yMidStart = (double)(slopeK * sIdx + (upperB + lowerB) / 2m);
+                        double yMidEnd = (double)(slopeK * eIdx + (upperB + lowerB) / 2m);
+
+                        // ① 平行通道内部半透明绿色微光填充
+                        var channelCoords = new Coordinates[]
+                        {
+                            new Coordinates(sIdx, yUpStart),
+                            new Coordinates(eIdx, yUpEnd),
+                            new Coordinates(eIdx, yLowEnd),
+                            new Coordinates(sIdx, yLowStart)
+                        };
+                        var channelPoly = plot.Add.Polygon(channelCoords);
+                        channelPoly.FillColor = greenColor.WithAlpha(isSelected ? (byte)48 : (byte)22);
+                        channelPoly.LineWidth = 0;
+
+                        // ② 上通道线 (绿色，线宽 0.8f，选中时 1.5f)
+                        var lineUp = plot.Add.Line(sIdx, yUpStart, eIdx, yUpEnd);
+                        lineUp.Color = greenColor;
+                        lineUp.LineWidth = isSelected ? 1.5f : 0.8f;
+                        lineUp.LinePattern = LinePattern.Solid;
+
+                        // ③ 下通道线 (绿色，线宽 0.8f，选中时 1.5f)
+                        var lineLow = plot.Add.Line(sIdx, yLowStart, eIdx, yLowEnd);
+                        lineLow.Color = greenColor;
+                        lineLow.LineWidth = isSelected ? 1.5f : 0.8f;
+                        lineLow.LinePattern = LinePattern.Solid;
+
+                        // ④ 中通道线 (绿色半透明虚线，线宽 0.8f)
+                        var lineMid = plot.Add.Line(sIdx, yMidStart, eIdx, yMidEnd);
+                        lineMid.Color = greenColor.WithAlpha(isSelected ? (byte)210 : (byte)150);
+                        lineMid.LineWidth = 0.8f;
+                        lineMid.LinePattern = LinePattern.Dashed;
+
+                        // ⑤ 确立点三角标记 (在首次达标的第 5 根 K 线打上显式三角形标记)
+                        int cIdx = tr.ConfirmedBarIndex;
+                        if (cIdx >= sIdx && cIdx < count)
+                        {
+                            double yConf = (double)bars[cIdx].Close;
+                            var confMarker = plot.Add.Marker(cIdx, yConf);
+                            confMarker.Shape = isBullish ? MarkerShape.FilledTriangleUp : MarkerShape.FilledTriangleDown;
+                            confMarker.Size = isSelected ? 10 : 8;
+                            confMarker.Color = isSelected ? Color.FromHex("#fbbf24") : greenColor;
+                        }
+
+                        // ⑥ 向右延伸适量虚线方便观察后续突破
+                        int extEnd = Math.Min(count - 1, eIdx + 6);
+                        if (extEnd > eIdx)
+                        {
+                            double yUpExt = (double)(slopeK * extEnd + upperB);
+                            double yLowExt = (double)(slopeK * extEnd + lowerB);
+
+                            var extUp = plot.Add.Line(eIdx, yUpEnd, extEnd, yUpExt);
+                            extUp.Color = greenColor.WithAlpha(130);
+                            extUp.LineWidth = 0.8f;
+                            extUp.LinePattern = LinePattern.Dashed;
+
+                            var extLow = plot.Add.Line(eIdx, yLowEnd, extEnd, yLowExt);
+                            extLow.Color = greenColor.WithAlpha(130);
+                            extLow.LineWidth = 0.8f;
+                            extLow.LinePattern = LinePattern.Dashed;
+                        }
+
+                        // ⑦ 四个角点微小圆点标记
+                        var m1 = plot.Add.Marker(sIdx, yUpStart); m1.Shape = MarkerShape.FilledCircle; m1.Size = isSelected ? 6 : 4; m1.Color = greenColor;
+                        var m2 = plot.Add.Marker(sIdx, yLowStart); m2.Shape = MarkerShape.FilledCircle; m2.Size = isSelected ? 6 : 4; m2.Color = greenColor;
+                        var m3 = plot.Add.Marker(eIdx, yUpEnd); m3.Shape = MarkerShape.FilledCircle; m3.Size = isSelected ? 6 : 4; m3.Color = greenColor;
+                        var m4 = plot.Add.Marker(eIdx, yLowEnd); m4.Shape = MarkerShape.FilledCircle; m4.Size = isSelected ? 6 : 4; m4.Color = greenColor;
+
+                        // ⑧ 文字气泡标签标注在通道外沿
+                        int curCount = eIdx - sIdx + 1;
+                        decimal curPct = tr.StartPrice > 0 ? (bars[eIdx].Close - tr.StartPrice) / tr.StartPrice * 100m : 0m;
+                        string baseTag = isBullish ? $"🔥连涨 {curCount}根 (+{curPct:F1}%)" : $"❄️连跌 {curCount}根 ({curPct:F1}%)";
+                        string tag = isSelected ? $"⭐ [已选中] {baseTag}" : baseTag;
+
+                        double midX = (sIdx + eIdx) / 2.0;
+                        double textY = isBullish
+                            ? (double)(slopeK * (decimal)midX + upperB)
+                            : (double)(slopeK * (decimal)midX + lowerB);
+
+                        var txt = plot.Add.Text(tag, midX, textY);
+                        txt.LabelFontName = chineseFont;
+                        txt.LabelFontColor = isSelected ? Color.FromHex("#34d399") : greenColor;
+                        txt.LabelFontSize = isSelected ? 10f : 9.5f;
+                        txt.LabelBold = true;
+                        txt.LabelAlignment = isBullish ? Alignment.LowerCenter : Alignment.UpperCenter;
+                        txt.LabelBackgroundColor = Color.FromHex("#0f172a").WithAlpha(0.85);
+                        txt.LabelBorderColor = isSelected ? Color.FromHex("#34d399") : greenColor.WithAlpha(180);
+                        txt.LabelBorderWidth = 1f;
+                    }
+                    else
+                    {
+                        // 简易形态标记模式 (未开启通道时)
+                        var themeColor = isBullish ? Color.FromHex("#10b981") : Color.FromHex("#f43f5e");
+                        double pStart = (double)bars[sIdx].Close;
+                        double pEnd = (double)bars[eIdx].Close;
+                        var trendLine = plot.Add.Line(sIdx, pStart, eIdx, pEnd);
+                        trendLine.Color = themeColor.WithAlpha(200);
+                        trendLine.LineWidth = 1.5f;
+                        trendLine.LinePattern = LinePattern.Dashed;
+
+                        int cIdx = tr.ConfirmedBarIndex;
+                        if (cIdx >= sIdx && cIdx < count)
+                        {
+                            var confMarker = plot.Add.Marker(cIdx, (double)bars[cIdx].Close);
+                            confMarker.Shape = isBullish ? MarkerShape.FilledTriangleUp : MarkerShape.FilledTriangleDown;
+                            confMarker.Size = 8;
+                            confMarker.Color = themeColor;
+                        }
+
+                        int curCount = eIdx - sIdx + 1;
+                        decimal curPct = tr.StartPrice > 0 ? (bars[eIdx].Close - tr.StartPrice) / tr.StartPrice * 100m : 0m;
+                        string tag = isBullish ? $"🔥连涨 {curCount}根 (+{curPct:F1}%)" : $"❄️连跌 {curCount}根 ({curPct:F1}%)";
+                        var txt = plot.Add.Text(tag, (sIdx + eIdx) / 2.0, Math.Max(pStart, pEnd));
+                        txt.LabelFontName = chineseFont;
+                        txt.LabelFontColor = themeColor;
+                        txt.LabelFontSize = 9.0f;
+                        txt.LabelBold = true;
+                        txt.LabelAlignment = Alignment.LowerCenter;
+                        txt.LabelBackgroundColor = Color.FromHex("#0f172a").WithAlpha(0.85);
+                    }
+
+                    // ⑨ 绘制本次连涨/连跌附近立体多维近期趋势线网
+                    if (showRecentTrendLines)
+                    {
+                        var linesToDraw = tr.RecentTrendLines != null && tr.RecentTrendLines.Count > 0
+                            ? tr.RecentTrendLines
+                            : null;
+
+                        if (linesToDraw != null && linesToDraw.Count > 0)
+                        {
+                            int drawLimit = Math.Min(linesToDraw.Count, recentTrendLineCount);
+                            for (int lineIdx = 0; lineIdx < drawLimit; lineIdx++)
+                            {
+                                var rtl = linesToDraw[lineIdx];
+                                bool isLineSelected = selectedRecentTrendLine != null &&
+                                                      selectedRecentTrendLine.StartX == rtl.StartX &&
+                                                      selectedRecentTrendLine.EndX == rtl.EndX &&
+                                                      selectedRecentTrendLine.LineType == rtl.LineType;
+
+                                var lineColor = isLineSelected
+                                    ? (rtl.HasThirdPointTouch ? Color.FromHex("#f472b6") : Color.FromHex("#fef08a"))
+                                    : Color.FromHex(rtl.ColorHex);
+
+                                float lWidth = isLineSelected ? 2.4f : (isSelected ? (rtl.LineWidth * 1.3f) : rtl.LineWidth);
+
+                                // 1. 实体锚点线段 (波段内部或前序结构段)
+                                var lineMain = plot.Add.Line(rtl.StartX, (double)rtl.StartY, rtl.EndX, (double)rtl.EndY);
+                                lineMain.Color = lineColor.WithAlpha(isLineSelected ? (byte)255 : (isSelected ? (byte)255 : (byte)210));
+                                lineMain.LineWidth = lWidth;
+                                lineMain.LinePattern = rtl.LineType == ConsecutiveRecentTrendLineType.StreakCenter ? LinePattern.Dotted : LinePattern.Solid;
+
+                                // 2. 关键锚点小标记
+                                var mkStart = plot.Add.Marker(rtl.StartX, (double)rtl.StartY);
+                                mkStart.Shape = MarkerShape.FilledCircle;
+                                mkStart.Size = isLineSelected ? 10 : (isSelected ? 7 : (rtl.IsPrimary ? 6 : 4));
+                                mkStart.Color = lineColor;
+
+                                var mkEnd = plot.Add.Marker(rtl.EndX, (double)rtl.EndY);
+                                mkEnd.Shape = MarkerShape.FilledCircle;
+                                mkEnd.Size = isLineSelected ? 10 : (isSelected ? 7 : (rtl.IsPrimary ? 6 : 4));
+                                mkEnd.Color = lineColor;
+
+                                // 🌸 3. 若满足第 3 点共线条件，在第 3 点处绘制粉红高亮菱形标记
+                                if (rtl.HasThirdPointTouch && rtl.ThirdPointBarIndex >= 0)
+                                {
+                                    var mk3 = plot.Add.Marker(rtl.ThirdPointBarIndex, (double)rtl.ThirdPointPrice);
+                                    mk3.Shape = MarkerShape.FilledDiamond;
+                                    mk3.Size = isLineSelected ? 10 : 8;
+                                    mk3.Color = Color.FromHex("#f472b6");
+                                }
+
+                                // 4. 向右延伸虚线射线 (零未来函数几何推演，不改变斜率)
+                                int rEnd = Math.Min(count - 1, rtl.RayEndX);
+                                if (rEnd > rtl.EndX)
+                                {
+                                    double rY = (double)(rtl.StartY + rtl.Slope * (rEnd - rtl.StartX));
+                                    var lineRay = plot.Add.Line(rtl.EndX, (double)rtl.EndY, rEnd, rY);
+                                    lineRay.Color = lineColor.WithAlpha(isLineSelected ? (byte)240 : (isSelected ? (byte)200 : (byte)130));
+                                    lineRay.LineWidth = isLineSelected ? 1.2f : 0.8f;
+                                    lineRay.LinePattern = LinePattern.Dashed;
+
+                                    // 主干核心线、选中形态或线条少时绘制端点气泡标签，次要线省略标签避免遮挡画面
+                                    if (!string.IsNullOrEmpty(rtl.TagText) && (rtl.IsPrimary || isSelected || isLineSelected || drawLimit <= 4))
+                                    {
+                                        var tagTxt = plot.Add.Text(rtl.TagText, rEnd, rY);
+                                        tagTxt.LabelFontName = chineseFont;
+                                        tagTxt.LabelFontColor = isLineSelected ? Color.FromHex("#ffffff") : lineColor;
+                                        tagTxt.LabelFontSize = isLineSelected ? 9.0f : (isSelected ? 8.5f : 8.0f);
+                                        tagTxt.LabelAlignment = isBullish ? Alignment.UpperLeft : Alignment.LowerLeft;
+                                        tagTxt.LabelBackgroundColor = isLineSelected
+                                            ? (rtl.HasThirdPointTouch ? Color.FromHex("#831843").WithAlpha(0.95) : Color.FromHex("#854d0e").WithAlpha(0.95))
+                                            : Color.FromHex("#0f172a").WithAlpha(0.85);
+                                        tagTxt.LabelBorderColor = lineColor;
+                                        tagTxt.LabelBorderWidth = isLineSelected ? 1.5f : 0.8f;
+                                    }
+                                }
+
+                                // 5. 若单线被选中，在中央显示选中标识
+                                if (isLineSelected)
+                                {
+                                    double midX = (rtl.StartX + rtl.EndX) / 2.0;
+                                    double midY = (double)(rtl.StartY + rtl.Slope * ((decimal)midX - rtl.StartX));
+                                    var selBadge = plot.Add.Text($"⭐ [选中线: {rtl.Name}]", midX, midY);
+                                    selBadge.LabelFontName = chineseFont;
+                                    selBadge.LabelFontSize = 9.0f;
+                                    selBadge.LabelFontColor = Color.FromHex("#ffffff");
+                                    selBadge.LabelBackgroundColor = rtl.HasThirdPointTouch ? Color.FromHex("#831843").WithAlpha(0.95) : Color.FromHex("#854d0e").WithAlpha(0.95);
+                                    selBadge.LabelBorderColor = lineColor;
+                                    selBadge.LabelBorderWidth = 1.2f;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // 兜底兼容单线模式
+                            var trendLineColor = isBullish ? Color.FromHex("#38bdf8") : Color.FromHex("#f43f5e");
+
+                            if (tr.HasTrendLine)
+                            {
+                                var tlMain = plot.Add.Line(tr.TrendLineStartX, (double)tr.TrendLineStartY, tr.TrendLineEndX, (double)tr.TrendLineEndY);
+                                tlMain.Color = trendLineColor;
+                                tlMain.LineWidth = isSelected ? 1.8f : 1.2f;
+                                tlMain.LinePattern = LinePattern.Solid;
+
+                                var mk1 = plot.Add.Marker(tr.TrendLineStartX, (double)tr.TrendLineStartY);
+                                mk1.Shape = MarkerShape.FilledCircle;
+                                mk1.Size = isSelected ? 8 : 6;
+                                mk1.Color = trendLineColor;
+
+                                var mk2 = plot.Add.Marker(tr.TrendLineEndX, (double)tr.TrendLineEndY);
+                                mk2.Shape = MarkerShape.FilledCircle;
+                                mk2.Size = isSelected ? 8 : 6;
+                                mk2.Color = trendLineColor;
+
+                                int rayEndIdx = Math.Min(count - 1, tr.EndIndex + 8);
+                                if (rayEndIdx > tr.TrendLineEndX)
+                                {
+                                    double rayEndY = (double)(tr.TrendLineEndY + tr.TrendLineSlope * (rayEndIdx - tr.TrendLineEndX));
+                                    var tlRay = plot.Add.Line(tr.TrendLineEndX, (double)tr.TrendLineEndY, rayEndIdx, rayEndY);
+                                    tlRay.Color = trendLineColor.WithAlpha(isSelected ? (byte)220 : (byte)150);
+                                    tlRay.LineWidth = isSelected ? 1.2f : 0.8f;
+                                    tlRay.LinePattern = LinePattern.Dashed;
+
+                                    string tlTag = isBullish ? $"📈 连涨支撑: {rayEndY:F2}" : $"📉 连跌阻力: {rayEndY:F2}";
+                                    var tlTxt = plot.Add.Text(tlTag, rayEndIdx, rayEndY);
+                                    tlTxt.LabelFontName = chineseFont;
+                                    tlTxt.LabelFontColor = trendLineColor;
+                                    tlTxt.LabelFontSize = 8.5f;
+                                    tlTxt.LabelAlignment = isBullish ? Alignment.UpperLeft : Alignment.LowerLeft;
+                                    tlTxt.LabelBackgroundColor = Color.FromHex("#0f172a").WithAlpha(0.85);
+                                    tlTxt.LabelBorderColor = trendLineColor;
+                                    tlTxt.LabelBorderWidth = 0.8f;
+                                }
+                            }
+
+                            if (tr.HasPrecedingTrendLine)
+                            {
+                                var amberColor = Color.FromHex("#fbbf24");
+                                var precMain = plot.Add.Line(tr.PrecedingTrendStartX, (double)tr.PrecedingTrendStartY, tr.PrecedingTrendEndX, (double)tr.PrecedingTrendEndY);
+                                precMain.Color = amberColor.WithAlpha(180);
+                                precMain.LineWidth = 1.0f;
+                                precMain.LinePattern = LinePattern.Solid;
+
+                                var pm1 = plot.Add.Marker(tr.PrecedingTrendStartX, (double)tr.PrecedingTrendStartY);
+                                pm1.Shape = MarkerShape.FilledCircle;
+                                pm1.Size = 5;
+                                pm1.Color = amberColor;
+
+                                var pm2 = plot.Add.Marker(tr.PrecedingTrendEndX, (double)tr.PrecedingTrendEndY);
+                                pm2.Shape = MarkerShape.FilledCircle;
+                                pm2.Size = 5;
+                                pm2.Color = amberColor;
+
+                                if (tr.StartIndex > tr.PrecedingTrendEndX)
+                                {
+                                    double yBreak = (double)(tr.PrecedingTrendEndY + tr.PrecedingTrendSlope * (tr.StartIndex - tr.PrecedingTrendEndX));
+                                    var precRay = plot.Add.Line(tr.PrecedingTrendEndX, (double)tr.PrecedingTrendEndY, tr.StartIndex, yBreak);
+                                    precRay.Color = amberColor.WithAlpha(140);
+                                    precRay.LineWidth = 0.8f;
+                                    precRay.LinePattern = LinePattern.Dotted;
+
+                                    string precTag = isBullish ? "⚡ 突破前序阻力" : "⚡ 跌破前序支撑";
+                                    var precTxt = plot.Add.Text(precTag, tr.StartIndex, yBreak);
+                                    precTxt.LabelFontName = chineseFont;
+                                    precTxt.LabelFontColor = amberColor;
+                                    precTxt.LabelFontSize = 8.0f;
+                                    precTxt.LabelAlignment = isBullish ? Alignment.LowerLeft : Alignment.UpperLeft;
+                                    precTxt.LabelBackgroundColor = Color.FromHex("#0f172a").WithAlpha(0.85);
+                                    precTxt.LabelBorderColor = amberColor.WithAlpha(180);
+                                    precTxt.LabelBorderWidth = 0.8f;
+                                }
+                            }
+                        }
+                    }
+
+                    // ⑩ 绘制连涨/连跌关联前1000根高低点位交互趋势线 (连涨交互高点，连跌交互低点)
+                    if (show1000BarInteraction && tr.Macro1000BarLines != null && tr.Macro1000BarLines.Count > 0)
+                    {
+                        for (int mIdx = 0; mIdx < tr.Macro1000BarLines.Count; mIdx++)
+                        {
+                            var mtl = tr.Macro1000BarLines[mIdx];
+                            bool isLineSelected = selectedRecentTrendLine != null &&
+                                                  selectedRecentTrendLine.StartX == mtl.StartX &&
+                                                  selectedRecentTrendLine.EndX == mtl.EndX &&
+                                                  selectedRecentTrendLine.LineType == mtl.LineType;
+
+                            var mColor = isLineSelected
+                                ? (mtl.HasThirdPointTouch ? Color.FromHex("#f472b6") : Color.FromHex("#fef08a"))
+                                : Color.FromHex(mtl.ColorHex);
+
+                            float lWidth = isLineSelected ? 2.4f : (isSelected ? (mtl.LineWidth * 1.35f) : mtl.LineWidth);
+
+                            // 1. 实体交互连线 (从历史千根锚点连接至当前波段最新 K 线)
+                            var lineM = plot.Add.Line(mtl.StartX, (double)mtl.StartY, mtl.EndX, (double)mtl.EndY);
+                            lineM.Color = mColor.WithAlpha(isLineSelected ? (byte)255 : (isSelected ? (byte)255 : (byte)215));
+                            lineM.LineWidth = lWidth;
+                            lineM.LinePattern = LinePattern.Solid;
+
+                            // 2. 历史锚点标记 (圆形)
+                            var mkStart = plot.Add.Marker(mtl.StartX, (double)mtl.StartY);
+                            mkStart.Shape = MarkerShape.FilledCircle;
+                            mkStart.Size = isLineSelected ? 10 : (isSelected ? 7 : (mtl.IsPrimary ? 6 : 4));
+                            mkStart.Color = mColor;
+
+                            // 3. 最新 K 线交互端点标记 (菱形 Diamond，突出交互焦点)
+                            var mkEnd = plot.Add.Marker(mtl.EndX, (double)mtl.EndY);
+                            mkEnd.Shape = MarkerShape.FilledDiamond;
+                            mkEnd.Size = isLineSelected ? 11 : (isSelected ? 9 : (mtl.IsPrimary ? 7 : 5));
+                            mkEnd.Color = mColor;
+
+                            // 🌸 4. 若满足第 3 点共线条件，在第 3 点处绘制粉红高亮菱形标记
+                            if (mtl.HasThirdPointTouch && mtl.ThirdPointBarIndex >= 0)
+                            {
+                                var mk3 = plot.Add.Marker(mtl.ThirdPointBarIndex, (double)mtl.ThirdPointPrice);
+                                mk3.Shape = MarkerShape.FilledDiamond;
+                                mk3.Size = isLineSelected ? 10 : 8;
+                                mk3.Color = Color.FromHex("#f472b6");
+                            }
+
+                            // 5. 向右射线轻微延伸 (预测参考)
+                            int rEnd = Math.Min(count - 1, mtl.RayEndX);
+                            if (rEnd > mtl.EndX)
+                            {
+                                double rY = (double)(mtl.StartY + mtl.Slope * (rEnd - mtl.StartX));
+                                var lineRay = plot.Add.Line(mtl.EndX, (double)mtl.EndY, rEnd, rY);
+                                lineRay.Color = mColor.WithAlpha(isLineSelected ? (byte)240 : (isSelected ? (byte)190 : (byte)120));
+                                lineRay.LineWidth = isLineSelected ? 1.2f : 0.8f;
+                                lineRay.LinePattern = LinePattern.Dashed;
+                            }
+
+                            // 6. 气泡标签显示 (高点交互置于上方，低点交互置于下方)
+                            if (!string.IsNullOrEmpty(mtl.TagText))
+                            {
+                                var tagTxt = plot.Add.Text(mtl.TagText, mtl.EndX, (double)mtl.EndY);
+                                tagTxt.LabelFontName = chineseFont;
+                                tagTxt.LabelFontColor = isLineSelected ? Color.FromHex("#ffffff") : mColor;
+                                tagTxt.LabelFontSize = isLineSelected ? 9.0f : (isSelected ? 8.5f : 8.0f);
+                                tagTxt.LabelAlignment = isBullish ? Alignment.UpperRight : Alignment.LowerRight;
+                                tagTxt.LabelBackgroundColor = isLineSelected
+                                    ? (mtl.HasThirdPointTouch ? Color.FromHex("#831843").WithAlpha(0.95) : Color.FromHex("#854d0e").WithAlpha(0.95))
+                                    : Color.FromHex("#090d16").WithAlpha(0.88);
+                                tagTxt.LabelBorderColor = mColor;
+                                tagTxt.LabelBorderWidth = isLineSelected ? 1.5f : 0.8f;
+                            }
+
+                            // 7. 若单线被选中，在中央显示选中标识
+                            if (isLineSelected)
+                            {
+                                double midX = (mtl.StartX + mtl.EndX) / 2.0;
+                                double midY = (double)(mtl.StartY + mtl.Slope * ((decimal)midX - mtl.StartX));
+                                var selBadge = plot.Add.Text($"⭐ [选中线: {mtl.Name}]", midX, midY);
+                                selBadge.LabelFontName = chineseFont;
+                                selBadge.LabelFontSize = 9.0f;
+                                selBadge.LabelFontColor = Color.FromHex("#ffffff");
+                                selBadge.LabelBackgroundColor = mtl.HasThirdPointTouch ? Color.FromHex("#831843").WithAlpha(0.95) : Color.FromHex("#854d0e").WithAlpha(0.95);
+                                selBadge.LabelBorderColor = mColor;
+                                selBadge.LabelBorderWidth = 1.2f;
+                            }
                         }
                     }
                 }

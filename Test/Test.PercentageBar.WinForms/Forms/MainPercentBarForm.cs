@@ -26,6 +26,7 @@ namespace Test.PercentageBar.WinForms.Forms
         private int? _selectedBarStart = null;
         private int? _selectedBarEnd = null;
         private TrendLine? _selectedTrendLine = null;
+        private ConsecutiveRecentTrendLine? _selectedRecentTrendLine = null;
         private PercentChartType _chartType = PercentChartType.Candlestick;
 
         private CancellationTokenSource? _cts = null;
@@ -111,6 +112,14 @@ namespace Test.PercentageBar.WinForms.Forms
         private CheckBox chkShowTrendLines = null!;
         private NumericUpDown numPivotWindow = null!;
         private NumericUpDown numTouchTolerance = null!;
+        private CheckBox chkShowConsecutiveTrend = null!;
+        private NumericUpDown numConsecutiveBars = null!;
+        private NumericUpDown numConsecutivePct = null!;
+        private CheckBox chkShowConsecutiveChannel = null!;
+        private CheckBox chkShowRecentTrendLines = null!;
+        private CheckBox chkShow1000BarInteraction = null!;
+        private NumericUpDown numRecentTrendCount = null!;
+        private ConsecutiveTrendItem? _selectedConsecutiveTrend = null;
 
         // 紫色趋势线触碰 15-Tick 反弹策略回测控件
         private GroupBox grpStrategy = null!;
@@ -447,6 +456,9 @@ namespace Test.PercentageBar.WinForms.Forms
                     {
                         _selectedBarStart = trade.EntryBarIndex;
                         _selectedBarEnd = trade.ExitBarIndex;
+                        _selectedTrendLine = null;
+                        _selectedRecentTrendLine = null;
+                        _selectedConsecutiveTrend = null;
                         var selBars = new List<PercentageKline>();
                         for (int b = _selectedBarStart.Value; b <= _selectedBarEnd.Value; b++)
                         {
@@ -609,7 +621,7 @@ namespace Test.PercentageBar.WinForms.Forms
             top += grpParams.Height + 10;
 
             // Group 3: 高低点位与形态分析
-            grpAnalysis = CreateGroupBox("3. 高低点位与形态分析", top, 210);
+            grpAnalysis = CreateGroupBox("3. 高低点位与形态分析", top, 395);
             {
                 chkShowVolume = new CheckBox
                 {
@@ -696,21 +708,146 @@ namespace Test.PercentageBar.WinForms.Forms
                     DecimalPlaces = 3,
                     Increment = 0.005m,
                     Minimum = 0.001m,
-                    Maximum = 0.100m,
-                    Value = 0.030m, // 默认 0.03% 精准共线
+                    Maximum = 0.500m,
+                    Value = 0.050m, // 默认 0.05% 精准共线容差 (满足时显示为粉红色)
                     Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold),
-                    ForeColor = System.Drawing.Color.FromArgb(192, 132, 252) // Purple 400
+                    ForeColor = System.Drawing.Color.FromArgb(244, 114, 182) // Pink 400
                 };
                 numTouchTolerance.ValueChanged += (s, e) => RedrawCurrentPlot(autoScale: false, autoFollow: chkAutoFollow.Checked);
 
                 var lblTolTip = new Label
                 {
-                    Text = "(🟣超精准点位触碰)",
+                    Text = "(🌸第3点落入≤此值显粉红)",
                     Location = new Point(195, 164),
                     AutoSize = true,
-                    ForeColor = System.Drawing.Color.FromArgb(192, 132, 252),
+                    ForeColor = System.Drawing.Color.FromArgb(244, 114, 182), // Pink 400
                     Font = new Font("Microsoft YaHei", 8F)
                 };
+
+                // 连续上涨 / 连续下跌形态识别与控制参数
+                chkShowConsecutiveTrend = new CheckBox
+                {
+                    Text = "🟩 识别连续涨跌形态 (≥5根且≥2.5%)",
+                    Location = new Point(15, 192),
+                    AutoSize = true,
+                    Checked = true,
+                    ForeColor = System.Drawing.Color.FromArgb(74, 222, 128), // Green 400
+                    Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold)
+                };
+                chkShowConsecutiveTrend.CheckedChanged += (s, e) =>
+                {
+                    UpdateConsecutiveTrendLabel();
+                    RedrawCurrentPlot(autoScale: false, autoFollow: chkAutoFollow.Checked);
+                };
+
+                var lblConsecBars = CreateLabel("连续根数(Bar):", 15, 220);
+                numConsecutiveBars = new NumericUpDown
+                {
+                    Location = new Point(125, 218),
+                    Width = 65,
+                    Minimum = 2,
+                    Maximum = 50,
+                    Value = 5,
+                    Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold),
+                    ForeColor = System.Drawing.Color.FromArgb(74, 222, 128)
+                };
+                numConsecutiveBars.ValueChanged += (s, e) =>
+                {
+                    UpdateConsecutiveTrendLabel();
+                    RedrawCurrentPlot(autoScale: false, autoFollow: chkAutoFollow.Checked);
+                };
+
+                var lblConsecBarsTip = new Label
+                {
+                    Text = "(最少连续K线)",
+                    Location = new Point(195, 220),
+                    AutoSize = true,
+                    ForeColor = System.Drawing.Color.FromArgb(148, 163, 184),
+                    Font = new Font("Microsoft YaHei", 8F)
+                };
+
+                var lblConsecPct = CreateLabel("涨跌幅度(%):", 15, 248);
+                numConsecutivePct = new NumericUpDown
+                {
+                    Location = new Point(125, 246),
+                    Width = 65,
+                    DecimalPlaces = 1,
+                    Increment = 0.5m,
+                    Minimum = 0.0m,
+                    Maximum = 100.0m,
+                    Value = 2.5m,
+                    Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold),
+                    ForeColor = System.Drawing.Color.FromArgb(74, 222, 128)
+                };
+                numConsecutivePct.ValueChanged += (s, e) =>
+                {
+                    UpdateConsecutiveTrendLabel();
+                    RedrawCurrentPlot(autoScale: false, autoFollow: chkAutoFollow.Checked);
+                };
+
+                var lblConsecPctTip = new Label
+                {
+                    Text = "(累计涨跌幅)",
+                    Location = new Point(195, 248),
+                    AutoSize = true,
+                    ForeColor = System.Drawing.Color.FromArgb(148, 163, 184),
+                    Font = new Font("Microsoft YaHei", 8F)
+                };
+
+                chkShowConsecutiveChannel = new CheckBox
+                {
+                    Text = "📐 绘制连续走势平行通道 (绿色 0.8f)",
+                    Location = new Point(15, 276),
+                    AutoSize = true,
+                    Checked = true,
+                    ForeColor = System.Drawing.Color.FromArgb(52, 211, 153), // Emerald 400
+                    Font = new Font("Microsoft YaHei", 8.5F)
+                };
+                chkShowConsecutiveChannel.CheckedChanged += (s, e) => RedrawCurrentPlot(autoScale: false, autoFollow: chkAutoFollow.Checked);
+
+                chkShowRecentTrendLines = new CheckBox
+                {
+                    Text = "📈 绘制连涨连跌近期趋势线网 (多级结构)",
+                    Location = new Point(15, 302),
+                    AutoSize = true,
+                    Checked = true,
+                    ForeColor = System.Drawing.Color.FromArgb(56, 189, 248), // Sky 400
+                    Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold)
+                };
+                chkShowRecentTrendLines.CheckedChanged += (s, e) => RedrawCurrentPlot(autoScale: false, autoFollow: chkAutoFollow.Checked);
+
+                var lblTrendCount = CreateLabel("线网密度(条):", 15, 330);
+                numRecentTrendCount = new NumericUpDown
+                {
+                    Location = new Point(125, 328),
+                    Width = 65,
+                    Minimum = 2,
+                    Maximum = 15,
+                    Value = 8,
+                    Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold),
+                    ForeColor = System.Drawing.Color.FromArgb(56, 189, 248)
+                };
+                numRecentTrendCount.ValueChanged += (s, e) => RedrawCurrentPlot(autoScale: false, autoFollow: chkAutoFollow.Checked);
+
+                var lblTrendCountTip = new Label
+                {
+                    Text = "(支撑/阻力/前序结构)",
+                    Location = new Point(195, 330),
+                    AutoSize = true,
+                    ForeColor = System.Drawing.Color.FromArgb(148, 163, 184),
+                    Font = new Font("Microsoft YaHei", 8F)
+                };
+
+                chkShow1000BarInteraction = new CheckBox
+                {
+                    Text = "🎯 连涨连跌关联1000根高低点交互绘制",
+                    Location = new Point(15, 356),
+                    AutoSize = true,
+                    Checked = true,
+                    ForeColor = System.Drawing.Color.FromArgb(251, 191, 36), // Amber 400
+                    Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold)
+                };
+                chkShow1000BarInteraction.CheckedChanged += (s, e) => RedrawCurrentPlot(autoScale: false, autoFollow: chkAutoFollow.Checked);
 
                 grpAnalysis.Controls.AddRange(new Control[]
                 {
@@ -720,7 +857,14 @@ namespace Test.PercentageBar.WinForms.Forms
                     chkShowZigZag,
                     chkShowTrendLines,
                     lblWin, numPivotWindow, lblWinTip,
-                    lblTol, numTouchTolerance, lblTolTip
+                    lblTol, numTouchTolerance, lblTolTip,
+                    chkShowConsecutiveTrend,
+                    lblConsecBars, numConsecutiveBars, lblConsecBarsTip,
+                    lblConsecPct, numConsecutivePct, lblConsecPctTip,
+                    chkShowConsecutiveChannel,
+                    chkShowRecentTrendLines,
+                    lblTrendCount, numRecentTrendCount, lblTrendCountTip,
+                    chkShow1000BarInteraction
                 });
             }
             panelRight.Controls.Add(grpAnalysis);
@@ -1451,10 +1595,19 @@ namespace Test.PercentageBar.WinForms.Forms
                 showTrendLines: chkShowTrendLines?.Checked ?? true,
                 pivotWindow: (int)(numPivotWindow?.Value ?? 3),
                 selectedTrendLine: _selectedTrendLine,
-                touchTolerancePct: (numTouchTolerance?.Value ?? 0.030m) / 100m,
+                selectedRecentTrendLine: _selectedRecentTrendLine,
+                touchTolerancePct: (numTouchTolerance?.Value ?? 0.050m) / 100m,
                 showVolume: chkShowVolume?.Checked ?? true,
                 strategyTrades: _lastBacktestReport?.Trades,
-                showStrategyMarkers: chkShowStrategyMarkers?.Checked ?? true);
+                showStrategyMarkers: chkShowStrategyMarkers?.Checked ?? true,
+                showConsecutiveTrend: chkShowConsecutiveTrend?.Checked ?? true,
+                consecutiveMinBars: (int)(numConsecutiveBars?.Value ?? 5),
+                consecutiveMinPct: numConsecutivePct?.Value ?? 2.5m,
+                showConsecutiveChannel: chkShowConsecutiveChannel?.Checked ?? true,
+                showRecentTrendLines: chkShowRecentTrendLines?.Checked ?? true,
+                recentTrendLineCount: (int)(numRecentTrendCount?.Value ?? 8),
+                show1000BarInteraction: chkShow1000BarInteraction?.Checked ?? true,
+                selectedConsecutiveTrend: _selectedConsecutiveTrend);
 
             int total = _currentBars.Count;
 
@@ -1511,17 +1664,21 @@ namespace Test.PercentageBar.WinForms.Forms
 
             try
             {
-                // 1. 优先判定是否点击命中趋势线 (屏幕像素距离 <= 8.5 像素)
+                decimal tol = (numTouchTolerance?.Value ?? 0.050m) / 100m;
+                PointF mousePixel = new PointF(e.X, e.Y);
+                int count = _currentBars.Count;
+
+                // 1. 优先判定是否点击命中趋势线 (支持自动高低点趋势线、连续形态近期立体线网、1000根交互线，屏幕像素距离 <= 8.5 像素)
+                TrendLine? closestAutoLine = null;
+                ConsecutiveRecentTrendLine? closestRecentLine = null;
+                ConsecutiveTrendItem? parentTrendOfClosestRecentLine = null;
+                double minPixelDist = double.MaxValue;
+
+                // 1.1 自动高低点趋势线
                 if (chkShowTrendLines != null && chkShowTrendLines.Checked)
                 {
-                    decimal tol = (numTouchTolerance?.Value ?? 0.030m) / 100m;
                     var pivotAnalysis = PivotDetector.CalculatePivots(_currentBars, window: (int)(numPivotWindow?.Value ?? 3), alternateHighLow: true);
                     var trendlines = PivotDetector.CalculateTrendLines(_currentBars, pivotAnalysis, maxLines: 1000, maxSpanBars: 1000, extensionBars: 8, strictWickPenetration: true, touchTolerancePct: tol);
-
-                    TrendLine? closestLine = null;
-                    double minPixelDist = double.MaxValue;
-
-                    PointF mousePixel = new PointF(e.X, e.Y);
 
                     foreach (var tl in trendlines)
                     {
@@ -1532,24 +1689,146 @@ namespace Test.PercentageBar.WinForms.Forms
                         if (dist <= 8.5 && dist < minPixelDist)
                         {
                             minPixelDist = dist;
-                            closestLine = tl;
+                            closestAutoLine = tl;
+                            closestRecentLine = null;
+                            parentTrendOfClosestRecentLine = null;
+                        }
+                    }
+                }
+
+                // 1.2 连续走势近期形态线网与 1000 根交互线
+                List<ConsecutiveTrendItem>? trends = null;
+                if (chkShowConsecutiveTrend != null && chkShowConsecutiveTrend.Checked && count > 0)
+                {
+                    int minBars = (int)(numConsecutiveBars?.Value ?? 5);
+                    decimal minPct = numConsecutivePct?.Value ?? 2.5m;
+                    bool showRecent = chkShowRecentTrendLines?.Checked ?? true;
+                    int recentLimit = (int)(numRecentTrendCount?.Value ?? 8);
+                    bool show1000 = chkShow1000BarInteraction?.Checked ?? true;
+
+                    trends = ConsecutiveTrendDetector.ScanTrends(_currentBars, count - 1, minBars, minPct, touchTolerancePct: tol);
+
+                    foreach (var tr in trends)
+                    {
+                        var linesToCheck = new List<ConsecutiveRecentTrendLine>();
+                        if (showRecent && tr.RecentTrendLines != null && tr.RecentTrendLines.Count > 0)
+                        {
+                            int take = Math.Min(tr.RecentTrendLines.Count, recentLimit);
+                            for (int i = 0; i < take; i++) linesToCheck.Add(tr.RecentTrendLines[i]);
+                        }
+                        if (show1000 && tr.Macro1000BarLines != null)
+                        {
+                            linesToCheck.AddRange(tr.Macro1000BarLines);
+                        }
+
+                        foreach (var rtl in linesToCheck)
+                        {
+                            var pixStart = formsPlot.Plot.GetPixel(new ScottPlot.Coordinates(rtl.StartX, (double)rtl.StartY));
+                            var pixEnd = formsPlot.Plot.GetPixel(new ScottPlot.Coordinates(rtl.EndX, (double)rtl.EndY));
+
+                            double dMain = DistanceToSegment(mousePixel, new PointF((float)pixStart.X, (float)pixStart.Y), new PointF((float)pixEnd.X, (float)pixEnd.Y));
+                            double dist = dMain;
+
+                            int rEnd = Math.Min(count - 1, rtl.RayEndX);
+                            if (rEnd > rtl.EndX)
+                            {
+                                double rY = (double)(rtl.StartY + rtl.Slope * (rEnd - rtl.StartX));
+                                var pixRayEnd = formsPlot.Plot.GetPixel(new ScottPlot.Coordinates(rEnd, rY));
+                                double dRay = DistanceToSegment(mousePixel, new PointF((float)pixEnd.X, (float)pixEnd.Y), new PointF((float)pixRayEnd.X, (float)pixRayEnd.Y));
+                                if (dRay < dist) dist = dRay;
+                            }
+
+                            if (dist <= 8.5 && dist < minPixelDist)
+                            {
+                                minPixelDist = dist;
+                                closestRecentLine = rtl;
+                                parentTrendOfClosestRecentLine = tr;
+                                closestAutoLine = null;
+                            }
+                        }
+                    }
+                }
+
+                // 命中趋势线处理
+                if (closestRecentLine != null)
+                {
+                    _selectedRecentTrendLine = closestRecentLine;
+                    _selectedTrendLine = null;
+                    _selectedBarStart = null;
+                    _selectedBarEnd = null;
+                    _selectedConsecutiveTrend = parentTrendOfClosestRecentLine;
+                    OutputConsecutiveRecentTrendLineDetails(closestRecentLine, parentTrendOfClosestRecentLine);
+                    RedrawCurrentPlot(autoScale: false);
+                    return;
+                }
+                else if (closestAutoLine.HasValue)
+                {
+                    _selectedTrendLine = closestAutoLine.Value;
+                    _selectedRecentTrendLine = null;
+                    _selectedBarStart = null;
+                    _selectedBarEnd = null;
+                    _selectedConsecutiveTrend = null;
+                    OutputTrendLineDetails(closestAutoLine.Value, _currentBars[count - 1]);
+                    RedrawCurrentPlot(autoScale: false);
+                    return;
+                }
+
+                // 1.5 判定是否点击连续走势平行通道
+                if (trends != null && trends.Count > 0)
+                {
+                    ConsecutiveTrendItem? closestTrend = null;
+                    double minChannelDist = double.MaxValue;
+                    var mouseCoord = formsPlot.Plot.GetCoordinates(new ScottPlot.Pixel(e.X, e.Y));
+
+                    foreach (var tr in trends)
+                    {
+                        if (!tr.HasChannel) continue;
+                        var pixUpStart = formsPlot.Plot.GetPixel(new ScottPlot.Coordinates(tr.StartIndex, (double)(tr.SlopeK * tr.StartIndex + tr.UpperIntercept)));
+                        var pixUpEnd = formsPlot.Plot.GetPixel(new ScottPlot.Coordinates(tr.EndIndex, (double)(tr.SlopeK * tr.EndIndex + tr.UpperIntercept)));
+                        var pixLowStart = formsPlot.Plot.GetPixel(new ScottPlot.Coordinates(tr.StartIndex, (double)(tr.SlopeK * tr.StartIndex + tr.LowerIntercept)));
+                        var pixLowEnd = formsPlot.Plot.GetPixel(new ScottPlot.Coordinates(tr.EndIndex, (double)(tr.SlopeK * tr.EndIndex + tr.LowerIntercept)));
+
+                        double dUp = DistanceToSegment(mousePixel, new PointF((float)pixUpStart.X, (float)pixUpStart.Y), new PointF((float)pixUpEnd.X, (float)pixUpEnd.Y));
+                        double dLow = DistanceToSegment(mousePixel, new PointF((float)pixLowStart.X, (float)pixLowStart.Y), new PointF((float)pixLowEnd.X, (float)pixLowEnd.Y));
+
+                        bool insideX = mouseCoord.X >= tr.StartIndex - 0.4 && mouseCoord.X <= tr.EndIndex + 0.4;
+                        double upY = (double)(tr.SlopeK * (decimal)mouseCoord.X + tr.UpperIntercept);
+                        double lowY = (double)(tr.SlopeK * (decimal)mouseCoord.X + tr.LowerIntercept);
+                        bool insideY = mouseCoord.Y >= Math.Min(upY, lowY) && mouseCoord.Y <= Math.Max(upY, lowY);
+
+                        double dist = Math.Min(dUp, dLow);
+                        if (insideX && insideY) dist = 0;
+
+                        if (dist <= 10.0 && dist < minChannelDist)
+                        {
+                            minChannelDist = dist;
+                            closestTrend = tr;
                         }
                     }
 
-                    if (closestLine.HasValue)
+                    if (closestTrend != null)
                     {
-                        _selectedTrendLine = closestLine.Value;
-                        _selectedBarStart = null;
-                        _selectedBarEnd = null;
-                        OutputTrendLineDetails(closestLine.Value, _currentBars[_currentBars.Count - 1]);
+                        _selectedConsecutiveTrend = closestTrend;
+                        _selectedTrendLine = null;
+                        _selectedRecentTrendLine = null;
+                        _selectedBarStart = closestTrend.StartIndex;
+                        _selectedBarEnd = closestTrend.EndIndex;
+
+                        var selectedBars = new List<PercentageKline>(closestTrend.BarCount);
+                        for (int b = closestTrend.StartIndex; b <= closestTrend.EndIndex && b < _currentBars.Count; b++)
+                        {
+                            selectedBars.Add(_currentBars[b]);
+                        }
+                        OutputConsecutiveTrendDetails(closestTrend);
+                        DisplayBarsTickDetails(selectedBars);
                         RedrawCurrentPlot(autoScale: false);
                         return;
                     }
                 }
 
-                // 2. 若未点击到趋势线，则判定是否点击选中 K 线 (支持单选与按住 Shift 连续多选)
-                var mouseCoord = formsPlot.Plot.GetCoordinates(new ScottPlot.Pixel(e.X, e.Y));
-                int targetIndex = (int)Math.Round(mouseCoord.X);
+                // 2. 若未点击到趋势线与通道，则判定是否点击选中 K 线 (支持单选与按住 Shift 连续多选)
+                var mouseCoordBar = formsPlot.Plot.GetCoordinates(new ScottPlot.Pixel(e.X, e.Y));
+                int targetIndex = (int)Math.Round(mouseCoordBar.X);
 
                 if (targetIndex >= 0 && targetIndex < _currentBars.Count)
                 {
@@ -1581,6 +1860,8 @@ namespace Test.PercentageBar.WinForms.Forms
                         }
 
                         _selectedTrendLine = null;
+                        _selectedConsecutiveTrend = null;
+                        _selectedRecentTrendLine = null;
 
                         int minBar = Math.Min(_selectedBarStart.Value, _selectedBarEnd.Value);
                         int maxBar = Math.Max(_selectedBarStart.Value, _selectedBarEnd.Value);
@@ -1630,6 +1911,105 @@ namespace Test.PercentageBar.WinForms.Forms
             return Math.Sqrt(diffX * diffX + diffY * diffY);
         }
 
+        private void UpdateConsecutiveTrendLabel()
+        {
+            if (chkShowConsecutiveTrend != null && numConsecutiveBars != null && numConsecutivePct != null)
+            {
+                chkShowConsecutiveTrend.Text = $"🟩 识别连续涨跌形态 (≥{numConsecutiveBars.Value}根且≥{numConsecutivePct.Value:F1}%)";
+            }
+        }
+
+        /// <summary>
+        /// 🌟 全量输出点击连续走势平行通道的所有明细指标到日志栏 (包含形态类型、起止跨度、累计涨跌、回归斜率与通道几何高度)
+        /// </summary>
+        private void OutputConsecutiveTrendDetails(ConsecutiveTrendItem tr)
+        {
+            bool isBull = tr.Type == ConsecutiveTrendType.Bullish;
+            string icon = isBull ? "🔥" : "❄️";
+            string typeTitle = isBull ? "🔥 连续上涨平行通道 (Bullish Trend Channel)" : "❄️ 连续下跌平行通道 (Bearish Trend Channel)";
+            var themeColor = isBull ? System.Drawing.Color.FromArgb(74, 222, 128) : System.Drawing.Color.FromArgb(248, 113, 113);
+
+            string sign = tr.PriceChangePct >= 0 ? "+" : "";
+
+            PercentageKline startBar = tr.StartIndex >= 0 && tr.StartIndex < _currentBars.Count ? _currentBars[tr.StartIndex] : default;
+            PercentageKline endBar = tr.EndIndex >= 0 && tr.EndIndex < _currentBars.Count ? _currentBars[tr.EndIndex] : default;
+
+            DateTime startTime = startBar.OpenDateTime;
+            DateTime endTime = endBar.CloseDateTime;
+            TimeSpan spanDuration = endTime - startTime;
+
+            _logQueue.Enqueue(("\n╔══════════════════════════════════════════════════════════════════════════════════════════", themeColor));
+            _logQueue.Enqueue(($"║ {icon}【连续走势平行通道明细报告】 ★ 选中形态 [{tr.TypeName}]", themeColor));
+            _logQueue.Enqueue(("╠──────────────────────────────────────────────────────────────────────────────────────────", System.Drawing.Color.FromArgb(71, 85, 105)));
+            _logQueue.Enqueue(($"║ 🏷️ 形态名称: {typeTitle}", themeColor));
+            _logQueue.Enqueue(($"║ 📊 K 线跨度: Bar #{tr.StartIndex} ~ #{tr.EndIndex} (共连续 {tr.BarCount} 根 K 线)", System.Drawing.Color.FromArgb(241, 245, 249)));
+            _logQueue.Enqueue(($"║ ⏱️ 持续时间: {PercentPlotHelper.FormatTimeSpan(spanDuration)} ({startTime:yyyy-MM-dd HH:mm:ss} ~ {endTime:yyyy-MM-dd HH:mm:ss} UTC)", System.Drawing.Color.FromArgb(148, 163, 184)));
+            _logQueue.Enqueue(($"║ 💰 价格区间: 基准价 {tr.StartPrice:F2} USDT -> 终点价 {tr.EndPrice:F2} USDT", System.Drawing.Color.FromArgb(241, 245, 249)));
+            _logQueue.Enqueue(($"║ 📈 累计涨跌: {sign}{tr.PriceChangePct:F2}% (首次在 Bar #{tr.ConfirmedBarIndex} 满足门槛并确立冻结通道)", isBull ? System.Drawing.Color.FromArgb(74, 222, 128) : System.Drawing.Color.FromArgb(248, 113, 113)));
+            _logQueue.Enqueue(("╠──────────────────────────────────────────────────────────────────────────────────────────", System.Drawing.Color.FromArgb(71, 85, 105)));
+            _logQueue.Enqueue(($"║ 📐 平行通道几何参数 (绿色 0.8f):", System.Drawing.Color.FromArgb(56, 189, 248)));
+            _logQueue.Enqueue(($"║    • 回归斜率 (Slope k): {tr.SlopeK:+0.0000;-0.0000;0.0000} USDT/Bar", themeColor));
+            _logQueue.Enqueue(($"║    • 上轨截距 (Upper b): {tr.UpperIntercept:F2} USDT | 下轨截距 (Lower b): {tr.LowerIntercept:F2} USDT", System.Drawing.Color.FromArgb(241, 245, 249)));
+            _logQueue.Enqueue(($"║    • 通道垂直高度: {tr.ChannelHeight:F2} USDT ({(tr.StartPrice > 0 ? (tr.ChannelHeight / tr.StartPrice * 100m) : 0m):F2}%)", System.Drawing.Color.FromArgb(250, 204, 21)));
+            _logQueue.Enqueue(($"║    • 当前延续状态: {(tr.IsActive ? "⚡ 持续延伸活跃中" : "🔒 已结束并锁定")}", tr.IsActive ? System.Drawing.Color.FromArgb(74, 222, 128) : System.Drawing.Color.FromArgb(148, 163, 184)));
+
+            if (tr.RecentTrendLines != null && tr.RecentTrendLines.Count > 0)
+            {
+                _logQueue.Enqueue(("╠──────────────────────────────────────────────────────────────────────────────────────────", System.Drawing.Color.FromArgb(71, 85, 105)));
+                _logQueue.Enqueue(($"║ 📈 近端立体趋势线网明细 (共生成 {tr.RecentTrendLines.Count} 条多维结构线，零未来函数在 Bar #{tr.ConfirmedBarIndex} 确立锁定):", System.Drawing.Color.FromArgb(56, 189, 248)));
+                for (int li = 0; li < tr.RecentTrendLines.Count; li++)
+                {
+                    var rtl = tr.RecentTrendLines[li];
+                    string roleIcon = rtl.LineType switch
+                    {
+                        ConsecutiveRecentTrendLineType.StreakSupport => "🟢[下轨支撑]",
+                        ConsecutiveRecentTrendLineType.StreakResistance => "🔴[上轨压制]",
+                        ConsecutiveRecentTrendLineType.StreakCenter => "⚡[动能中枢]",
+                        ConsecutiveRecentTrendLineType.PrecedingResistance => "🟡[前序阻力]",
+                        ConsecutiveRecentTrendLineType.PrecedingSupport => "🟠[前序支撑]",
+                        ConsecutiveRecentTrendLineType.PrecedingConvergence => "🟣[微型楔形]",
+                        ConsecutiveRecentTrendLineType.Interactive1000BarHigh => "🎯[千根高点交互]",
+                        ConsecutiveRecentTrendLineType.Interactive1000BarLow => "🎯[千根低点交互]",
+                        ConsecutiveRecentTrendLineType.Projected1000BarTarget => "📐[千根推演投射]",
+                        _ => "🔵[大级别线]"
+                    };
+                    _logQueue.Enqueue(($"║    {li + 1,2}. {roleIcon} {rtl.Name}: Bar #{rtl.StartX}@{rtl.StartY:F2} -> #{rtl.EndX}@{rtl.EndY:F2} (斜率: {rtl.Slope:+0.0000;-0.0000;0.0000} | 映射@{rtl.RayEndX}: {rtl.RayEndY:F2})", System.Drawing.Color.FromArgb(241, 245, 249)));
+                }
+            }
+            else
+            {
+                if (tr.HasTrendLine)
+                {
+                    _logQueue.Enqueue(("╠──────────────────────────────────────────────────────────────────────────────────────────", System.Drawing.Color.FromArgb(71, 85, 105)));
+                    _logQueue.Enqueue(($"║ 📈 近期主趋势线几何参数 (零未来函数, 在 Bar #{tr.ConfirmedBarIndex} 确立锁定):", System.Drawing.Color.FromArgb(56, 189, 248)));
+                    _logQueue.Enqueue(($"║    • 支撑/阻力类型: {(isBull ? "🟢 连涨下轨支撑线" : "🔴 连跌上轨阻力线")}", themeColor));
+                    _logQueue.Enqueue(($"║    • 起点锚点: Bar #{tr.TrendLineStartX} @ {tr.TrendLineStartY:F2} USDT", System.Drawing.Color.FromArgb(241, 245, 249)));
+                    _logQueue.Enqueue(($"║    • 关键锚点: Bar #{tr.TrendLineEndX} @ {tr.TrendLineEndY:F2} USDT", System.Drawing.Color.FromArgb(241, 245, 249)));
+                    _logQueue.Enqueue(($"║    • 趋势线斜率: {tr.TrendLineSlope:+0.0000;-0.0000;0.0000} USDT/Bar", themeColor));
+                }
+                if (tr.HasPrecedingTrendLine)
+                {
+                    _logQueue.Enqueue(($"║ ⚡ 前序近期结构趋势线 (突破/跌破源头):", System.Drawing.Color.FromArgb(250, 204, 21)));
+                    _logQueue.Enqueue(($"║    • 起止跨度: Bar #{tr.PrecedingTrendStartX} @ {tr.PrecedingTrendStartY:F2} -> Bar #{tr.PrecedingTrendEndX} @ {tr.PrecedingTrendEndY:F2} USDT", System.Drawing.Color.FromArgb(241, 245, 249)));
+                    _logQueue.Enqueue(($"║    • 结构线斜率: {tr.PrecedingTrendSlope:+0.0000;-0.0000;0.0000} USDT/Bar", System.Drawing.Color.FromArgb(250, 204, 21)));
+                }
+            }
+
+            if (tr.Macro1000BarLines != null && tr.Macro1000BarLines.Count > 0)
+            {
+                _logQueue.Enqueue(("╠──────────────────────────────────────────────────────────────────────────────────────────", System.Drawing.Color.FromArgb(71, 85, 105)));
+                string macroTitle = isBull ? "🎯 关联前1000根高点位交互压制线网" : "🎯 关联前1000根低点位交互支撑线网";
+                _logQueue.Enqueue(($"║ {macroTitle} (共生成 {tr.Macro1000BarLines.Count} 条交互线，零未来函数交互至最新 Bar #{tr.EndIndex}):", isBull ? System.Drawing.Color.FromArgb(251, 191, 36) : System.Drawing.Color.FromArgb(16, 185, 129)));
+                for (int mi = 0; mi < tr.Macro1000BarLines.Count; mi++)
+                {
+                    var mtl = tr.Macro1000BarLines[mi];
+                    _logQueue.Enqueue(($"║    {mi + 1,2}. {mtl.Name}: Bar #{mtl.StartX}@{mtl.StartY:F2} -> 最新Bar #{mtl.EndX}@{mtl.EndY:F2} (斜率: {mtl.Slope:+0.0000;-0.0000;0.0000} | 标签: {mtl.TagText})", System.Drawing.Color.FromArgb(241, 245, 249)));
+                }
+            }
+
+            _logQueue.Enqueue(("╚══════════════════════════════════════════════════════════════════════════════════════════", themeColor));
+        }
+
         /// <summary>
         /// 🌟 全量输出点击趋势线的所有明细指标到日志栏 (包含起止拐点、多点共线验证、几何斜率、存活跨度、与当前最新价差及突破防线状态)
         /// </summary>
@@ -1639,11 +2019,11 @@ namespace Test.PercentageBar.WinForms.Forms
             bool isThreePoint = tl.IsThreePointConfirmed;
 
             string typeTitle = isThreePoint
-                ? (isRes ? $"🟣 3点+共线强阻力趋势线 (共{tl.TouchCount}点触碰，紫色核心线)" : $"🟣 3点+共线强支撑趋势线 (共{tl.TouchCount}点触碰，紫色核心线)")
+                ? (isRes ? $"🌸 3点+共线强阻力趋势线 (共{tl.TouchCount}点触碰，粉红核心线)" : $"🌸 3点+共线强支撑趋势线 (共{tl.TouchCount}点触碰，粉红核心线)")
                 : (isRes ? "🔴 高点阻力趋势线 (Upper Resistance Trendline)" : "🟢 低点支撑趋势线 (Lower Support Trendline)");
 
             var themeColor = isThreePoint
-                ? System.Drawing.Color.FromArgb(192, 132, 252) // Purple 400
+                ? System.Drawing.Color.FromArgb(244, 114, 182) // Pink 400 (#f472b6)
                 : (isRes ? System.Drawing.Color.FromArgb(244, 63, 94) : System.Drawing.Color.FromArgb(74, 222, 128));
 
             decimal slopePctPerBar = tl.StartPrice > 0 ? (tl.Slope / tl.StartPrice) * 100m : 0m;
@@ -1655,14 +2035,14 @@ namespace Test.PercentageBar.WinForms.Forms
             TimeSpan spanDuration = endTime - startTime;
 
             _logQueue.Enqueue(("\n╔══════════════════════════════════════════════════════════════════════════════════════════", themeColor));
-            _logQueue.Enqueue(($"║ 📈【自动高低点趋势线明细报告】 ★ 选中趋势线 {(isThreePoint ? "【🟣 3点+共线强趋势线】" : "")}", themeColor));
+            _logQueue.Enqueue(($"║ 📈【自动高低点趋势线明细报告】 ★ 选中趋势线 {(isThreePoint ? "【🌸 3点+共线强趋势线】" : "")}", themeColor));
             _logQueue.Enqueue(("╠──────────────────────────────────────────────────────────────────────────────────────────", System.Drawing.Color.FromArgb(71, 85, 105)));
             _logQueue.Enqueue(($"║ 🏷️ 趋势线形态: {typeTitle}", themeColor));
 
             if (isThreePoint && tl.TouchBarIndices != null && tl.TouchBarIndices.Length >= 3)
             {
                 string touchPointsStr = string.Join(", ", tl.TouchBarIndices.Select(idx => $"Bar #{idx}"));
-                _logQueue.Enqueue(($"║ 🟣【多点共线验证】: 获得 {tl.TouchCount} 个极值点高精度共线确认！(共线极值点: {touchPointsStr})", System.Drawing.Color.FromArgb(233, 213, 255)));
+                _logQueue.Enqueue(($"║ 🌸【多点共线验证】: 获得 {tl.TouchCount} 个极值点高精度共线确认！(共线极值点: {touchPointsStr})", System.Drawing.Color.FromArgb(244, 114, 182)));
             }
 
             _logQueue.Enqueue(($"║ 📍 起始极值点 (Point 1): Bar #{tl.StartBarIndex} | 价格: {tl.StartPrice:F2} USDT | 发生时间(UTC): {startTime:yyyy-MM-dd HH:mm:ss}", System.Drawing.Color.FromArgb(241, 245, 249)));
@@ -1687,10 +2067,74 @@ namespace Test.PercentageBar.WinForms.Forms
             }
 
             string statusDesc = isThreePoint
-                ? (tl.IsBroken ? $"⚡ 历史强共线结构 (在 Bar #{tl.BreakBarIndex} 被穿透并终结，作为核心紫色历史线保留)" : "✅ 活跃有效 (全程未被破坏击穿，🟣3点+永久保留)")
+                ? (tl.IsBroken ? $"⚡ 历史强共线结构 (在 Bar #{tl.BreakBarIndex} 被穿透并终结，作为核心粉红历史线保留)" : "✅ 活跃有效 (全程未被破坏击穿，🌸3点+永久保留)")
                 : "✅ 活跃有效 (区间内部与后续行进已通过严格防穿透校验，至少保留1000根)";
 
             _logQueue.Enqueue(($"║ 🛡️ 状态判定: {statusDesc}", tl.IsBroken ? System.Drawing.Color.FromArgb(250, 204, 21) : System.Drawing.Color.FromArgb(74, 222, 128)));
+            _logQueue.Enqueue(("╚══════════════════════════════════════════════════════════════════════════════════════════", themeColor));
+        }
+
+        /// <summary>
+        /// 🌟 全量输出点击选中的连续走势近期趋势线/1000根交互线明细指标到日志栏 (包含几何斜率、锚点、第3点触碰验证、当前价格差等)
+        /// </summary>
+        private void OutputConsecutiveRecentTrendLineDetails(ConsecutiveRecentTrendLine rtl, ConsecutiveTrendItem? parentTrend)
+        {
+            bool has3rd = rtl.HasThirdPointTouch;
+            var themeColor = has3rd
+                ? System.Drawing.Color.FromArgb(244, 114, 182) // Pink 400 (#f472b6)
+                : System.Drawing.Color.FromArgb(254, 240, 138); // Yellow 200 (#fef08a)
+
+            string roleIcon = rtl.LineType switch
+            {
+                ConsecutiveRecentTrendLineType.StreakSupport => "🟢[下轨支撑线]",
+                ConsecutiveRecentTrendLineType.StreakResistance => "🔴[上轨压制线]",
+                ConsecutiveRecentTrendLineType.StreakCenter => "⚡[动能中枢线]",
+                ConsecutiveRecentTrendLineType.PrecedingResistance => "🟡[前序阻力线]",
+                ConsecutiveRecentTrendLineType.PrecedingSupport => "🟠[前序支撑线]",
+                ConsecutiveRecentTrendLineType.PrecedingConvergence => "🟣[微型楔形线]",
+                ConsecutiveRecentTrendLineType.Interactive1000BarHigh => "🎯[1000根高点交互压制线]",
+                ConsecutiveRecentTrendLineType.Interactive1000BarLow => "🎯[1000根低点交互支撑线]",
+                ConsecutiveRecentTrendLineType.Projected1000BarTarget => "📐[1000根推演投射目标线]",
+                _ => "🔵[趋势结构线]"
+            };
+
+            var lastBar = _currentBars[_currentBars.Count - 1];
+            decimal currentLinePrice = rtl.StartY + rtl.Slope * (_currentBars.Count - 1 - rtl.StartX);
+            decimal diffFromCurrent = lastBar.Close - currentLinePrice;
+            decimal diffPctFromCurrent = currentLinePrice > 0 ? (diffFromCurrent / currentLinePrice) * 100m : 0m;
+
+            _logQueue.Enqueue(("\n╔══════════════════════════════════════════════════════════════════════════════════════════", themeColor));
+            _logQueue.Enqueue(($"║ 📈【选中多维趋势线明细报告】 ★ {roleIcon} {rtl.Name} {(has3rd ? "【🌸 第3点≤0.05%触碰验证·粉红显色】" : "")}", themeColor));
+            _logQueue.Enqueue(("╠──────────────────────────────────────────────────────────────────────────────────────────", System.Drawing.Color.FromArgb(71, 85, 105)));
+
+            if (parentTrend != null)
+            {
+                string trendDir = parentTrend.Type == ConsecutiveTrendType.Bullish ? "🔥 连续上涨" : "❄️ 连续下跌";
+                _logQueue.Enqueue(($"║ 🏷️ 所属走势形态: {trendDir} | 跨度: Bar #{parentTrend.StartIndex} -> #{parentTrend.EndIndex} (共 {parentTrend.BarCount} 根, 幅度: {parentTrend.PriceChangePct:+0.00;-0.00;0.00}%)", System.Drawing.Color.FromArgb(56, 189, 248)));
+            }
+
+            _logQueue.Enqueue(($"║ 📍 起点锚点 (Point 1): Bar #{rtl.StartX} | 价格: {rtl.StartY:F2} USDT", System.Drawing.Color.FromArgb(241, 245, 249)));
+            _logQueue.Enqueue(($"║ 📍 终点锚点 (Point 2): Bar #{rtl.EndX} | 价格: {rtl.EndY:F2} USDT", System.Drawing.Color.FromArgb(241, 245, 249)));
+
+            if (has3rd && rtl.ThirdPointBarIndex >= 0)
+            {
+                _logQueue.Enqueue(("╠──────────────────────────────────────────────────────────────────────────────────────────", System.Drawing.Color.FromArgb(71, 85, 105)));
+                _logQueue.Enqueue(($"║ 🌸【第3点共线触碰验证】: 成功捕捉到第 3 点高精度共线！", System.Drawing.Color.FromArgb(244, 114, 182)));
+                _logQueue.Enqueue(($"║    • 触碰点位: Bar #{rtl.ThirdPointBarIndex} | 实际价格: {rtl.ThirdPointPrice:F2} USDT", System.Drawing.Color.FromArgb(244, 114, 182)));
+                _logQueue.Enqueue(($"║    • 相对趋势线偏差: {rtl.ThirdPointDistancePct:+0.000%;-0.000%;0.000%} (严格满足 ≤ {(numTouchTolerance?.Value ?? 0.050m):F3}% 门限，已转为粉红色呈现)", System.Drawing.Color.FromArgb(244, 114, 182)));
+            }
+
+            _logQueue.Enqueue(("╠──────────────────────────────────────────────────────────────────────────────────────────", System.Drawing.Color.FromArgb(71, 85, 105)));
+            _logQueue.Enqueue(($"║ 📐 趋势线几何与推演参数:", System.Drawing.Color.FromArgb(56, 189, 248)));
+            _logQueue.Enqueue(($"║    • 跨度跨越: {rtl.EndX - rtl.StartX} 根 Bar | 射线延伸至: Bar #{rtl.RayEndX} (推演价: {rtl.RayEndY:F2} USDT)", System.Drawing.Color.FromArgb(241, 245, 249)));
+            _logQueue.Enqueue(($"║    • 斜率 (Slope): {rtl.Slope:+0.0000;-0.0000;0.0000} USDT/Bar", themeColor));
+            _logQueue.Enqueue(($"║    • 标签信息: {(string.IsNullOrEmpty(rtl.TagText) ? "无" : rtl.TagText)}", System.Drawing.Color.FromArgb(250, 204, 21)));
+
+            _logQueue.Enqueue(("╠──────────────────────────────────────────────────────────────────────────────────────────", System.Drawing.Color.FromArgb(71, 85, 105)));
+            _logQueue.Enqueue(($"║ 🎯 最新价格与防线映射:", System.Drawing.Color.FromArgb(250, 204, 21)));
+            _logQueue.Enqueue(($"║    • 最新 Bar #{lastBar.BarIndex} 处趋势线映射价: {currentLinePrice:F2} USDT", System.Drawing.Color.FromArgb(241, 245, 249)));
+            _logQueue.Enqueue(($"║    • 最新实际收盘价 ({lastBar.Close:F2}) 相对趋势线位差: {diffFromCurrent:+0.00;-0.00;0.00} USDT ({diffPctFromCurrent:+0.00%;-0.00%;0.00%})", themeColor));
+
             _logQueue.Enqueue(("╚══════════════════════════════════════════════════════════════════════════════════════════", themeColor));
         }
 
