@@ -52,13 +52,27 @@ namespace Test.ChannelPlayback.WinForms.Engine
         public bool ShowVPatternLines { get; set; } = true;
         public VPatternDetector VPatternDetector => _vPatternDetector;
 
-        // 连续上涨 / 连续下跌动能形态识别配置 (≥5根且≥2.5%)
+        // 连续上涨 / 连续下跌动能形态识别配置 (默认 0.0% 门槛，只要满足连续 5 根同向即刻确立)
         private readonly ConsecutiveTrendDetector _consecutiveTrendDetector = new();
         public bool EnableConsecutiveTrend { get; set; } = true;
         public int ConsecutiveTrendMinBars { get; set; } = 5;
-        public decimal ConsecutiveTrendMinPct { get; set; } = 2.5m;
+        public decimal ConsecutiveTrendMinPct { get; set; } = 0.0m;
         public bool ShowConsecutiveChannel { get; set; } = true; // 连续走势绿色 0.8f 平行通道
         public ConsecutiveTrendDetector ConsecutiveTrendDetector => _consecutiveTrendDetector;
+
+        // 连续 5 根 K 线 3 分钟观察期反转做单驱动引擎
+        private readonly ReversalOrderEngine _reversalOrderEngine = new();
+        public bool EnableReversalOrder { get; set; } = true;
+        public int ReversalObservationMinutes { get; set; } = 3;
+        public decimal ReversalPLong { get; set; } = CandlestickPatternClassifier.DefaultPLong;
+        public decimal ReversalPMedium { get; set; } = CandlestickPatternClassifier.DefaultPMedium;
+        public decimal ReversalPShort { get; set; } = CandlestickPatternClassifier.DefaultPShort;
+        public bool ShowReversalYellowLines { get; set; } = true;
+        public ReversalOrderEngine ReversalOrderEngine => _reversalOrderEngine;
+
+        // 底层 1m 真实 K 线缓存 (用于反转做单 3m 观察期双模自适应回退聚合)
+        private readonly List<RawKline> _raw1mKlines = new();
+        public IReadOnlyList<RawKline> Raw1mKlines => _raw1mKlines;
 
         // 状态读取
         public PlaybackState State => _state;
@@ -76,6 +90,9 @@ namespace Test.ChannelPlayback.WinForms.Engine
         public event Action<RetainedChannel, int, decimal, bool>? OnExtremeConfirmed;
         public event Action<VPatternItem, int>? OnVPatternDetected;
         public event Action<ConsecutiveTrendItem, int>? OnConsecutiveTrendDetected;
+        public event Action<ConsecutiveTrendItem, string>? OnReversalStrategyActivated;
+        public event Action<ReversalOrderSignal, string>? OnReversalOrderSignal;
+        public event Action<ReversalObservationCycle, string>? OnObservationCycleUpdated;
 
         public KlinePlaybackEngine()
         {
@@ -114,6 +131,22 @@ namespace Test.ChannelPlayback.WinForms.Engine
                 string icon = t.Type == ConsecutiveTrendType.Bullish ? "🔥 连续上涨形态" : "❄️ 连续下跌形态";
                 OnLogMessage?.Invoke($"[连涨连跌] ⚡ 在 K线 #{idx} 确认 {icon}！跨度: {t.BarCount} 根 (#{t.StartIndex}..#{t.EndIndex}), 累计涨跌幅: {sign}{t.PriceChangePct:F2}% (基准价:{t.StartPrice:F2} -> 现价:{t.EndPrice:F2})");
             };
+
+            _reversalOrderEngine.OnStrategyActivated += (trend, desc) =>
+            {
+                OnReversalStrategyActivated?.Invoke(trend, desc);
+            };
+
+            _reversalOrderEngine.OnReversalOrderSignal += (sig, desc) =>
+            {
+                OnReversalOrderSignal?.Invoke(sig, desc);
+                OnLogMessage?.Invoke(desc);
+            };
+
+            _reversalOrderEngine.OnObservationCycleUpdated += (cyc, desc) =>
+            {
+                OnObservationCycleUpdated?.Invoke(cyc, desc);
+            };
         }
 
         /// <summary>
@@ -125,10 +158,12 @@ namespace Test.ChannelPlayback.WinForms.Engine
         {
             Stop();
             _allKlines.Clear();
+            _raw1mKlines.Clear();
             _currentIndex = 0;
             _retentionTracker.Reset();
             _vPatternDetector.Reset();
             _consecutiveTrendDetector.Reset();
+            _reversalOrderEngine.Reset();
 
             if (startDate.Date > endDate.Date)
             {
@@ -178,6 +213,25 @@ namespace Test.ChannelPlayback.WinForms.Engine
 
                     _allKlines.AddRange(directTargetList);
                     OnLogMessage?.Invoke($"[真实数据] 成功直接读取 {coin} {intervalStr} 真实 Parquet 文件，共加载 {_allKlines.Count:N0} 根真实 K 线。");
+
+                    // 为反转做单小周期推演并行检索 1m 真实 K 线 (若本地存在)
+                    try
+                    {
+                        using var reader1m = new ParquetDataReader();
+                        for (DateTime d = startDate.Date; d <= endDate.Date; d = d.AddDays(1))
+                        {
+                            string p1mPath = Config.GetKlineFilePath(coin, KlineInterval.OneMinute, d, ".parquet");
+                            if (File.Exists(p1mPath))
+                            {
+                                await reader1m.LoadKlineDayAsync(coin, d, KlineInterval.OneMinute, ct).ConfigureAwait(false);
+                            }
+                        }
+                        while (reader1m.TryDequeueKline(out var kline1m))
+                        {
+                            _raw1mKlines.Add(kline1m);
+                        }
+                    }
+                    catch { }
                 }
                 else
                 {
@@ -204,6 +258,8 @@ namespace Test.ChannelPlayback.WinForms.Engine
                         OnDataLoaded?.Invoke(0);
                         return 0;
                     }
+
+                    _raw1mKlines.AddRange(raw1mList);
 
                     if (interval == KlineInterval.OneMinute)
                     {
@@ -514,6 +570,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
             _retentionTracker.Reset();
             _vPatternDetector.Reset();
             _consecutiveTrendDetector.Reset();
+            _reversalOrderEngine.Reset();
             if (_allKlines.Count >= LeftLength)
             {
                 _currentIndex = LeftLength - 1;
@@ -539,6 +596,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
                 _retentionTracker.SyncTo(clamped);
                 _vPatternDetector.SyncTo(clamped);
                 _consecutiveTrendDetector.SyncTo(clamped);
+                _reversalOrderEngine.SyncTo(clamped, _allKlines);
                 TriggerCurrentFrame();
             }
         }
@@ -596,11 +654,42 @@ namespace Test.ChannelPlayback.WinForms.Engine
             _vPatternDetector.MinPriceDiffPct = VPatternMinPriceDiffPct;
             _vPatternDetector.ProcessCurrentSequence(_allKlines, _currentIndex);
 
-            // 驱动连续上涨 / 连续下跌形态识别 (≥5根且≥2.5%)
+            // 驱动连续上涨 / 连续下跌形态识别 (默认 0.0% 门槛，连续 5 根同向即刻识别)
             _consecutiveTrendDetector.EnableDetection = EnableConsecutiveTrend;
             _consecutiveTrendDetector.MinBars = ConsecutiveTrendMinBars;
             _consecutiveTrendDetector.MinPriceChangePct = ConsecutiveTrendMinPct;
             _consecutiveTrendDetector.ProcessCurrentSequence(_allKlines, _currentIndex);
+
+            // 驱动连续 5 根反转做单引擎配置同步
+            _reversalOrderEngine.EnableReversalOrder = EnableReversalOrder;
+            _reversalOrderEngine.ObservationMinutes = ReversalObservationMinutes;
+            _reversalOrderEngine.PLong = ReversalPLong;
+            _reversalOrderEngine.PMedium = ReversalPMedium;
+            _reversalOrderEngine.PShort = ReversalPShort;
+
+            // 驱动反转做单策略：在连续同向第 5 根收盘时刻激活并实时推演观察期
+            if (EnableReversalOrder && _consecutiveTrendDetector.DetectedTrends.Count > 0)
+            {
+                var trends = _consecutiveTrendDetector.DetectedTrends;
+                for (int i = 0; i < trends.Count; i++)
+                {
+                    var tr = trends[i];
+                    int fifthBarIndex = tr.StartIndex + 4;
+                    if (_currentIndex >= fifthBarIndex)
+                    {
+                        // 1. 尝试激活策略 (在第 5 根收盘时刻触发 OnStrategyActivated 与高亮日志)
+                        _reversalOrderEngine.TryActivateStrategy(tr, _allKlines, _currentIndex, out _);
+
+                        // 2. 推进观察期推演与形态识别 (优先使用已缓存 Tick，若无则自适应回退到 1m 真实 K 线)
+                        _reversalOrderEngine.EvaluateObservationCycles(
+                            tr,
+                            _allKlines,
+                            ticks: null,
+                            _currentIndex,
+                            fallback1mKlines: _raw1mKlines.Count > 0 ? _raw1mKlines : _allKlines);
+                    }
+                }
+            }
 
             OnBarReplayed?.Invoke(currentKline, _currentIndex, channel);
         }

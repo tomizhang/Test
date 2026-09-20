@@ -18,7 +18,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
         private readonly List<ConsecutiveTrendItem> _detectedTrends = new();
         private bool _enableDetection = true;
         private int _minBars = 5;
-        private decimal _minPriceChangePct = 2.5m;
+        private decimal _minPriceChangePct = 0.0m;
 
         /// <summary>
         /// 当前已识别并确认的所有连续涨跌波段列表
@@ -171,8 +171,8 @@ namespace Test.ChannelPlayback.WinForms.Engine
                         : 0m;
 
                     decimal absChange = Math.Abs(changePct);
-                    // 一旦达到最小根数门槛 (默认 5 根) 且累计幅度达到门槛 (默认 2.5%)，立即在当根确立！
-                    if (countSoFar >= minBars && absChange >= minChangePct && confirmedAt < 0)
+                    // 一旦达到最小根数门槛 (默认 5 根)，立即在第 5 根当根确立！
+                    if (countSoFar >= minBars && (minChangePct <= 0m || absChange >= minChangePct) && confirmedAt < 0)
                     {
                         confirmedAt = j;
                     }
@@ -187,7 +187,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
                     ? ((finalEndPrice - startPrice) / startPrice) * 100m
                     : 0m;
 
-                if (confirmedAt >= 0 && totalCount >= minBars && Math.Abs(finalChangePct) >= minChangePct)
+                if (confirmedAt >= 0 && totalCount >= minBars && (minChangePct <= 0m || Math.Abs(finalChangePct) >= minChangePct))
                 {
                     // 若当前连涨/连跌延续到了最新推进的 K 线 (maxIndex)，则处于活跃延伸状态
                     bool isActive = streakEnd == maxIndex;
@@ -296,10 +296,10 @@ namespace Test.ChannelPlayback.WinForms.Engine
         {
             if (index < 0 || index >= klines.Count) return false;
             var curr = klines[index];
-            if (index == 0) return curr.Close > curr.Open;
+            if (index == 0) return curr.Close >= curr.Open;
             var prev = klines[index - 1];
 
-            return curr.Close > prev.Close || (curr.Close > curr.Open && curr.Close >= prev.Close);
+            return curr.Close > prev.Close || curr.Close >= curr.Open;
         }
 
         /// <summary>
@@ -309,10 +309,10 @@ namespace Test.ChannelPlayback.WinForms.Engine
         {
             if (index < 0 || index >= klines.Count) return false;
             var curr = klines[index];
-            if (index == 0) return curr.Close < curr.Open;
+            if (index == 0) return curr.Close <= curr.Open;
             var prev = klines[index - 1];
 
-            return curr.Close < prev.Close || (curr.Close < curr.Open && curr.Close <= prev.Close);
+            return curr.Close < prev.Close || curr.Close <= curr.Open;
         }
     }
 }

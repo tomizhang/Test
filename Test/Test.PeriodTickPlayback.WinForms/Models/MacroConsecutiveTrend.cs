@@ -37,6 +37,7 @@ namespace Test.PeriodTickPlayback.WinForms.Models
         public decimal LowerIntercept { get; set; }
         public bool HasChannel { get; set; }
         public int ChannelBaseBars { get; set; }
+        public decimal ChannelHeight => Math.Abs(UpperIntercept - LowerIntercept);
         #endregion
 
         public int BarCount => EndIndex - StartIndex + 1;

@@ -109,7 +109,13 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
         private int? _selectedBarAnchor = null;
         private int? _selectedBarStartIndex = null;
         private int? _selectedBarEndIndex = null;
+        private MacroConsecutiveTrendItem? _selectedConsecutiveTrend = null;
         private Point _macroMouseDownPoint;
+
+        // 微观 Tick 鼠标悬停交互指示器 (十字准星 + 吸附标记 + 悬浮看板)
+        private readonly TickHoverIndicator _tickHoverIndicator = new();
+        private string _lastDefaultTickBadgeText = "当前无活动周期";
+        private Color _lastDefaultTickBadgeColor = Color.FromArgb(148, 163, 184);
 
         // 右下侧监控看板与流水
         private TabControl tabControlRight = null!;
@@ -731,6 +737,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             });
 
             formsPlotTick = new FormsPlot { Dock = DockStyle.Fill, BackColor = Color.FromArgb(15, 23, 42) };
+            formsPlotTick.MouseMove += OnFormsPlotTickMouseMove;
+            formsPlotTick.MouseLeave += OnFormsPlotTickMouseLeave;
             pnlBottomLeft.Controls.Add(formsPlotTick);
             pnlBottomLeft.Controls.Add(pnlTickHeader);
             splitBottom.Panel1.Controls.Add(pnlBottomLeft);
@@ -1310,6 +1318,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
 
             lblTickTitle.Text = customTickTitle;
             lblTickBadge.Text = $"周期 #{_engine.CurrentBucketIndex + 1}/{_engine.TotalBuckets} | {curBucket.StartTime:HH:mm}~{curBucket.EndTime:HH:mm} (当前 {cursor:N0}/{curBucket.Ticks.Count:N0} Ticks)";
+            lblTickBadge.ForeColor = Color.FromArgb(148, 163, 184);
             lblTickBadge.Left = (btnToggleTickChartType != null ? btnToggleTickChartType.Right : (numTickCustomMinutes.Visible ? numTickCustomMinutes.Right : cboTickPeriod.Right)) + 10;
 
             var stats = TickLongShortStats.Calculate(curBucket.Ticks, cursor);
@@ -1332,6 +1341,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             }
             lblTickRatioBadge.Visible = _settings.ShowTickRatio;
             lblVolRatioBadge.Visible = _settings.ShowTickRatio;
+            _lastDefaultTickBadgeText = lblTickBadge.Text;
+            _lastDefaultTickBadgeColor = lblTickBadge.ForeColor;
 
             TickPlotHelper.BuildTickPlot(
                 formsPlotTick.Plot,
@@ -1349,7 +1360,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 showConsecutiveTrend: _settings.ShowConsecutiveTrend,
                 consecutiveMinBars: _settings.ConsecutiveMinBars,
                 consecutiveMinPct: _settings.ConsecutiveMinPct,
-                showRatio: _settings.ShowTickRatio);
+                showRatio: _settings.ShowTickRatio,
+                hoverIndicator: _tickHoverIndicator);
 
             formsPlotTick.Refresh();
 
@@ -1664,7 +1676,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 return;
             }
 
-            // 否则判定为点击事件，执行 K 线点击查看与 Shift 连续多选
+            // 否则判定为点击事件，执行 通道点击 / K 线点击查看与 Shift 连续多选
             int completedCount = _engine.CompletedMacroBars.Count;
             bool hasForming = _engine.CurrentFormingBar.HasTicks;
             int totalDisplayCount = completedCount + (hasForming ? 1 : 0);
@@ -1674,6 +1686,42 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             try
             {
                 var mouseCoord = formsPlotMacro.Plot.GetCoordinates(new ScottPlot.Pixel(e.X, e.Y));
+
+                // 1. 优先进行平行通道命中检测 (Hit-Test)
+                if (chkConsecutiveTrend.Checked && totalDisplayCount >= (int)numConsecutiveBars.Value)
+                {
+                    var completedBars = _engine.GetCompletedMacroBarsSnapshot();
+                    var formingBar = _engine.CurrentFormingBar;
+                    var trends = MacroConsecutiveTrendDetector.ScanTrends(
+                        completedBars,
+                        formingBar,
+                        (int)numConsecutiveBars.Value,
+                        numConsecutivePct.Value);
+
+                    var hitChannel = MacroPlotHelper.FindHitChannel(
+                        formsPlotMacro.Plot,
+                        new ScottPlot.Pixel(e.X, e.Y),
+                        mouseCoord,
+                        trends,
+                        totalDisplayCount,
+                        _settings.ChannelExtensionBars);
+
+                    if (hitChannel != null)
+                    {
+                        _selectedConsecutiveTrend = hitChannel;
+                        _selectedBarAnchor = hitChannel.StartIndex;
+                        _selectedBarStartIndex = hitChannel.StartIndex;
+                        _selectedBarEndIndex = hitChannel.EndIndex;
+
+                        DisplaySelectedBarsTicks();
+                        tabControlRight.SelectedTab = tabLogs;
+                        _macroPlotNeedsRefresh = true;
+                        return;
+                    }
+                }
+
+                // 2. 未命中通道，重置通道选中状态，执行普通单根 K 线 / Shift 连续多选
+                _selectedConsecutiveTrend = null;
                 int targetIndex = (int)Math.Round(mouseCoord.X);
 
                 if (targetIndex >= 0 && targetIndex < totalDisplayCount)
@@ -1718,6 +1766,33 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 }
 
                 var mouseCoord = formsPlotMacro.Plot.GetCoordinates(new ScottPlot.Pixel(e.X, e.Y));
+
+                // 优先检测是否悬停在连续涨跌平行通道线上
+                if (chkConsecutiveTrend.Checked && totalDisplayCount >= (int)numConsecutiveBars.Value)
+                {
+                    var completedBars = _engine.GetCompletedMacroBarsSnapshot();
+                    var formingBar = _engine.CurrentFormingBar;
+                    var trends = MacroConsecutiveTrendDetector.ScanTrends(
+                        completedBars,
+                        formingBar,
+                        (int)numConsecutiveBars.Value,
+                        numConsecutivePct.Value);
+
+                    var hitChannel = MacroPlotHelper.FindHitChannel(
+                        formsPlotMacro.Plot,
+                        new ScottPlot.Pixel(e.X, e.Y),
+                        mouseCoord,
+                        trends,
+                        totalDisplayCount,
+                        _settings.ChannelExtensionBars);
+
+                    if (hitChannel != null)
+                    {
+                        formsPlotMacro.Cursor = Cursors.Hand;
+                        return;
+                    }
+                }
+
                 int targetIndex = (int)Math.Round(mouseCoord.X);
 
                 if (targetIndex >= 0 && targetIndex < totalDisplayCount)
@@ -1732,6 +1807,48 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             catch
             {
                 formsPlotMacro.Cursor = Cursors.Default;
+            }
+        }
+
+        private void OnFormsPlotTickMouseMove(object? sender, MouseEventArgs e)
+        {
+            try
+            {
+                if (!_tickHoverIndicator.IsAttached) return;
+
+                var mouseCoord = formsPlotTick.Plot.GetCoordinates(new ScottPlot.Pixel(e.X, e.Y));
+                string chineseFont = TickPlotHelper.GetInstalledChineseFont();
+
+                if (_tickHoverIndicator.UpdateHover(
+                    mouseCoord.X,
+                    mouseCoord.Y,
+                    chineseFont,
+                    out string headerBadgeText,
+                    out Color badgeColor))
+                {
+                    lblTickBadge.Text = headerBadgeText;
+                    lblTickBadge.ForeColor = badgeColor;
+                    formsPlotTick.Refresh();
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private void OnFormsPlotTickMouseLeave(object? sender, EventArgs e)
+        {
+            try
+            {
+                if (!_tickHoverIndicator.IsAttached) return;
+
+                _tickHoverIndicator.Clear();
+                lblTickBadge.Text = _lastDefaultTickBadgeText;
+                lblTickBadge.ForeColor = _lastDefaultTickBadgeColor;
+                formsPlotTick.Refresh();
+            }
+            catch
+            {
             }
         }
 
@@ -1787,23 +1904,105 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             string periodLabel = GetSelectedTickPeriodTitle();
             var displayType = (MacroChartDisplayType)Math.Clamp(_settings.TickChartTypeIndex, 0, 1);
 
-            string customTitle = span.HasValue
-                ? (barCount == 1
-                    ? $"微观周期走势: Bar #{sIdx} [{periodLabel}] - 共 {aggregatedTicks.Count:N0} Ticks"
-                    : $"微观周期走势: Bar #{sIdx}~#{eIdx} (共 {barCount} 根) [{periodLabel}] - 共 {aggregatedTicks.Count:N0} Ticks")
-                : (barCount == 1
-                    ? $"微观 Tick 走势: Bar #{sIdx} ({rangeStart:MM-dd HH:mm} ~ {rangeEnd:HH:mm}) - 共 {aggregatedTicks.Count:N0} Ticks"
-                    : $"微观 Tick 走势: Bar #{sIdx} ~ #{eIdx} (共 {barCount} 根K线, {rangeStart:MM-dd HH:mm} ~ {rangeEnd:HH:mm}) - 共 {aggregatedTicks.Count:N0} Ticks");
+            // 检测选中的 K 线集合中是否存在大周期平行通道
+            var relevantChannels = new List<MacroConsecutiveTrendItem>();
+            if (_selectedConsecutiveTrend != null)
+            {
+                relevantChannels.Add(_selectedConsecutiveTrend);
+            }
+            else if (_settings.ShowConsecutiveTrend)
+            {
+                var completedBars = _engine.GetCompletedMacroBarsSnapshot();
+                var formingBar = _engine.CurrentFormingBar;
+                var trends = MacroConsecutiveTrendDetector.ScanTrends(
+                    completedBars,
+                    formingBar,
+                    _settings.ConsecutiveMinBars,
+                    _settings.ConsecutiveMinPct);
 
-            lblTickTitle.Text = span.HasValue
-                ? (barCount == 1
-                    ? $"已选中 Bar #{sIdx} [{periodLabel}]"
-                    : $"已选中 Bar #{sIdx}~#{eIdx} [{periodLabel}]")
-                : (barCount == 1
-                    ? $"已选中 Bar #{sIdx} 内部微观 Tick 走势"
-                    : $"已选中 Bar #{sIdx} ~ #{eIdx} (共 {barCount} 根K线) 聚合微观 Tick 走势");
+                foreach (var tr in trends)
+                {
+                    if (!tr.HasChannel) continue;
+                    if (Math.Max(sIdx, tr.StartIndex) <= Math.Min(eIdx, tr.EndIndex))
+                    {
+                        relevantChannels.Add(tr);
+                    }
+                }
+            }
 
-            lblTickBadge.Text = $"时间范围: {rangeStart:MM-dd HH:mm} ~ {rangeEnd:HH:mm} | 共 {aggregatedTicks.Count:N0} 笔 Tick";
+            bool hasChannel = relevantChannels.Count > 0;
+            var primaryTrend = relevantChannels.FirstOrDefault();
+            bool isExactChannel = primaryTrend != null &&
+                                  primaryTrend.StartIndex == sIdx &&
+                                  primaryTrend.EndIndex == eIdx;
+            string dirText = primaryTrend != null ? (primaryTrend.IsBullish ? "连涨" : "连跌") : "";
+
+            string customTitle;
+            if (isExactChannel)
+            {
+                customTitle = span.HasValue
+                    ? $"⭐ [已选中{dirText}平行通道] Bar #{sIdx}~#{eIdx} (共 {barCount} 根, 拟合基准 {primaryTrend!.ChannelBaseBars} 根) [{periodLabel}] - 共 {aggregatedTicks.Count:N0} Ticks"
+                    : $"⭐ [已选中{dirText}平行通道] Bar #{sIdx}~#{eIdx} (共 {barCount} 根K线, 拟合基准 {primaryTrend!.ChannelBaseBars} 根, {rangeStart:MM-dd HH:mm} ~ {rangeEnd:HH:mm}) - 共 {aggregatedTicks.Count:N0} Ticks";
+            }
+            else if (hasChannel)
+            {
+                customTitle = span.HasValue
+                    ? (barCount == 1
+                        ? $"⭐ [通道内走势(Bar #{sIdx})] 大周期{dirText}通道 #{primaryTrend!.StartIndex}~#{primaryTrend!.EndIndex} [{periodLabel}] - 共 {aggregatedTicks.Count:N0} Ticks"
+                        : $"⭐ [选区包含通道走势] Bar #{sIdx}~#{eIdx} (含{dirText}通道 #{primaryTrend!.StartIndex}~#{primaryTrend!.EndIndex}) [{periodLabel}] - 共 {aggregatedTicks.Count:N0} Ticks")
+                    : (barCount == 1
+                        ? $"⭐ [通道内微观 Tick 走势: Bar #{sIdx}] 大周期{dirText}通道 #{primaryTrend!.StartIndex}~#{primaryTrend!.EndIndex} ({rangeStart:MM-dd HH:mm} ~ {rangeEnd:HH:mm}) - 共 {aggregatedTicks.Count:N0} Ticks"
+                        : $"⭐ [微观 Tick 走势: Bar #{sIdx}~#{eIdx}] 含大周期{dirText}通道 #{primaryTrend!.StartIndex}~#{primaryTrend!.EndIndex} ({rangeStart:MM-dd HH:mm} ~ {rangeEnd:HH:mm}) - 共 {aggregatedTicks.Count:N0} Ticks");
+            }
+            else
+            {
+                customTitle = span.HasValue
+                    ? (barCount == 1
+                        ? $"微观周期走势: Bar #{sIdx} [{periodLabel}] - 共 {aggregatedTicks.Count:N0} Ticks"
+                        : $"微观周期走势: Bar #{sIdx}~#{eIdx} (共 {barCount} 根) [{periodLabel}] - 共 {aggregatedTicks.Count:N0} Ticks")
+                    : (barCount == 1
+                        ? $"微观 Tick 走势: Bar #{sIdx} ({rangeStart:MM-dd HH:mm} ~ {rangeEnd:HH:mm}) - 共 {aggregatedTicks.Count:N0} Ticks"
+                        : $"微观 Tick 走势: Bar #{sIdx} ~ #{eIdx} (共 {barCount} 根K线, {rangeStart:MM-dd HH:mm} ~ {rangeEnd:HH:mm}) - 共 {aggregatedTicks.Count:N0} Ticks");
+            }
+
+            lblTickTitle.Text = isExactChannel
+                ? (span.HasValue
+                    ? $"⭐ [已选中{dirText}平行通道] Bar #{sIdx}~#{eIdx} [{periodLabel}]"
+                    : $"⭐ [已选中{dirText}平行通道] Bar #{sIdx} ~ #{eIdx} (共 {barCount} 根K线) 内部微观 Tick 走势")
+                : (hasChannel
+                    ? (span.HasValue
+                        ? (barCount == 1
+                            ? $"⭐ [通道内 Bar #{sIdx}] {dirText}通道 #{primaryTrend!.StartIndex}~#{primaryTrend!.EndIndex} [{periodLabel}]"
+                            : $"⭐ [已选中 Bar #{sIdx}~#{eIdx} (含通道)] [{periodLabel}]")
+                        : (barCount == 1
+                            ? $"⭐ [通道内 Bar #{sIdx}] 大周期{dirText}通道 #{primaryTrend!.StartIndex}~#{primaryTrend!.EndIndex} 内部微观 Tick 走势"
+                            : $"⭐ [已选中 Bar #{sIdx} ~ #{eIdx}] 包含大周期{dirText}通道 #{primaryTrend!.StartIndex}~#{primaryTrend!.EndIndex} 聚合微观 Tick 走势"))
+                    : (span.HasValue
+                        ? (barCount == 1
+                            ? $"已选中 Bar #{sIdx} [{periodLabel}]"
+                            : $"已选中 Bar #{sIdx}~#{eIdx} [{periodLabel}]")
+                        : (barCount == 1
+                            ? $"已选中 Bar #{sIdx} 内部微观 Tick 走势"
+                            : $"已选中 Bar #{sIdx} ~ #{eIdx} (共 {barCount} 根K线) 聚合微观 Tick 走势")));
+
+            if (isExactChannel)
+            {
+                var tr = primaryTrend!;
+                lblTickBadge.Text = $"⭐通道: {dirText} {tr.BarCount}根 ({tr.PriceChangePct:+0.00;-0.00;0.00}%) | 斜率 k={tr.SlopeK:+0.0000;-0.0000} | 高度 {tr.ChannelHeight:F2} USDT | {rangeStart:MM-dd HH:mm}~{rangeEnd:HH:mm} ({aggregatedTicks.Count:N0} Ticks)";
+                lblTickBadge.ForeColor = Color.FromArgb(251, 191, 36);
+            }
+            else if (hasChannel)
+            {
+                var tr = primaryTrend!;
+                string barPart = barCount == 1 ? $"Bar #{sIdx}" : $"Bar #{sIdx}~#{eIdx}";
+                lblTickBadge.Text = $"⭐通道内({barPart}): {dirText} #{tr.StartIndex}~#{tr.EndIndex} ({tr.BarCount}根, {tr.PriceChangePct:+0.00;-0.00;0.00}%) | 斜率 k={tr.SlopeK:+0.0000;-0.0000} | 高度 {tr.ChannelHeight:F2} USDT | {rangeStart:MM-dd HH:mm}~{rangeEnd:HH:mm} ({aggregatedTicks.Count:N0} Ticks)";
+                lblTickBadge.ForeColor = Color.FromArgb(251, 191, 36);
+            }
+            else
+            {
+                lblTickBadge.Text = $"时间范围: {rangeStart:MM-dd HH:mm} ~ {rangeEnd:HH:mm} | 共 {aggregatedTicks.Count:N0} 笔 Tick";
+                lblTickBadge.ForeColor = Color.FromArgb(148, 163, 184);
+            }
             lblTickBadge.Left = (btnToggleTickChartType != null ? btnToggleTickChartType.Right : (numTickCustomMinutes.Visible ? numTickCustomMinutes.Right : cboTickPeriod.Right)) + 10;
             btnResumeLiveFollow.Visible = true;
 
@@ -1831,12 +2030,19 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             lblVolRatioBadge.Visible = _settings.ShowTickRatio;
 
             // 更新右侧监控卡片
-            lblCardPeriod.Text = barCount == 1 ? $"Bar #{sIdx}" : $"Bar #{sIdx}~#{eIdx}";
+            lblCardPeriod.Text = isExactChannel
+                ? $"⭐通道 #{sIdx}~#{eIdx}"
+                : (hasChannel
+                    ? (barCount == 1 ? $"⭐通道内 #{sIdx}" : $"⭐含通道 #{sIdx}~#{eIdx}")
+                    : (barCount == 1 ? $"Bar #{sIdx}" : $"Bar #{sIdx}~#{eIdx}"));
             lblCardTickProgress.Text = $"{stats.TotalTicks:N0} Ticks (选中)";
             lblCardTickRatio.Text = $"{tickRatioStr} ({stats.BuyTickPct:F1}%:{stats.SellTickPct:F1}%)";
             lblCardTickRatio.ForeColor = lblTickRatioBadge.ForeColor;
             lblCardVolRatio.Text = $"{volRatioStr} ({stats.BuyVolumePct:F1}%:{stats.SellVolumePct:F1}%)";
             lblCardVolRatio.ForeColor = lblVolRatioBadge.ForeColor;
+
+            _lastDefaultTickBadgeText = lblTickBadge.Text;
+            _lastDefaultTickBadgeColor = lblTickBadge.ForeColor;
 
             // 绘制微观走势 (蜡烛图或折线图，含副图与 HUD)
             TickPlotHelper.BuildTickPlot(
@@ -1856,7 +2062,13 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 showConsecutiveTrend: _settings.ShowConsecutiveTrend,
                 consecutiveMinBars: _settings.ConsecutiveMinBars,
                 consecutiveMinPct: _settings.ConsecutiveMinPct,
-                showRatio: _settings.ShowTickRatio);
+                showRatio: _settings.ShowTickRatio,
+                selectedTrend: primaryTrend,
+                activeChannels: relevantChannels,
+                selectedBarStartIndex: sIdx,
+                selectedBarEndIndex: eIdx,
+                macroBarTimes: _engine.Buckets.Select(b => (b.StartTime, b.EndTime)).ToList(),
+                hoverIndicator: _tickHoverIndicator);
 
             formsPlotTick.Refresh();
 
@@ -1889,12 +2101,79 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
 
             dgvRecentTicks.ResumeLayout();
 
-            AppendLog($"[K线选中] 已切换微观视窗至 Bar #{sIdx}{(barCount > 1 ? $" ~ #{eIdx} (共 {barCount} 根)" : "")} [{periodLabel}]，共 {aggregatedTicks.Count:N0} 笔 Tick | 🎯Tick多空比: {tickRatioStr} (买{stats.BuyTickPct:F1}%:卖{stats.SellTickPct:F1}%) | 📊成交量比: {volRatioStr} (买{stats.BuyVolumePct:F1}%:卖{stats.SellVolumePct:F1}%, 净买量{TickLongShortStats.FormatVolume(stats.NetVolume)})", Color.FromArgb(56, 189, 248));
+            if (hasChannel)
+            {
+                foreach (var tr in relevantChannels)
+                {
+                    OutputConsecutiveTrendDetails(tr, stats, aggregatedTicks.Count, rangeStart, rangeEnd);
+                }
+            }
+            else
+            {
+                AppendLog($"[K线选中] 已切换微观视窗至 Bar #{sIdx}{(barCount > 1 ? $" ~ #{eIdx} (共 {barCount} 根)" : "")} [{periodLabel}]，共 {aggregatedTicks.Count:N0} 笔 Tick | 🎯Tick多空比: {tickRatioStr} (买{stats.BuyTickPct:F1}%:卖{stats.SellTickPct:F1}%) | 📊成交量比: {volRatioStr} (买{stats.BuyVolumePct:F1}%:卖{stats.SellVolumePct:F1}%, 净买量{TickLongShortStats.FormatVolume(stats.NetVolume)})", Color.FromArgb(56, 189, 248));
+            }
+        }
+
+        private void OutputConsecutiveTrendDetails(
+            MacroConsecutiveTrendItem tr,
+            TickLongShortStats? tickStats = null,
+            int tickCount = 0,
+            DateTime? rangeStart = null,
+            DateTime? rangeEnd = null)
+        {
+            bool isBull = tr.IsBullish;
+            Color themeColor = isBull ? Color.FromArgb(74, 222, 128) : Color.FromArgb(248, 113, 113);
+            string dirName = isBull ? "▲ 连续上涨波段 (多头通道)" : "▼ 连续下跌波段 (空头通道)";
+
+            DateTime tStart = rangeStart ?? (tr.StartIndex < _engine.Buckets.Count ? _engine.Buckets[tr.StartIndex].StartTime : DateTime.MinValue);
+            DateTime tEnd = rangeEnd ?? (tr.EndIndex < _engine.Buckets.Count ? _engine.Buckets[tr.EndIndex].EndTime : DateTime.MinValue);
+
+            string timeRangeStr = tStart != DateTime.MinValue && tEnd != DateTime.MinValue
+                ? $"{tStart:yyyy-MM-dd HH:mm} ~ {tEnd:yyyy-MM-dd HH:mm}"
+                : "时间范围获取中";
+
+            decimal priceDiff = tr.EndPrice - tr.StartPrice;
+            decimal priceRange = tr.MaxHigh - tr.MinLow;
+            decimal channelH = tr.ChannelHeight;
+            decimal channelHPct = tr.StartPrice > 0 ? (channelH / tr.StartPrice * 100m) : 0m;
+
+            AppendLog($"==================== 🌟 [平行通道详细报告] ====================", Color.FromArgb(250, 204, 21));
+            AppendLog($"【通道方向】: {dirName}", themeColor);
+            AppendLog($"【K线跨度】: Bar #{tr.StartIndex} ~ #{tr.EndIndex} (共 {tr.BarCount} 根大周期 K 线)", Color.FromArgb(56, 189, 248));
+            AppendLog($"【时间跨度】: {timeRangeStr}", Color.FromArgb(226, 232, 240));
+            AppendLog($"【价格走势】: {tr.StartPrice:F2} -> {tr.EndPrice:F2} (价差: {priceDiff:+0.00;-0.00;0.00} USDT, 累计变动: {tr.PriceChangePct:+0.00;-0.00;0.00}%)", themeColor);
+            AppendLog($"【极值范围】: 最高 {tr.MaxHigh:F2} | 最低 {tr.MinLow:F2} | 振幅空间 {priceRange:F2} USDT", Color.FromArgb(226, 232, 240));
+            AppendLog($"【确立节点】: Bar #{tr.ConfirmedBarIndex} (在此根 K 线收盘正式确立满足连续门槛)", Color.FromArgb(250, 204, 21));
+
+            if (tr.HasChannel)
+            {
+                AppendLog($"【通道拟合】: 拟合基准 {tr.ChannelBaseBars} 根 K 线 | 回归斜率 k = {tr.SlopeK:+0.000000;-0.000000;0.000000} USDT/Bar", Color.FromArgb(168, 85, 247));
+                AppendLog($"【轨道截距】: 上轨截距 b_up = {tr.UpperIntercept:F2} | 下轨截距 b_low = {tr.LowerIntercept:F2} | 中轨截距 = {((tr.UpperIntercept + tr.LowerIntercept) / 2m):F2}", Color.FromArgb(168, 85, 247));
+                AppendLog($"【通道高度】: {channelH:F2} USDT (约占基准价 {channelHPct:F2}%) | 含右侧延伸 {_settings.ChannelExtensionBars} 根参考虚线", Color.FromArgb(168, 85, 247));
+            }
+            else
+            {
+                AppendLog($"【通道拟合】: 极值包络矩形通道", Color.FromArgb(168, 85, 247));
+            }
+
+            if (tickStats.HasValue)
+            {
+                var ts = tickStats.Value;
+                string tR = ts.TickRatio >= 999.0 ? "∞" : ts.TickRatio.ToString("F2");
+                string vR = ts.VolumeRatio >= 999.0 ? "∞" : ts.VolumeRatio.ToString("F2");
+                Color tickColor = ts.TickRatio >= 1.0 ? Color.FromArgb(74, 222, 128) : Color.FromArgb(248, 113, 113);
+
+                AppendLog($"【微观流水】: 通道内累计 {tickCount:N0} 笔 Tick", Color.FromArgb(56, 189, 248));
+                AppendLog($"【多空笔数】: 🎯 多空比 {tR} (多头 {ts.BuyTicks:N0} 笔/{ts.BuyTickPct:F1}% : 空头 {ts.SellTicks:N0} 笔/{ts.SellTickPct:F1}%)", tickColor);
+                AppendLog($"【成交量比】: 📊 量多空比 {vR} (买量 {TickLongShortStats.FormatVolume(ts.BuyVolume)}/{ts.BuyVolumePct:F1}% : 卖量 {TickLongShortStats.FormatVolume(ts.SellVolume)}/{ts.SellVolumePct:F1}%, 净主动买量: {TickLongShortStats.FormatVolume(ts.NetVolume)})", tickColor);
+            }
+
+            AppendLog($"=============================================================", Color.FromArgb(250, 204, 21));
         }
 
         private void ClearBarSelection()
         {
-            if (!_selectedBarStartIndex.HasValue && !_selectedBarEndIndex.HasValue)
+            if (!_selectedBarStartIndex.HasValue && !_selectedBarEndIndex.HasValue && _selectedConsecutiveTrend == null)
             {
                 btnResumeLiveFollow.Visible = false;
                 RefreshTickPlotDirectly();
@@ -1904,6 +2183,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             _selectedBarAnchor = null;
             _selectedBarStartIndex = null;
             _selectedBarEndIndex = null;
+            _selectedConsecutiveTrend = null;
             btnResumeLiveFollow.Visible = false;
             lblTickRatioBadge.Visible = false;
             lblVolRatioBadge.Visible = false;
@@ -1918,12 +2198,15 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             {
                 lblTickBadge.Text = "当前无活动周期";
             }
+            lblTickBadge.ForeColor = Color.FromArgb(148, 163, 184);
+            _lastDefaultTickBadgeText = lblTickBadge.Text;
+            _lastDefaultTickBadgeColor = lblTickBadge.ForeColor;
             lblTickBadge.Left = (btnToggleTickChartType != null ? btnToggleTickChartType.Right : (numTickCustomMinutes.Visible ? numTickCustomMinutes.Right : cboTickPeriod.Right)) + 10;
 
             _macroPlotNeedsRefresh = true;
             _tickPlotNeedsRefresh = true;
 
-            AppendLog("[恢复实时] 已退出 K 线选择模式，恢复跟随实时回放 Tick 走势。", Color.FromArgb(74, 222, 128));
+            AppendLog("[恢复实时] 已退出选择模式，恢复跟随实时回放 Tick 走势。", Color.FromArgb(74, 222, 128));
         }
 
         #endregion

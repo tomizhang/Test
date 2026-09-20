@@ -1,5 +1,6 @@
 using Common;
 using ScottPlot;
+using ScottPlot.Plottables;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -15,10 +16,22 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
     /// </summary>
     public static class TickPlotHelper
     {
-        private static readonly string[] PreferredChineseFonts = { "Microsoft YaHei", "PingFang SC", "SimHei", "Segoe UI" };
+        private static readonly string[] PreferredChineseFonts = { "Microsoft YaHei", "PingFang SC", "SimHei", "Noto Sans CJK SC", "WenQuanYi Micro Hei" };
 
         public static string GetInstalledChineseFont()
         {
+            try
+            {
+                string detected = Fonts.Detect("量化回测趋势线高低点走势价格开多开空成交买卖主动");
+                if (!string.IsNullOrWhiteSpace(detected))
+                {
+                    return detected;
+                }
+            }
+            catch
+            {
+            }
+
             try
             {
                 var installedFonts = System.Drawing.FontFamily.Families.Select(f => f.Name).ToHashSet();
@@ -50,7 +63,13 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             bool showConsecutiveTrend = false,
             int consecutiveMinBars = 5,
             decimal consecutiveMinPct = 2.5m,
-            bool showRatio = true)
+            bool showRatio = true,
+            MacroConsecutiveTrendItem? selectedTrend = null,
+            IReadOnlyList<MacroConsecutiveTrendItem>? activeChannels = null,
+            int? selectedBarStartIndex = null,
+            int? selectedBarEndIndex = null,
+            IReadOnlyList<(DateTime StartTime, DateTime EndTime)>? macroBarTimes = null,
+            TickHoverIndicator? hoverIndicator = null)
         {
             if (plot == null) return;
 
@@ -77,7 +96,13 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                     showConsecutiveTrend,
                     consecutiveMinBars,
                     consecutiveMinPct,
-                    showRatio);
+                    showRatio,
+                    selectedTrend: selectedTrend,
+                    activeChannels: activeChannels,
+                    selectedBarStartIndex: selectedBarStartIndex,
+                    selectedBarEndIndex: selectedBarEndIndex,
+                    macroBarTimes: macroBarTimes,
+                    hoverIndicator: hoverIndicator);
                 return;
             }
 
@@ -91,6 +116,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             }
 
             string chineseFont = GetInstalledChineseFont();
+            Fonts.Default = chineseFont;
 
             // 暗黑背景
             plot.FigureBackground.Color = Color.FromHex("#0b0f19");
@@ -237,12 +263,86 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             bool isUp = latestPrice >= firstPrice;
             Color mainThemeColor = isUp ? Color.FromHex("#22c55e") : Color.FromHex("#ef4444");
 
+            int sBarIdx = selectedBarStartIndex ?? (selectedTrend?.StartIndex ?? 0);
+            int eBarIdx = selectedBarEndIndex ?? (selectedTrend?.EndIndex ?? sBarIdx);
+
+            var effectiveChannels = new List<MacroConsecutiveTrendItem>();
+            if (activeChannels != null && activeChannels.Count > 0)
+            {
+                foreach (var c in activeChannels)
+                {
+                    if (c.HasChannel && Math.Max(sBarIdx, c.StartIndex) <= Math.Min(eBarIdx, c.EndIndex) && !effectiveChannels.Any(x => x.Id == c.Id && x.StartIndex == c.StartIndex && x.EndIndex == c.EndIndex))
+                        effectiveChannels.Add(c);
+                }
+            }
+            else if (selectedTrend != null && selectedTrend.HasChannel && Math.Max(sBarIdx, selectedTrend.StartIndex) <= Math.Min(eBarIdx, selectedTrend.EndIndex))
+            {
+                effectiveChannels.Add(selectedTrend);
+            }
+
+            double effMinVal = (double)minVal;
+            double effMaxVal = (double)maxVal;
+
+            var channelProjections = new List<(MacroConsecutiveTrendItem tr, double xS, double xE, double yUpS, double yUpE, double yLowS, double yLowE)>();
+
+            foreach (var tr in effectiveChannels)
+            {
+                int bStart = Math.Max(sBarIdx, tr.StartIndex);
+                int bEnd = Math.Min(eBarIdx, tr.EndIndex);
+                if (bStart > bEnd) continue;
+
+                double xS, xE, yUpS, yUpE, yLowS, yLowE;
+                if (sBarIdx == eBarIdx)
+                {
+                    xS = 0;
+                    xE = Math.Max(1, renderCount - 1);
+                    yUpS = (double)(tr.SlopeK * (sBarIdx - 0.5m) + tr.UpperIntercept);
+                    yUpE = (double)(tr.SlopeK * (sBarIdx + 0.5m) + tr.UpperIntercept);
+                    yLowS = (double)(tr.SlopeK * (sBarIdx - 0.5m) + tr.LowerIntercept);
+                    yLowE = (double)(tr.SlopeK * (sBarIdx + 0.5m) + tr.LowerIntercept);
+                }
+                else
+                {
+                    xS = (bStart == sBarIdx)
+                        ? 0
+                        : ((boundaryTickIndices != null && bStart - sBarIdx - 1 < boundaryTickIndices.Count)
+                            ? boundaryTickIndices[bStart - sBarIdx - 1]
+                            : 0);
+
+                    xE = (bEnd == eBarIdx)
+                        ? Math.Max(1, renderCount - 1)
+                        : ((boundaryTickIndices != null && bEnd - sBarIdx < boundaryTickIndices.Count)
+                            ? Math.Max(xS + 1, boundaryTickIndices[bEnd - sBarIdx] - 1)
+                            : Math.Max(1, renderCount - 1));
+
+                    if (bStart == tr.StartIndex && bEnd == tr.EndIndex && sBarIdx == tr.StartIndex && eBarIdx == tr.EndIndex)
+                    {
+                        yUpS = (double)(tr.SlopeK * tr.StartIndex + tr.UpperIntercept);
+                        yUpE = (double)(tr.SlopeK * tr.EndIndex + tr.UpperIntercept);
+                        yLowS = (double)(tr.SlopeK * tr.StartIndex + tr.LowerIntercept);
+                        yLowE = (double)(tr.SlopeK * tr.EndIndex + tr.LowerIntercept);
+                    }
+                    else
+                    {
+                        yUpS = (double)(tr.SlopeK * (bStart - 0.5m) + tr.UpperIntercept);
+                        yUpE = (double)(tr.SlopeK * (bEnd + 0.5m) + tr.UpperIntercept);
+                        yLowS = (double)(tr.SlopeK * (bStart - 0.5m) + tr.LowerIntercept);
+                        yLowE = (double)(tr.SlopeK * (bEnd + 0.5m) + tr.LowerIntercept);
+                    }
+                }
+
+                effMinVal = Math.Min(effMinVal, Math.Min(yLowS, yLowE));
+                effMaxVal = Math.Max(effMaxVal, Math.Max(yUpS, yUpE));
+
+                channelProjections.Add((tr, xS, xE, yUpS, yUpE, yLowS, yLowE));
+            }
+
             // 计算价格坐标轴的上下边界及归一化视觉位置 (供比值曲线智能“凑近对齐”)
-            double priceSpan = (double)(maxVal - minVal);
+            double priceSpan = effMaxVal - effMinVal;
             double padY = priceSpan * 0.15;
-            if (padY <= 0) padY = (double)maxVal * 0.01;
-            double pLeftYMin = (double)minVal - padY;
-            double pLeftYMax = (double)maxVal + padY;
+            if (padY <= 0) padY = effMaxVal * 0.01;
+            double pLeftYMin = effMinVal - padY;
+            double pLeftYMax = effMaxVal + padY;
             double pLeftYSpan = pLeftYMax - pLeftYMin;
 
             // 价格中枢在画布上的归一化高度 (0.0=底部, 1.0=顶部)
@@ -259,6 +359,15 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             scatter.Color = mainThemeColor;
             scatter.LineWidth = 1.4f;
             scatter.MarkerSize = 0; // 高频不画圆点以保帧率
+
+            // 2.5 若存在相关的大周期平行通道，在微观 Tick 图上同频投影通道导轨与微光多边形
+            if (channelProjections.Count > 0 && renderCount >= 1)
+            {
+                foreach (var proj in channelProjections)
+                {
+                    DrawChannelRailsSegment(plot, proj.tr, proj.xS, proj.xE, proj.yUpS, proj.yUpE, proj.yLowS, proj.yLowE, chineseFont);
+                }
+            }
 
             // 3. 绘制副图与多空比值多折线 (统一使用单一内建右轴 plot.Axes.Right，绝不动态添加新轴，确保仅有唯一的图表视窗)
             var (ratioXs, tickRatios, volRatios) = TickLongShortStats.CalculateRatioSeries(ticks, renderCount, targetSamplePoints: 1500);
@@ -425,6 +534,16 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             annotation.LabelBorderColor = Color.FromHex("#38bdf8").WithAlpha(180);
             annotation.LabelBorderWidth = 1.0f;
 
+            // 5.3 若存在平行通道，在右上角绘制醒目的通道详细信息 HUD 标牌卡片
+            if (effectiveChannels.Count == 1)
+            {
+                AddChannelInformationAnnotation(plot, effectiveChannels[0], chineseFont, sBarIdx, eBarIdx);
+            }
+            else if (effectiveChannels.Count > 1)
+            {
+                AddMultiChannelInformationAnnotation(plot, effectiveChannels, chineseFont);
+            }
+
             // 5.5 若存在多根 K 线的周期分界点，绘制分界垂线
             if (boundaryTickIndices != null && boundaryTickIndices.Count > 0)
             {
@@ -465,6 +584,12 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             plot.Axes.Left.Label.FontName = chineseFont;
             plot.Axes.Left.Label.FontSize = 9.0f;
             plot.Axes.Left.Label.ForeColor = Color.FromHex("#94a3b8");
+
+            // 附着鼠标悬停交互指示器 (十字准星 + 走势吸附标记 + 悬浮详情卡片)
+            if (hoverIndicator != null)
+            {
+                hoverIndicator.Attach(plot, chineseFont, ticks, renderCount, sBarIdx, eBarIdx);
+            }
         }
 
         /// <summary>
@@ -486,7 +611,13 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             bool showConsecutiveTrend = false,
             int consecutiveMinBars = 5,
             decimal consecutiveMinPct = 2.5m,
-            bool showRatio = true)
+            bool showRatio = true,
+            MacroConsecutiveTrendItem? selectedTrend = null,
+            IReadOnlyList<MacroConsecutiveTrendItem>? activeChannels = null,
+            int? selectedBarStartIndex = null,
+            int? selectedBarEndIndex = null,
+            IReadOnlyList<(DateTime StartTime, DateTime EndTime)>? macroBarTimes = null,
+            TickHoverIndicator? hoverIndicator = null)
         {
             if (plot == null) return;
 
@@ -500,6 +631,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             }
 
             string chineseFont = GetInstalledChineseFont();
+            Fonts.Default = chineseFont;
 
             plot.FigureBackground.Color = Color.FromHex("#0b0f19");
             plot.DataBackground.Color = Color.FromHex("#0f172a");
@@ -607,6 +739,99 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 linePlot.LineWidth = 2.0f;
                 linePlot.MarkerSize = M <= 60 ? 4f : (M <= 120 ? 2.5f : 0f);
                 linePlot.MarkerShape = MarkerShape.FilledCircle;
+            }
+
+            // 若存在相关的大周期平行通道，将其轨线价格纳入坐标轴上下界计算并绘制通道导轨
+            int sBarIdx = selectedBarStartIndex ?? (selectedTrend?.StartIndex ?? 0);
+            int eBarIdx = selectedBarEndIndex ?? (selectedTrend?.EndIndex ?? sBarIdx);
+
+            var effectiveChannels = new List<MacroConsecutiveTrendItem>();
+            if (activeChannels != null && activeChannels.Count > 0)
+            {
+                foreach (var c in activeChannels)
+                {
+                    if (c.HasChannel && Math.Max(sBarIdx, c.StartIndex) <= Math.Min(eBarIdx, c.EndIndex) && !effectiveChannels.Any(x => x.Id == c.Id && x.StartIndex == c.StartIndex && x.EndIndex == c.EndIndex))
+                        effectiveChannels.Add(c);
+                }
+            }
+            else if (selectedTrend != null && selectedTrend.HasChannel && Math.Max(sBarIdx, selectedTrend.StartIndex) <= Math.Min(eBarIdx, selectedTrend.EndIndex))
+            {
+                effectiveChannels.Add(selectedTrend);
+            }
+
+            var channelProjections = new List<(MacroConsecutiveTrendItem tr, double xS, double xE, double yUpS, double yUpE, double yLowS, double yLowE)>();
+
+            foreach (var tr in effectiveChannels)
+            {
+                int bStart = Math.Max(sBarIdx, tr.StartIndex);
+                int bEnd = Math.Min(eBarIdx, tr.EndIndex);
+                if (bStart > bEnd) continue;
+
+                double xS, xE, yUpS, yUpE, yLowS, yLowE;
+                if (sBarIdx == eBarIdx)
+                {
+                    xS = 0;
+                    xE = Math.Max(1, M - 1);
+                    yUpS = (double)(tr.SlopeK * (sBarIdx - 0.5m) + tr.UpperIntercept);
+                    yUpE = (double)(tr.SlopeK * (sBarIdx + 0.5m) + tr.UpperIntercept);
+                    yLowS = (double)(tr.SlopeK * (sBarIdx - 0.5m) + tr.LowerIntercept);
+                    yLowE = (double)(tr.SlopeK * (sBarIdx + 0.5m) + tr.LowerIntercept);
+                }
+                else
+                {
+                    int totalBars = eBarIdx - sBarIdx + 1;
+                    if (bStart == tr.StartIndex && bEnd == tr.EndIndex && sBarIdx == tr.StartIndex && eBarIdx == tr.EndIndex)
+                    {
+                        xS = 0;
+                        xE = Math.Max(1, M - 1);
+                        yUpS = (double)(tr.SlopeK * tr.StartIndex + tr.UpperIntercept);
+                        yUpE = (double)(tr.SlopeK * tr.EndIndex + tr.UpperIntercept);
+                        yLowS = (double)(tr.SlopeK * tr.StartIndex + tr.LowerIntercept);
+                        yLowE = (double)(tr.SlopeK * tr.EndIndex + tr.LowerIntercept);
+                    }
+                    else
+                    {
+                        if (macroBarTimes != null && macroBarTimes.Count > bEnd)
+                        {
+                            DateTime tStart = macroBarTimes[bStart].StartTime;
+                            DateTime tEnd = macroBarTimes[bEnd].EndTime;
+                            int foundStart = -1;
+                            int foundEnd = -1;
+                            for (int k = 0; k < M; k++)
+                            {
+                                if (foundStart < 0 && subBuckets[k].EndTime >= tStart) foundStart = k;
+                                if (subBuckets[k].StartTime <= tEnd) foundEnd = k;
+                            }
+                            xS = foundStart >= 0 ? foundStart : 0;
+                            xE = foundEnd >= 0 ? Math.Max(xS + 1, foundEnd) : M - 1;
+                        }
+                        else
+                        {
+                            xS = Math.Clamp((int)Math.Round((double)(bStart - sBarIdx) / totalBars * (M - 1)), 0, M - 1);
+                            xE = Math.Clamp((int)Math.Round((double)(bEnd - sBarIdx + 1) / totalBars * (M - 1)), (int)xS + 1, M - 1);
+                        }
+
+                        yUpS = (double)(tr.SlopeK * (bStart - 0.5m) + tr.UpperIntercept);
+                        yUpE = (double)(tr.SlopeK * (bEnd + 0.5m) + tr.UpperIntercept);
+                        yLowS = (double)(tr.SlopeK * (bStart - 0.5m) + tr.LowerIntercept);
+                        yLowE = (double)(tr.SlopeK * (bEnd + 0.5m) + tr.LowerIntercept);
+                    }
+                }
+
+                decimal chanMin = (decimal)Math.Min(yLowS, yLowE);
+                decimal chanMax = (decimal)Math.Max(yUpS, yUpE);
+                if (chanMin < minPrice) minPrice = chanMin;
+                if (chanMax > maxPrice) maxPrice = chanMax;
+
+                channelProjections.Add((tr, xS, xE, yUpS, yUpE, yLowS, yLowE));
+            }
+
+            if (channelProjections.Count > 0 && M >= 1)
+            {
+                foreach (var proj in channelProjections)
+                {
+                    DrawChannelRailsSegment(plot, proj.tr, proj.xS, proj.xE, proj.yUpS, proj.yUpE, proj.yLowS, proj.yLowE, chineseFont);
+                }
             }
 
             // 绘制底部成交量柱
@@ -924,6 +1149,16 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             annotation.LabelBorderColor = Color.FromHex("#38bdf8").WithAlpha(180);
             annotation.LabelBorderWidth = 1.0f;
 
+            // 标注选中的大周期平行通道详情卡片 (右上角)
+            if (effectiveChannels.Count == 1)
+            {
+                AddChannelInformationAnnotation(plot, effectiveChannels[0], chineseFont, sBarIdx, eBarIdx);
+            }
+            else if (effectiveChannels.Count > 1)
+            {
+                AddMultiChannelInformationAnnotation(plot, effectiveChannels, chineseFont);
+            }
+
             string defaultTitle = string.IsNullOrEmpty(customTitle)
                 ? $"{coin} | 微观走势 [{periodTitle} - 共 {M} 根K线, {modeName}] ({bucketStart:HH:mm}~{bucketEnd:HH:mm})"
                 : customTitle;
@@ -934,6 +1169,385 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             plot.Axes.Left.Label.FontName = chineseFont;
             plot.Axes.Left.Label.FontSize = 9.0f;
             plot.Axes.Left.Label.ForeColor = Color.FromHex("#94a3b8");
+
+            // 附着鼠标悬停交互指示器 (子周期 K 线模式)
+            if (hoverIndicator != null)
+            {
+                hoverIndicator.AttachSubPeriod(plot, chineseFont, subBuckets, periodTitle);
+            }
+        }
+
+        private static void AddChannelInformationAnnotation(
+            Plot plot,
+            MacroConsecutiveTrendItem tr,
+            string chineseFont,
+            int? selectedBarStartIndex = null,
+            int? selectedBarEndIndex = null)
+        {
+            bool isBull = tr.IsBullish;
+            string dirText = isBull ? "▲ 连续上涨 (多头通道)" : "▼ 连续下跌 (空头通道)";
+            decimal diffPrice = tr.EndPrice - tr.StartPrice;
+            decimal channelH = tr.ChannelHeight;
+            decimal channelHPct = tr.StartPrice > 0 ? (channelH / tr.StartPrice * 100m) : 0m;
+            decimal amplitude = tr.MaxHigh - tr.MinLow;
+
+            string spanDesc = (selectedBarStartIndex.HasValue && selectedBarEndIndex.HasValue &&
+                               (selectedBarStartIndex.Value != tr.StartIndex || selectedBarEndIndex.Value != tr.EndIndex))
+                ? $"• 选区视窗: {(selectedBarStartIndex.Value == selectedBarEndIndex.Value ? $"Bar #{selectedBarStartIndex.Value}" : $"Bar #{selectedBarStartIndex.Value}~#{selectedBarEndIndex.Value}")} (通道内部微观分段)\n"
+                : "";
+
+            string channelHud =
+                $"⭐【大周期平行通道详情】\n" +
+                spanDesc +
+                $"• 方向形态: {dirText} | 确立节点: Bar #{tr.ConfirmedBarIndex}\n" +
+                $"• 覆盖跨度: Bar #{tr.StartIndex}~#{tr.EndIndex} (共 {tr.BarCount} 根大周期 K 线)\n" +
+                $"• 价格变动: {tr.StartPrice:F2} -> {tr.EndPrice:F2} ({diffPrice:+0.00;-0.00;0.00} USDT, {tr.PriceChangePct:+0.00;-0.00;0.00}%)\n" +
+                $"• 极值空间: 最高 {tr.MaxHigh:F2} | 最低 {tr.MinLow:F2} | 振幅 {amplitude:F2} USDT\n" +
+                $"• 通道拟合: 基准 {tr.ChannelBaseBars} 根拟合 | 斜率 k = {tr.SlopeK:+0.000000;-0.000000;0.000000} USDT/Bar\n" +
+                $"• 轨道截距: 上轨 {tr.UpperIntercept:F2} | 下轨 {tr.LowerIntercept:F2} | 中轨 {((tr.UpperIntercept + tr.LowerIntercept) / 2m):F2}\n" +
+                $"• 通道高度: {channelH:F2} USDT ({channelHPct:F2}%)";
+
+            var channelBox = plot.Add.Annotation(channelHud, Alignment.UpperRight);
+            channelBox.LabelFontName = chineseFont;
+            channelBox.LabelFontSize = 8.5f;
+            channelBox.LabelFontColor = Color.FromHex("#fbbf24");
+            channelBox.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.92);
+            channelBox.LabelBorderColor = Color.FromHex("#fbbf24").WithAlpha(220);
+            channelBox.LabelBorderWidth = 1.2f;
+        }
+
+        private static void AddMultiChannelInformationAnnotation(
+            Plot plot,
+            IReadOnlyList<MacroConsecutiveTrendItem> channels,
+            string chineseFont)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"⭐【选区内存在 {channels.Count} 个大周期平行通道】");
+            for (int i = 0; i < channels.Count; i++)
+            {
+                var tr = channels[i];
+                string dirText = tr.IsBullish ? "▲ 连涨" : "▼ 连跌";
+                sb.AppendLine($"• 通道 {i + 1}: {dirText} #{tr.StartIndex}~#{tr.EndIndex} ({tr.BarCount}根, {tr.PriceChangePct:+0.00;-0.00;0.00}%) | k={tr.SlopeK:+0.0000;-0.0000} | 高度 {tr.ChannelHeight:F2} USDT");
+            }
+            var channelBox = plot.Add.Annotation(sb.ToString().TrimEnd(), Alignment.UpperRight);
+            channelBox.LabelFontName = chineseFont;
+            channelBox.LabelFontSize = 8.5f;
+            channelBox.LabelFontColor = Color.FromHex("#fbbf24");
+            channelBox.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.92);
+            channelBox.LabelBorderColor = Color.FromHex("#fbbf24").WithAlpha(220);
+            channelBox.LabelBorderWidth = 1.2f;
+        }
+
+        private static void DrawChannelRailsSegment(
+            Plot plot,
+            MacroConsecutiveTrendItem tr,
+            double xStart,
+            double xEnd,
+            double yUpStart,
+            double yUpEnd,
+            double yLowStart,
+            double yLowEnd,
+            string chineseFont)
+        {
+            if (xEnd <= xStart)
+            {
+                xStart = Math.Max(0, xStart - 0.4);
+                xEnd = xEnd + 0.4;
+            }
+
+            double yMidStart = (yUpStart + yLowStart) / 2.0;
+            double yMidEnd = (yUpEnd + yLowEnd) / 2.0;
+
+            // ① 通道微光多边形 (琥珀金透明度 22)
+            var corridorCoords = new Coordinates[]
+            {
+                new Coordinates(xStart, yUpStart),
+                new Coordinates(xEnd, yUpEnd),
+                new Coordinates(xEnd, yLowEnd),
+                new Coordinates(xStart, yLowStart)
+            };
+            var corridorPoly = plot.Add.Polygon(corridorCoords);
+            corridorPoly.FillColor = Color.FromHex("#fbbf24").WithAlpha(22);
+            corridorPoly.LineWidth = 0;
+
+            // ② 上轨实线
+            var lineUp = plot.Add.Line(xStart, yUpStart, xEnd, yUpEnd);
+            lineUp.Color = Color.FromHex("#fbbf24");
+            lineUp.LineWidth = 1.5f;
+            lineUp.LinePattern = LinePattern.Solid;
+
+            // ③ 下轨实线
+            var lineLow = plot.Add.Line(xStart, yLowStart, xEnd, yLowEnd);
+            lineLow.Color = Color.FromHex("#fbbf24");
+            lineLow.LineWidth = 1.5f;
+            lineLow.LinePattern = LinePattern.Solid;
+
+            // ④ 中轴中枢虚线
+            var lineMid = plot.Add.Line(xStart, yMidStart, xEnd, yMidEnd);
+            lineMid.Color = Color.FromHex("#fbbf24").WithAlpha(170);
+            lineMid.LineWidth = 1.0f;
+            lineMid.LinePattern = LinePattern.Dashed;
+
+            // ⑤ 右侧端点价格标签
+            var tUp = plot.Add.Text($"上轨: {yUpEnd:F2}", xEnd, yUpEnd);
+            tUp.LabelFontName = chineseFont;
+            tUp.LabelFontSize = 8.0f;
+            tUp.LabelFontColor = Color.FromHex("#fbbf24");
+            tUp.LabelAlignment = Alignment.LowerRight;
+            tUp.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.85);
+
+            var tLow = plot.Add.Text($"下轨: {yLowEnd:F2}", xEnd, yLowEnd);
+            tLow.LabelFontName = chineseFont;
+            tLow.LabelFontSize = 8.0f;
+            tLow.LabelFontColor = Color.FromHex("#fbbf24");
+            tLow.LabelAlignment = Alignment.UpperRight;
+            tLow.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.85);
+        }
+
+        private static void DrawProjectedChannelRails(
+            Plot plot,
+            MacroConsecutiveTrendItem tr,
+            int maxX,
+            string chineseFont,
+            out double yUpStart,
+            out double yUpEnd,
+            out double yLowStart,
+            out double yLowEnd)
+        {
+            yUpStart = (double)(tr.SlopeK * tr.StartIndex + tr.UpperIntercept);
+            yUpEnd = (double)(tr.SlopeK * tr.EndIndex + tr.UpperIntercept);
+            yLowStart = (double)(tr.SlopeK * tr.StartIndex + tr.LowerIntercept);
+            yLowEnd = (double)(tr.SlopeK * tr.EndIndex + tr.LowerIntercept);
+
+            double xStart = 0;
+            double xEnd = maxX;
+            if (maxX <= 0)
+            {
+                xStart = -0.4;
+                xEnd = 0.4;
+            }
+
+            DrawChannelRailsSegment(plot, tr, xStart, xEnd, yUpStart, yUpEnd, yLowStart, yLowEnd, chineseFont);
+        }
+    }
+
+    /// <summary>
+    /// 微观 Tick / 子周期 K 线图表鼠标悬停交互指示器 (十字准星 + 走势吸附标记 + 悬浮微型数据看板)
+    /// 严格使用系统最佳中文字体渲染，彻底杜绝乱码与豆腐块
+    /// </summary>
+    public class TickHoverIndicator
+    {
+        public Crosshair? Crosshair { get; private set; }
+        public Marker? SnapMarker { get; private set; }
+        public Annotation? HoverCard { get; private set; }
+
+        public IReadOnlyList<RawTick>? ActiveTicks { get; private set; }
+        public int ActiveRenderCount { get; private set; }
+        public IReadOnlyList<PeriodBucket>? ActiveSubBuckets { get; private set; }
+        public bool IsSubPeriodMode { get; private set; }
+        public string PeriodTitle { get; private set; } = "";
+        public int? SelectedBarStartIndex { get; private set; }
+        public int? SelectedBarEndIndex { get; private set; }
+
+        public bool IsAttached => Crosshair != null && SnapMarker != null && HoverCard != null;
+
+        public void Attach(
+            Plot plot,
+            string chineseFont,
+            IReadOnlyList<RawTick>? ticks,
+            int renderCount,
+            int? selectedBarStartIndex = null,
+            int? selectedBarEndIndex = null)
+        {
+            if (plot == null) return;
+
+            ActiveTicks = ticks;
+            ActiveRenderCount = renderCount;
+            ActiveSubBuckets = null;
+            IsSubPeriodMode = false;
+            PeriodTitle = "";
+            SelectedBarStartIndex = selectedBarStartIndex;
+            SelectedBarEndIndex = selectedBarEndIndex;
+
+            Crosshair = plot.Add.Crosshair(0, 0);
+            Crosshair.LineColor = Color.FromHex("#38bdf8").WithAlpha(0.65);
+            Crosshair.LinePattern = LinePattern.Dashed;
+            Crosshair.LineWidth = 1.0f;
+            Crosshair.IsVisible = false;
+
+            SnapMarker = plot.Add.Marker(0, 0);
+            SnapMarker.Shape = MarkerShape.FilledCircle;
+            SnapMarker.Size = 8;
+            SnapMarker.Color = Color.FromHex("#38bdf8");
+            SnapMarker.IsVisible = false;
+
+            HoverCard = plot.Add.Annotation("", Alignment.LowerLeft);
+            HoverCard.LabelFontName = chineseFont;
+            HoverCard.LabelFontSize = 8.5f;
+            HoverCard.LabelFontColor = Color.FromHex("#f1f5f9");
+            HoverCard.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.92);
+            HoverCard.LabelBorderColor = Color.FromHex("#38bdf8").WithAlpha(200);
+            HoverCard.LabelBorderWidth = 1.0f;
+            HoverCard.IsVisible = false;
+        }
+
+        public void AttachSubPeriod(
+            Plot plot,
+            string chineseFont,
+            IReadOnlyList<PeriodBucket>? subBuckets,
+            string periodTitle)
+        {
+            if (plot == null) return;
+
+            ActiveTicks = null;
+            ActiveRenderCount = 0;
+            ActiveSubBuckets = subBuckets;
+            IsSubPeriodMode = true;
+            PeriodTitle = periodTitle;
+            SelectedBarStartIndex = null;
+            SelectedBarEndIndex = null;
+
+            Crosshair = plot.Add.Crosshair(0, 0);
+            Crosshair.LineColor = Color.FromHex("#38bdf8").WithAlpha(0.65);
+            Crosshair.LinePattern = LinePattern.Dashed;
+            Crosshair.LineWidth = 1.0f;
+            Crosshair.IsVisible = false;
+
+            SnapMarker = plot.Add.Marker(0, 0);
+            SnapMarker.Shape = MarkerShape.FilledCircle;
+            SnapMarker.Size = 8;
+            SnapMarker.Color = Color.FromHex("#38bdf8");
+            SnapMarker.IsVisible = false;
+
+            HoverCard = plot.Add.Annotation("", Alignment.LowerLeft);
+            HoverCard.LabelFontName = chineseFont;
+            HoverCard.LabelFontSize = 8.5f;
+            HoverCard.LabelFontColor = Color.FromHex("#f1f5f9");
+            HoverCard.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.92);
+            HoverCard.LabelBorderColor = Color.FromHex("#38bdf8").WithAlpha(200);
+            HoverCard.LabelBorderWidth = 1.0f;
+            HoverCard.IsVisible = false;
+        }
+
+        public void Clear()
+        {
+            if (Crosshair != null) Crosshair.IsVisible = false;
+            if (SnapMarker != null) SnapMarker.IsVisible = false;
+            if (HoverCard != null) HoverCard.IsVisible = false;
+        }
+
+        public bool UpdateHover(
+            double mouseX,
+            double mouseY,
+            string chineseFont,
+            out string headerBadgeText,
+            out System.Drawing.Color badgeColor)
+        {
+            headerBadgeText = "";
+            badgeColor = System.Drawing.Color.FromArgb(148, 163, 184);
+
+            if (!IsAttached) return false;
+
+            if (IsSubPeriodMode)
+            {
+                if (ActiveSubBuckets == null || ActiveSubBuckets.Count == 0) return false;
+
+                int barIdx = Math.Clamp((int)Math.Round(mouseX), 0, ActiveSubBuckets.Count - 1);
+                var b = ActiveSubBuckets[barIdx];
+                var k = b.FinalKline;
+
+                decimal o = k?.Open ?? (b.Ticks.Count > 0 ? b.Ticks[0].Price : 0);
+                decimal h = k?.High ?? (b.Ticks.Count > 0 ? b.Ticks.Max(t => t.Price) : 0);
+                decimal l = k?.Low ?? (b.Ticks.Count > 0 ? b.Ticks.Min(t => t.Price) : 0);
+                decimal c = k?.Close ?? (b.Ticks.Count > 0 ? b.Ticks[^1].Price : 0);
+                decimal v = k?.Volume ?? (b.Ticks.Sum(t => t.Qty));
+                decimal q = k?.QuoteVolume ?? (b.Ticks.Sum(t => t.QuoteQty));
+                int tCount = b.Ticks.Count;
+
+                bool isBarUp = c >= o;
+                decimal barChg = o > 0 ? (c - o) / o * 100m : 0m;
+                string barChgStr = (barChg >= 0 ? "+" : "") + $"{barChg:F2}%";
+                string dirStr = isBarUp ? "🟢阳线" : "🔴阴线";
+
+                badgeColor = isBarUp
+                    ? System.Drawing.Color.FromArgb(74, 222, 128)
+                    : System.Drawing.Color.FromArgb(248, 113, 113);
+                headerBadgeText = $"[Bar #{barIdx + 1}/{ActiveSubBuckets.Count}] {b.StartTime:HH:mm}~{b.EndTime:HH:mm} | 开:{o:F2} 高:{h:F2} 低:{l:F2} 收:{c:F2} ({barChgStr} {dirStr}) | 量:{v:N2} | {tCount:N0} Ticks";
+
+                string cardText =
+                    $"⭐【微观 K 线巡检】 Bar #{barIdx + 1}/{ActiveSubBuckets.Count} ({PeriodTitle})\n" +
+                    $"• 时段范围: {b.StartTime:HH:mm:ss} ~ {b.EndTime:HH:mm:ss}\n" +
+                    $"• 价格OHLC: 开 {o:F2} | 高 {h:F2} | 低 {l:F2} | 收 {c:F2}\n" +
+                    $"• 波段涨跌: {barChgStr} ({dirStr}) | 振幅: {(h - l):F2} USDT\n" +
+                    $"• 量能统计: {v:N4} | 额: {q:N2} USDT | 笔数: {tCount:N0} Ticks";
+
+                HoverCard!.LabelFontName = chineseFont;
+                HoverCard.Text = cardText;
+                HoverCard.LabelBorderColor = isBarUp ? Color.FromHex("#10b981") : Color.FromHex("#ef4444");
+                HoverCard.IsVisible = true;
+
+                Crosshair!.Position = new Coordinates(barIdx, (double)c);
+                Crosshair.LineColor = (isBarUp ? Color.FromHex("#10b981") : Color.FromHex("#ef4444")).WithAlpha(0.65);
+                Crosshair.IsVisible = true;
+
+                SnapMarker!.Coordinates = new Coordinates(barIdx, (double)c);
+                SnapMarker.Color = isBarUp ? Color.FromHex("#22c55e") : Color.FromHex("#ef4444");
+                SnapMarker.IsVisible = true;
+
+                return true;
+            }
+            else
+            {
+                if (ActiveTicks == null || ActiveRenderCount <= 0) return false;
+
+                int tickIdx = Math.Clamp((int)Math.Round(mouseX), 0, ActiveRenderCount - 1);
+                var tick = ActiveTicks[tickIdx];
+
+                DateTime dt = DateTimeOffset.FromUnixTimeMilliseconds(tick.Time).LocalDateTime;
+                string timeStr = dt.ToString("yyyy-MM-dd HH:mm:ss.fff");
+                string shortTime = dt.ToString("HH:mm:ss.fff");
+                decimal price = tick.Price;
+                decimal qty = tick.Qty;
+                decimal quote = tick.QuoteQty > 0 ? tick.QuoteQty : (tick.Price * tick.Qty);
+                bool isBuy = !tick.IsBuyerMaker;
+                string sideName = isBuy ? "🟢主动买入" : "🔴主动卖出";
+
+                decimal firstPrice = ActiveTicks[0].Price;
+                decimal diff = firstPrice > 0 ? (price - firstPrice) / firstPrice * 100m : 0m;
+                string diffStr = (diff >= 0 ? "+" : "") + $"{diff:F2}%";
+
+                badgeColor = isBuy
+                    ? System.Drawing.Color.FromArgb(74, 222, 128)
+                    : System.Drawing.Color.FromArgb(248, 113, 113);
+                headerBadgeText = $"[#{tickIdx + 1}/{ActiveRenderCount}] {shortTime} | 价格: {price:F2} ({diffStr}) | 量: {qty:F4} | {sideName} | 额: {quote:F2} USDT";
+
+                string barContext = (SelectedBarStartIndex.HasValue && SelectedBarEndIndex.HasValue)
+                    ? (SelectedBarStartIndex == SelectedBarEndIndex ? $"Bar #{SelectedBarStartIndex} 内部" : $"选区 Bar #{SelectedBarStartIndex}~#{SelectedBarEndIndex}")
+                    : "";
+                string contextLine = string.IsNullOrEmpty(barContext) ? "" : $" ({barContext})";
+
+                string cardText =
+                    $"⭐【逐笔 Tick 巡检】 #{tickIdx + 1}/{ActiveRenderCount}{contextLine}\n" +
+                    $"• 时间戳: {timeStr}\n" +
+                    $"• 成交价: {price:F2} USDT  ({diffStr})\n" +
+                    $"• 成交量: {qty:F4}  |  成交额: {quote:F2} USDT\n" +
+                    $"• 方向:   {sideName}";
+
+                HoverCard!.LabelFontName = chineseFont;
+                HoverCard.Text = cardText;
+                HoverCard.LabelBorderColor = isBuy ? Color.FromHex("#10b981") : Color.FromHex("#ef4444");
+                HoverCard.IsVisible = true;
+
+                Crosshair!.Position = new Coordinates(tickIdx, (double)price);
+                Crosshair.LineColor = (isBuy ? Color.FromHex("#10b981") : Color.FromHex("#ef4444")).WithAlpha(0.65);
+                Crosshair.IsVisible = true;
+
+                SnapMarker!.Coordinates = new Coordinates(tickIdx, (double)price);
+                SnapMarker.Color = isBuy ? Color.FromHex("#22c55e") : Color.FromHex("#ef4444");
+                SnapMarker.IsVisible = true;
+
+                return true;
+            }
         }
     }
 }

@@ -52,12 +52,20 @@ namespace Test.ChannelPlayback.WinForms.Models
         // 连续上涨 / 连续下跌动能形态识别配置 (≥5根且≥2.5%)
         public bool EnableConsecutiveTrend { get; set; } = true;
         public int ConsecutiveTrendMinBars { get; set; } = 5;
-        public decimal ConsecutiveTrendMinPct { get; set; } = 2.5m;
+        public decimal ConsecutiveTrendMinPct { get; set; } = 0.0m;
         public bool ShowConsecutiveChannel { get; set; } = true; // 连续走势绿色 0.8f 平行通道
 
         // Tick 视图周期配置 (0: 原始逐笔 Tick, 1: 1分钟, 2: 5分钟, 3: 15分钟, 4: 自定义分钟)
         public int TickPeriodMode { get; set; } = 0;
         public int CustomTickMinutes { get; set; } = 3;
+
+        // 连续 5 根 K 线 3 分钟观察期反转做单配置
+        public bool EnableReversalOrder { get; set; } = true;
+        public int ReversalObservationMinutes { get; set; } = 3;
+        public decimal ReversalPLong { get; set; } = 1.0m;
+        public decimal ReversalPMedium { get; set; } = 0.35m;
+        public decimal ReversalPShort { get; set; } = 0.35m;
+        public bool ShowReversalYellowLines { get; set; } = true;
 
         // 回放控制参数
         public int SpeedIntervalMs { get; set; } = 50;

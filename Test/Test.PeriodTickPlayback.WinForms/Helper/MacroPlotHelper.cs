@@ -14,10 +14,22 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
     /// </summary>
     public static class MacroPlotHelper
     {
-        private static readonly string[] PreferredChineseFonts = { "Microsoft YaHei", "PingFang SC", "SimHei", "Segoe UI" };
+        private static readonly string[] PreferredChineseFonts = { "Microsoft YaHei", "PingFang SC", "SimHei", "Noto Sans CJK SC", "WenQuanYi Micro Hei" };
 
         public static string GetInstalledChineseFont()
         {
+            try
+            {
+                string detected = Fonts.Detect("量化回测趋势线高低点走势价格开多开空成交买卖主动");
+                if (!string.IsNullOrWhiteSpace(detected))
+                {
+                    return detected;
+                }
+            }
+            catch
+            {
+            }
+
             try
             {
                 var installedFonts = System.Drawing.FontFamily.Families.Select(f => f.Name).ToHashSet();
@@ -57,6 +69,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             plot.Clear();
 
             string chineseFont = GetInstalledChineseFont();
+            Fonts.Default = chineseFont;
 
             // 1. 暗黑 TradingView 极客配色
             plot.FigureBackground.Color = Color.FromHex("#0b0f19"); // 极深黑蓝
@@ -241,6 +254,11 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                         ? Color.FromHex("#10b981") // 连涨翡翠绿
                         : Color.FromHex("#ef4444"); // 连跌火红
 
+                    bool isChannelSelected = selectedStartIndex.HasValue && selectedEndIndex.HasValue &&
+                                            sIdx == selectedStartIndex.Value && eIdx == selectedEndIndex.Value;
+                    float channelLineWidth = isChannelSelected ? 2.0f : 1.2f;
+                    byte channelFillAlpha = isChannelSelected ? (byte)52 : (byte)28;
+
                     // ① 确立点三角形标记 (▲ / ▼)
                     int cIdx = tr.ConfirmedBarIndex;
                     if (cIdx >= sIdx && cIdx <= eIdx)
@@ -251,8 +269,8 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
 
                         var confMarker = plot.Add.Marker(cIdx, confPrice);
                         confMarker.Shape = isBull ? MarkerShape.FilledTriangleUp : MarkerShape.FilledTriangleDown;
-                        confMarker.Size = 9;
-                        confMarker.Color = themeColor;
+                        confMarker.Size = isChannelSelected ? 12 : 9;
+                        confMarker.Color = isChannelSelected ? Color.FromHex("#fbbf24") : themeColor;
                     }
 
                     double tagY;
@@ -278,24 +296,24 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                             new Coordinates(sIdx, yLowStart)
                         };
                         var channelPoly = plot.Add.Polygon(channelCoords);
-                        channelPoly.FillColor = themeColor.WithAlpha(28);
+                        channelPoly.FillColor = themeColor.WithAlpha(channelFillAlpha);
                         channelPoly.LineWidth = 0;
 
-                        // ③ 平行通道上轨与下轨实线 (线宽 1.2f)
+                        // ③ 平行通道上轨与下轨实线 (选中时线宽 2.0f，默认 1.2f)
                         var lineUp = plot.Add.Line(sIdx, yUpStart, eIdx, yUpEnd);
-                        lineUp.Color = themeColor;
-                        lineUp.LineWidth = 1.2f;
+                        lineUp.Color = isChannelSelected ? Color.FromHex("#fbbf24") : themeColor;
+                        lineUp.LineWidth = channelLineWidth;
                         lineUp.LinePattern = LinePattern.Solid;
 
                         var lineLow = plot.Add.Line(sIdx, yLowStart, eIdx, yLowEnd);
-                        lineLow.Color = themeColor;
-                        lineLow.LineWidth = 1.2f;
+                        lineLow.Color = isChannelSelected ? Color.FromHex("#fbbf24") : themeColor;
+                        lineLow.LineWidth = channelLineWidth;
                         lineLow.LinePattern = LinePattern.Solid;
 
                         // ④ 平行通道中轨虚线
                         var lineMid = plot.Add.Line(sIdx, yMidStart, eIdx, yMidEnd);
-                        lineMid.Color = themeColor.WithAlpha(170);
-                        lineMid.LineWidth = 0.8f;
+                        lineMid.Color = themeColor.WithAlpha(isChannelSelected ? (byte)220 : (byte)170);
+                        lineMid.LineWidth = isChannelSelected ? 1.2f : 0.8f;
                         lineMid.LinePattern = LinePattern.Dashed;
 
                         // ⑤ 平行通道向右充分延长 (突破截止限制，向前延伸至最新柱后充足未来空间)
@@ -380,21 +398,22 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
 
                     // ⑦ 醒目悬浮信息气泡标签 (连涨 / 连跌 及 平行通道基准根数)
                     string baseTag = tr.HasChannel ? $" [平行通道(基准{tr.ChannelBaseBars}根)]" : "";
+                    string selectedPrefix = isChannelSelected ? "⭐ [已选中] " : "";
                     string tag = isBull
-                        ? $"▲ 连涨 {tr.BarCount}根 (+{tr.PriceChangePct:F2}%){baseTag}"
-                        : $"▼ 连跌 {tr.BarCount}根 ({tr.PriceChangePct:F2}%){baseTag}";
+                        ? $"{selectedPrefix}▲ 连涨 {tr.BarCount}根 (+{tr.PriceChangePct:F2}%){baseTag}"
+                        : $"{selectedPrefix}▼ 连跌 {tr.BarCount}根 ({tr.PriceChangePct:F2}%){baseTag}";
 
                     double tagX = (sIdx + eIdx) / 2.0;
 
                     var txtTag = plot.Add.Text(tag, tagX, tagY);
                     txtTag.LabelFontName = chineseFont;
-                    txtTag.LabelFontSize = 9.0f;
+                    txtTag.LabelFontSize = isChannelSelected ? 9.5f : 9.0f;
                     txtTag.LabelBold = true;
-                    txtTag.LabelFontColor = isBull ? Color.FromHex("#34d399") : Color.FromHex("#fca5a5");
+                    txtTag.LabelFontColor = isChannelSelected ? Color.FromHex("#fbbf24") : (isBull ? Color.FromHex("#34d399") : Color.FromHex("#fca5a5"));
                     txtTag.LabelAlignment = isBull ? Alignment.LowerCenter : Alignment.UpperCenter;
-                    txtTag.LabelBackgroundColor = Color.FromHex("#0f172a").WithAlpha(0.88);
-                    txtTag.LabelBorderColor = themeColor;
-                    txtTag.LabelBorderWidth = 1f;
+                    txtTag.LabelBackgroundColor = Color.FromHex("#0f172a").WithAlpha(0.92);
+                    txtTag.LabelBorderColor = isChannelSelected ? Color.FromHex("#fbbf24") : themeColor;
+                    txtTag.LabelBorderWidth = isChannelSelected ? 2f : 1f;
                 }
             }
 
@@ -559,6 +578,131 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             plot.Axes.Left.Label.Text = "价格 (USDT)";
             plot.Axes.Left.Label.FontName = chineseFont;
             plot.Axes.Left.Label.FontSize = 9.5f;
+        }
+
+        /// <summary>
+        /// 平行通道像素级命中检测 (Hit-Test)
+        /// 检测鼠标是否点击或悬停在上轨、下轨、中轨、前向延伸虚线或通道悬浮气泡标签附近 (容差 tolerancePx 像素)
+        /// </summary>
+        public static MacroConsecutiveTrendItem? FindHitChannel(
+            Plot plot,
+            Pixel mousePixel,
+            Coordinates mouseCoord,
+            IReadOnlyList<MacroConsecutiveTrendItem>? trends,
+            int totalDisplayCount,
+            int channelExtensionBars = 15,
+            double tolerancePx = 14.0)
+        {
+            if (plot == null || trends == null || trends.Count == 0 || totalDisplayCount == 0)
+                return null;
+
+            MacroConsecutiveTrendItem? bestHit = null;
+            double minDistance = double.MaxValue;
+            double tagTolerancePx = tolerancePx * 1.3;
+
+            foreach (var tr in trends)
+            {
+                int sIdx = tr.StartIndex;
+                int eIdx = tr.EndIndex;
+                if (sIdx < 0 || eIdx >= totalDisplayCount || sIdx > eIdx) continue;
+
+                double currentMinDist = double.MaxValue;
+
+                if (tr.HasChannel)
+                {
+                    decimal slopeK = tr.SlopeK;
+                    decimal upperB = tr.UpperIntercept;
+                    decimal lowerB = tr.LowerIntercept;
+                    int extEnd = eIdx + channelExtensionBars;
+
+                    double yUpStart = (double)(slopeK * sIdx + upperB);
+                    double yUpEnd = (double)(slopeK * eIdx + upperB);
+                    double yLowStart = (double)(slopeK * sIdx + lowerB);
+                    double yLowEnd = (double)(slopeK * eIdx + lowerB);
+                    double yMidStart = (double)(slopeK * sIdx + (upperB + lowerB) / 2m);
+                    double yMidEnd = (double)(slopeK * eIdx + (upperB + lowerB) / 2m);
+
+                    Pixel pUpStart = plot.GetPixel(new Coordinates(sIdx, yUpStart));
+                    Pixel pUpEnd = plot.GetPixel(new Coordinates(eIdx, yUpEnd));
+                    Pixel pLowStart = plot.GetPixel(new Coordinates(sIdx, yLowStart));
+                    Pixel pLowEnd = plot.GetPixel(new Coordinates(eIdx, yLowEnd));
+                    Pixel pMidStart = plot.GetPixel(new Coordinates(sIdx, yMidStart));
+                    Pixel pMidEnd = plot.GetPixel(new Coordinates(eIdx, yMidEnd));
+
+                    currentMinDist = Math.Min(currentMinDist, DistanceToSegment(mousePixel, pUpStart, pUpEnd));
+                    currentMinDist = Math.Min(currentMinDist, DistanceToSegment(mousePixel, pLowStart, pLowEnd));
+                    currentMinDist = Math.Min(currentMinDist, DistanceToSegment(mousePixel, pMidStart, pMidEnd));
+
+                    if (channelExtensionBars > 0)
+                    {
+                        double yUpExt = (double)(slopeK * extEnd + upperB);
+                        double yLowExt = (double)(slopeK * extEnd + lowerB);
+                        double yMidExt = (double)(slopeK * extEnd + (upperB + lowerB) / 2m);
+
+                        Pixel pUpExt = plot.GetPixel(new Coordinates(extEnd, yUpExt));
+                        Pixel pLowExt = plot.GetPixel(new Coordinates(extEnd, yLowExt));
+                        Pixel pMidExt = plot.GetPixel(new Coordinates(extEnd, yMidExt));
+
+                        currentMinDist = Math.Min(currentMinDist, DistanceToSegment(mousePixel, pUpEnd, pUpExt));
+                        currentMinDist = Math.Min(currentMinDist, DistanceToSegment(mousePixel, pLowEnd, pLowExt));
+                        currentMinDist = Math.Min(currentMinDist, DistanceToSegment(mousePixel, pMidEnd, pMidExt));
+                    }
+
+                    // 检测气泡标签
+                    double tagX = (sIdx + eIdx) / 2.0;
+                    double tagY = tr.IsBullish ? Math.Max(yUpStart, yUpEnd) : Math.Min(yLowStart, yLowEnd);
+                    Pixel pTag = plot.GetPixel(new Coordinates(tagX, tagY));
+                    float tagDx = mousePixel.X - pTag.X;
+                    float tagDy = mousePixel.Y - pTag.Y;
+                    double tagDist = Math.Sqrt(tagDx * tagDx + tagDy * tagDy);
+                    if (tagDist <= tagTolerancePx)
+                    {
+                        currentMinDist = Math.Min(currentMinDist, tagDist);
+                    }
+                }
+                else
+                {
+                    double yTop = (double)tr.MaxHigh;
+                    double yBot = (double)tr.MinLow;
+
+                    Pixel pTopLeft = plot.GetPixel(new Coordinates(sIdx, yTop));
+                    Pixel pTopRight = plot.GetPixel(new Coordinates(eIdx, yTop));
+                    Pixel pBotLeft = plot.GetPixel(new Coordinates(sIdx, yBot));
+                    Pixel pBotRight = plot.GetPixel(new Coordinates(eIdx, yBot));
+
+                    currentMinDist = Math.Min(currentMinDist, DistanceToSegment(mousePixel, pTopLeft, pTopRight));
+                    currentMinDist = Math.Min(currentMinDist, DistanceToSegment(mousePixel, pBotLeft, pBotRight));
+                    currentMinDist = Math.Min(currentMinDist, DistanceToSegment(mousePixel, pTopLeft, pBotLeft));
+                    currentMinDist = Math.Min(currentMinDist, DistanceToSegment(mousePixel, pTopRight, pBotRight));
+                }
+
+                if (currentMinDist <= tolerancePx && currentMinDist < minDistance)
+                {
+                    minDistance = currentMinDist;
+                    bestHit = tr;
+                }
+            }
+
+            return bestHit;
+        }
+
+        public static double DistanceToSegment(Pixel p, Pixel a, Pixel b)
+        {
+            float dx = b.X - a.X;
+            float dy = b.Y - a.Y;
+            float lenSq = dx * dx + dy * dy;
+            if (lenSq < 1e-6f)
+            {
+                float px = p.X - a.X;
+                float py = p.Y - a.Y;
+                return Math.Sqrt(px * px + py * py);
+            }
+            float t = Math.Clamp(((p.X - a.X) * dx + (p.Y - a.Y) * dy) / lenSq, 0f, 1f);
+            float projX = a.X + t * dx;
+            float projY = a.Y + t * dy;
+            float distX = p.X - projX;
+            float distY = p.Y - projY;
+            return Math.Sqrt(distX * distX + distY * distY);
         }
     }
 }
