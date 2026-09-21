@@ -47,6 +47,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
         private Label lblChartHeaderTitle = null!;
         private Label lblChartHeaderStats = null!;
         private CheckBox chkShowLegend = null!;
+        private CheckBox chkHeaderShowKlineHighLow = null!;
         private ComboBox cboHeaderChartType = null!;
 
         // 右侧顶部常驻回放控制
@@ -76,6 +77,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
         private CheckBox chkAutoScale = null!;
         private CheckBox chkFollowLatest = null!;
         private CheckBox chkShowTouchMarkers = null!;
+        private CheckBox chkShowKlineHighLow = null!;
         private CheckBox chkEnableRetainChannel = null!;
         private NumericUpDown numConfirmBars = null!;
         private ComboBox cboBreakoutRule = null!;
@@ -88,7 +90,11 @@ namespace Test.ChannelPlayback.WinForms.Forms
         private CheckBox chkEnableConsecutiveTrend = null!;
         private NumericUpDown numConsecutiveBars = null!;
         private NumericUpDown numConsecutivePct = null!;
+        private ComboBox cboConsecPriceMode = null!;
         private CheckBox chkShowConsecutiveChannel = null!;
+        private CheckBox chkEnableChannelAutoUpdate = null!;
+        private ComboBox cboChannelUpdateMode = null!;
+        private CheckBox chkShowHistoricalChannels = null!;
         private CheckBox chkEnableReversalOrder = null!;
         private NumericUpDown numReversalMinutes = null!;
         private NumericUpDown numReversalPLong = null!;
@@ -318,6 +324,27 @@ namespace Test.ChannelPlayback.WinForms.Forms
                 formsPlot.Refresh();
             };
 
+            chkHeaderShowKlineHighLow = new CheckBox
+            {
+                Text = "⚪高低点",
+                Font = new Font("Microsoft YaHei", 8.5F),
+                ForeColor = Color.FromArgb(74, 222, 128),
+                AutoSize = true,
+                Dock = DockStyle.Right,
+                Padding = new Padding(6, 0, 4, 0),
+                Checked = true
+            };
+            chkHeaderShowKlineHighLow.CheckedChanged += (s, e) =>
+            {
+                if (_isInitializing) return;
+                if (chkShowKlineHighLow != null && chkShowKlineHighLow.Checked != chkHeaderShowKlineHighLow.Checked)
+                {
+                    chkShowKlineHighLow.Checked = chkHeaderShowKlineHighLow.Checked;
+                }
+                SaveSettingsFromUi();
+                RenderCurrentState();
+            };
+
             cboHeaderChartType = new ComboBox
             {
                 Dock = DockStyle.Right,
@@ -343,6 +370,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
 
             panelChartHeader.Controls.Add(lblChartHeaderTitle);
             panelChartHeader.Controls.Add(lblChartHeaderStats);
+            panelChartHeader.Controls.Add(chkHeaderShowKlineHighLow);
             panelChartHeader.Controls.Add(chkShowLegend);
             panelChartHeader.Controls.Add(cboHeaderChartType);
 
@@ -908,7 +936,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
 
                 chkShowTouchMarkers = new CheckBox
                 {
-                    Text = "显示最高与最低触碰锚定标记",
+                    Text = "三点锚定标记",
                     Location = new Point(15, 256),
                     AutoSize = true,
                     Checked = true,
@@ -918,6 +946,25 @@ namespace Test.ChannelPlayback.WinForms.Forms
                 {
                     SaveSettingsFromUi();
                     _engine.TriggerCurrentFrame();
+                };
+
+                chkShowKlineHighLow = new CheckBox
+                {
+                    Text = "⚪ K线高低点",
+                    Location = new Point(160, 256),
+                    AutoSize = true,
+                    Checked = true,
+                    ForeColor = Color.FromArgb(74, 222, 128)
+                };
+                chkShowKlineHighLow.CheckedChanged += (s, e) =>
+                {
+                    if (_isInitializing) return;
+                    if (chkHeaderShowKlineHighLow != null && chkHeaderShowKlineHighLow.Checked != chkShowKlineHighLow.Checked)
+                    {
+                        chkHeaderShowKlineHighLow.Checked = chkShowKlineHighLow.Checked;
+                    }
+                    SaveSettingsFromUi();
+                    RenderCurrentState();
                 };
 
                 chkEnableRetainChannel = new CheckBox
@@ -1121,12 +1168,35 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     _engine.TriggerCurrentFrame();
                 };
 
+                var lblConsecPriceMode = CreateLabel("通道取值模式:", 15, 642);
+                cboConsecPriceMode = new ComboBox
+                {
+                    Location = new Point(145, 639),
+                    Width = 195,
+                    DropDownStyle = ComboBoxStyle.DropDownList,
+                    BackColor = Color.FromArgb(30, 41, 59),
+                    ForeColor = Color.FromArgb(226, 232, 240),
+                    FlatStyle = FlatStyle.Flat
+                };
+                cboConsecPriceMode.Items.AddRange(new object[]
+                {
+                    "Close 收盘价 (窄通道)",
+                    "High/Low 极值 (宽通道)"
+                });
+                cboConsecPriceMode.SelectedIndex = 0;
+                cboConsecPriceMode.SelectedIndexChanged += (s, e) =>
+                {
+                    _engine.ConsecutiveChannelPriceMode = (ConsecutiveChannelPriceMode)cboConsecPriceMode.SelectedIndex;
+                    SaveSettingsFromUi();
+                    _engine.TriggerCurrentFrame();
+                };
+
                 chkShowConsecutiveChannel = new CheckBox
                 {
                     Text = "🟩 绘制连续走势平行通道 (绿色 0.8f)",
                     Font = new Font("Microsoft YaHei", 9F, FontStyle.Regular),
                     ForeColor = Color.FromArgb(74, 222, 128),
-                    Location = new Point(15, 642),
+                    Location = new Point(15, 670),
                     AutoSize = true,
                     Checked = true
                 };
@@ -1137,10 +1207,65 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     RenderPlot();
                 };
 
+                chkEnableChannelAutoUpdate = new CheckBox
+                {
+                    Text = "🔄 超出通道且无信号自动更新绘制新通道",
+                    Font = new Font("Microsoft YaHei", 9F, FontStyle.Regular),
+                    ForeColor = Color.FromArgb(56, 189, 248), // Sky 400
+                    Location = new Point(15, 696),
+                    AutoSize = true,
+                    Checked = true
+                };
+                chkEnableChannelAutoUpdate.CheckedChanged += (s, e) =>
+                {
+                    _engine.EnableChannelAutoUpdate = chkEnableChannelAutoUpdate.Checked;
+                    SaveSettingsFromUi();
+                    _engine.TriggerCurrentFrame();
+                };
+
+                var lblChannelUpdateMode = CreateLabel("新通道模式:", 15, 725);
+                cboChannelUpdateMode = new ComboBox
+                {
+                    Location = new Point(145, 722),
+                    Width = 195,
+                    DropDownStyle = ComboBoxStyle.DropDownList,
+                    BackColor = Color.FromArgb(30, 41, 59),
+                    ForeColor = Color.FromArgb(226, 232, 240),
+                    FlatStyle = FlatStyle.Flat
+                };
+                cboChannelUpdateMode.Items.AddRange(new object[]
+                {
+                    "滚动最新 5 根 (Rolling)",
+                    "扩展全波段 (Expanding)"
+                });
+                cboChannelUpdateMode.SelectedIndex = 0;
+                cboChannelUpdateMode.SelectedIndexChanged += (s, e) =>
+                {
+                    _engine.ChannelUpdateMode = (ChannelUpdateMode)cboChannelUpdateMode.SelectedIndex;
+                    SaveSettingsFromUi();
+                    _engine.TriggerCurrentFrame();
+                };
+
+                chkShowHistoricalChannels = new CheckBox
+                {
+                    Text = "显示更新前历史旧通道 (淡灰虚线)",
+                    Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Regular),
+                    ForeColor = Color.FromArgb(148, 163, 184), // Slate 400
+                    Location = new Point(15, 752),
+                    AutoSize = true,
+                    Checked = true
+                };
+                chkShowHistoricalChannels.CheckedChanged += (s, e) =>
+                {
+                    _engine.ShowHistoricalChannels = chkShowHistoricalChannels.Checked;
+                    SaveSettingsFromUi();
+                    RenderPlot();
+                };
+
                 chkEnableReversalOrder = new CheckBox
                 {
                     Text = "⚡ 连涨/连跌第5根反转做单监控",
-                    Location = new Point(15, 672),
+                    Location = new Point(15, 782),
                     AutoSize = true,
                     Checked = true,
                     ForeColor = Color.FromArgb(250, 204, 21), // Yellow 400
@@ -1153,10 +1278,10 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     _engine.TriggerCurrentFrame();
                 };
 
-                var lblRevMin = CreateLabel("观察期周期(分):", 15, 701);
+                var lblRevMin = CreateLabel("观察期周期(分):", 15, 811);
                 numReversalMinutes = new NumericUpDown
                 {
-                    Location = new Point(145, 698),
+                    Location = new Point(145, 808),
                     Width = 170,
                     Minimum = 1,
                     Maximum = 60,
@@ -1170,10 +1295,10 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     _engine.TriggerCurrentFrame();
                 };
 
-                var lblRevPLong = CreateLabel("大实体阈值 P_L(%):", 15, 731);
+                var lblRevPLong = CreateLabel("大实体阈值 P_L(%):", 15, 841);
                 numReversalPLong = new NumericUpDown
                 {
-                    Location = new Point(145, 728),
+                    Location = new Point(145, 838),
                     Width = 170,
                     Minimum = 0.1m,
                     Maximum = 10.0m,
@@ -1188,10 +1313,10 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     _engine.TriggerCurrentFrame();
                 };
 
-                var lblRevPMed = CreateLabel("中小实体阈值(%):", 15, 761);
+                var lblRevPMed = CreateLabel("中小实体阈值(%):", 15, 871);
                 numReversalPMedium = new NumericUpDown
                 {
-                    Location = new Point(145, 758),
+                    Location = new Point(145, 868),
                     Width = 80,
                     Minimum = 0.05m,
                     Maximum = 5.0m,
@@ -1210,7 +1335,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
 
                 numReversalPShort = new NumericUpDown
                 {
-                    Location = new Point(235, 758),
+                    Location = new Point(235, 868),
                     Width = 80,
                     Minimum = 0.05m,
                     Maximum = 5.0m,
@@ -1220,10 +1345,10 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     Visible = false
                 };
 
-                var lblRevPullback = CreateLabel("Tick回落/反弹(%):", 15, 788);
+                var lblRevPullback = CreateLabel("Tick回落/反弹(%):", 15, 899);
                 numReversalTickPullback = new NumericUpDown
                 {
-                    Location = new Point(145, 785),
+                    Location = new Point(145, 896),
                     Width = 170,
                     Minimum = 0.01m,
                     Maximum = 1.0m,
@@ -1238,30 +1363,18 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     _engine.TriggerCurrentFrame();
                 };
 
-                var lblRevChannelZone = CreateLabel("通道极值观察区(%):", 15, 818);
-                numReversalChannelZone = new NumericUpDown
-                {
-                    Location = new Point(145, 815),
-                    Width = 170,
-                    Minimum = 0.0m,
-                    Maximum = 50.0m,
-                    DecimalPlaces = 1,
-                    Increment = 5.0m,
-                    Value = 25.0m
-                };
-                numReversalChannelZone.ValueChanged += (s, e) =>
-                {
-                    _engine.ReversalChannelZonePct = numReversalChannelZone.Value;
-                    SaveSettingsFromUi();
-                    _engine.TriggerCurrentFrame();
-                };
+                var lblRevChannelDivision = CreateLabel("📐 四等分观察线: 50%/75%/100%(涨) | 50%/25%/0%(跌)", 15, 929);
+                lblRevChannelDivision.Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Regular);
+                lblRevChannelDivision.ForeColor = Color.FromArgb(52, 211, 153);
+                lblRevChannelDivision.AutoSize = true;
+                numReversalChannelZone = new NumericUpDown { Visible = false };
 
                 chkShowReversalYellowLines = new CheckBox
                 {
                     Text = "🟡 在K线上绘制做单短黄线标记",
                     Font = new Font("Microsoft YaHei", 9F, FontStyle.Regular),
                     ForeColor = Color.FromArgb(250, 204, 21),
-                    Location = new Point(15, 848),
+                    Location = new Point(15, 959),
                     AutoSize = true,
                     Checked = true
                 };
@@ -1277,7 +1390,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     Text = "⏱️ 在Tick窗口标记出观察周期",
                     Font = new Font("Microsoft YaHei", 9F, FontStyle.Regular),
                     ForeColor = Color.FromArgb(56, 189, 248),
-                    Location = new Point(15, 874),
+                    Location = new Point(15, 985),
                     AutoSize = true,
                     Checked = true
                 };
@@ -1295,17 +1408,19 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     lblL, numLeftLen, lblR, numRightLen, lblTotalLength,
                     lblMode, cboCalcMode, lblWin, cboWindowMode,
                     lblChartType, cboChartType,
-                    chkAutoScale, chkFollowLatest, chkShowTouchMarkers,
+                    chkAutoScale, chkFollowLatest, chkShowTouchMarkers, chkShowKlineHighLow,
                     chkEnableRetainChannel, lblConfirmBars, numConfirmBars,
                     lblBreakoutRule, cboBreakoutRule, chkSpecialRetained,
                     lblSpecialBars, numSpecialRetainedBars, lblSpecialAngle, numSpecialRetainedAngle,
                     chkEnableVPattern, lblVThreshold, numVPatternThreshold, chkShowVPatternLines,
                     chkEnableConsecutiveTrend, lblConsecBars, numConsecutiveBars, lblConsecPct, numConsecutivePct,
+                    lblConsecPriceMode, cboConsecPriceMode,
                     chkShowConsecutiveChannel,
+                    chkEnableChannelAutoUpdate, lblChannelUpdateMode, cboChannelUpdateMode, chkShowHistoricalChannels,
                     chkEnableReversalOrder, lblRevMin, numReversalMinutes,
                     lblRevPLong, numReversalPLong, lblRevPMed, numReversalPMedium, numReversalPShort,
                     lblRevPullback, numReversalTickPullback,
-                    lblRevChannelZone, numReversalChannelZone,
+                    lblRevChannelDivision, numReversalChannelZone,
                     chkShowReversalYellowLines,
                     chkShowObservationCycles
                 });
@@ -1634,6 +1749,8 @@ namespace Test.ChannelPlayback.WinForms.Forms
                 chkAutoScale.Checked = s.AutoScale;
                 chkFollowLatest.Checked = s.FollowLatest;
                 chkShowTouchMarkers.Checked = s.ShowTouchMarkers;
+                chkShowKlineHighLow.Checked = s.ShowKlineHighLow;
+                chkHeaderShowKlineHighLow.Checked = s.ShowKlineHighLow;
                 chkShowLegend.Checked = s.ShowLegend;
                 chkEnableRetainChannel.Checked = s.EnableRetainedChannel;
                 numConfirmBars.Value = Math.Clamp(s.RetainedConfirmBars, numConfirmBars.Minimum, numConfirmBars.Maximum);
@@ -1652,7 +1769,11 @@ namespace Test.ChannelPlayback.WinForms.Forms
                 numConsecutiveBars.Value = Math.Clamp(s.ConsecutiveTrendMinBars, numConsecutiveBars.Minimum, numConsecutiveBars.Maximum);
                 decimal consecPct = s.ConsecutiveTrendMinPct == 2.5m ? 0.0m : s.ConsecutiveTrendMinPct;
                 numConsecutivePct.Value = Math.Clamp(consecPct, numConsecutivePct.Minimum, numConsecutivePct.Maximum);
+                cboConsecPriceMode.SelectedIndex = Math.Clamp(s.ConsecutiveChannelPriceMode, 0, 1);
                 chkShowConsecutiveChannel.Checked = s.ShowConsecutiveChannel;
+                chkEnableChannelAutoUpdate.Checked = s.EnableChannelAutoUpdate;
+                cboChannelUpdateMode.SelectedIndex = Math.Clamp(s.ChannelUpdateMode, 0, 1);
+                chkShowHistoricalChannels.Checked = s.ShowHistoricalChannels;
                 UpdateConsecutiveTrendLabel();
 
                 chkEnableReversalOrder.Checked = s.EnableReversalOrder;
@@ -1690,7 +1811,11 @@ namespace Test.ChannelPlayback.WinForms.Forms
                 _engine.EnableConsecutiveTrend = chkEnableConsecutiveTrend.Checked;
                 _engine.ConsecutiveTrendMinBars = (int)numConsecutiveBars.Value;
                 _engine.ConsecutiveTrendMinPct = numConsecutivePct.Value;
+                _engine.ConsecutiveChannelPriceMode = (ConsecutiveChannelPriceMode)cboConsecPriceMode.SelectedIndex;
                 _engine.ShowConsecutiveChannel = chkShowConsecutiveChannel.Checked;
+                _engine.EnableChannelAutoUpdate = chkEnableChannelAutoUpdate.Checked;
+                _engine.ChannelUpdateMode = (ChannelUpdateMode)cboChannelUpdateMode.SelectedIndex;
+                _engine.ShowHistoricalChannels = chkShowHistoricalChannels.Checked;
                 _engine.EnableReversalOrder = chkEnableReversalOrder.Checked;
                 _engine.ReversalObservationMinutes = (int)numReversalMinutes.Value;
                 _engine.ReversalPLong = numReversalPLong.Value;
@@ -1745,6 +1870,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     AutoScale = chkAutoScale.Checked,
                     FollowLatest = chkFollowLatest.Checked,
                     ShowTouchMarkers = chkShowTouchMarkers.Checked,
+                    ShowKlineHighLow = chkShowKlineHighLow.Checked,
                     ShowLegend = chkShowLegend.Checked,
                     ChartType = cboChartType.SelectedIndex,
                     SpeedIntervalMs = tbSpeed.Value,
@@ -1760,7 +1886,11 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     EnableConsecutiveTrend = chkEnableConsecutiveTrend.Checked,
                     ConsecutiveTrendMinBars = (int)numConsecutiveBars.Value,
                     ConsecutiveTrendMinPct = numConsecutivePct.Value,
+                    ConsecutiveChannelPriceMode = cboConsecPriceMode.SelectedIndex,
                     ShowConsecutiveChannel = chkShowConsecutiveChannel.Checked,
+                    EnableChannelAutoUpdate = chkEnableChannelAutoUpdate.Checked,
+                    ChannelUpdateMode = cboChannelUpdateMode.SelectedIndex,
+                    ShowHistoricalChannels = chkShowHistoricalChannels.Checked,
                     EnableReversalOrder = chkEnableReversalOrder.Checked,
                     ReversalObservationMinutes = (int)numReversalMinutes.Value,
                     ReversalPLong = numReversalPLong.Value,
@@ -1879,7 +2009,14 @@ namespace Test.ChannelPlayback.WinForms.Forms
 
             _engine.OnLogMessage += msg =>
             {
-                AppendLog(msg);
+                if (msg.Contains("[通道动态更新]"))
+                {
+                    AppendLog(msg, Color.FromArgb(56, 189, 248)); // 天蓝色醒目高亮
+                }
+                else
+                {
+                    AppendLog(msg);
+                }
             };
 
             _engine.OnExtremeConfirmed += (channel, idx, price, isHigh) =>
@@ -1950,7 +2087,24 @@ namespace Test.ChannelPlayback.WinForms.Forms
 
             _engine.OnObservationCycleUpdated += (cycle, desc) =>
             {
-                Color c = desc.Contains("已满足反转做单条件") ? Color.FromArgb(74, 222, 128) : Color.FromArgb(56, 189, 248);
+                Color c;
+                if (desc.Contains("已满足反转做单条件"))
+                {
+                    c = Color.FromArgb(74, 222, 128); // 翠绿色 (触发成功)
+                }
+                else if (desc.Contains("波段失效"))
+                {
+                    c = Color.FromArgb(248, 113, 113); // 珊瑚红 / 警示红 (波段终结失效)
+                }
+                else if (desc.Contains("通道失效") || desc.Contains("未激活"))
+                {
+                    c = Color.FromArgb(148, 163, 184); // 板岩灰 (未满足极值区未激活)
+                }
+                else
+                {
+                    c = Color.FromArgb(56, 189, 248); // 天蓝色 (常规周期推演与未触发理由)
+                }
+
                 if (this.InvokeRequired)
                 {
                     this.BeginInvoke(new Action(() => AppendLog(desc, c)));
@@ -2324,7 +2478,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     }
                 }
 
-                lblMetricReversalSummary.Text = $"反转做单: 🔴做空: {sellCount} 次 | 🟢做多: {buyCount} 次 ({_engine.ReversalObservationMinutes}m周期, 极值区:{_engine.ReversalChannelZonePct:0.#}%)";
+                lblMetricReversalSummary.Text = $"反转做单: 🔴做空: {sellCount} 次 | 🟢做多: {buyCount} 次 ({_engine.ReversalObservationMinutes}m周期, 四等分观察线)";
                 if (latestSig != null)
                 {
                     string modeStr = latestSig.IsTickStreamTriggered ? "Tick实时" : "1m回退";
@@ -2332,10 +2486,11 @@ namespace Test.ChannelPlayback.WinForms.Forms
                         ? (latestSig.Direction == OrderSignalDirection.Sell ? "🔴顺势高空" : "🟢顺势低多")
                         : (latestSig.Direction == OrderSignalDirection.Sell ? "🔴高点做空" : "🟢低点做多");
                     string peakInfo = latestSig.IsTickStreamTriggered ? $" 极值:{latestSig.PeakTroughPrice:F2} 回撤:{latestSig.PullbackPct:F2}% |" : "";
+                    string lineReactionInfo = !string.IsNullOrEmpty(latestSig.ChannelLineReaction) ? $"【{latestSig.ChannelLineReaction}】" : "";
                     string tickExtra = latestSig.IsTickStreamTriggered && latestSig.TriggerTick.HasValue
                         ? $" [Tick #{latestSig.TriggerTickIndex + 1}/{latestSig.CycleTotalTicks} {(latestSig.TriggerTick.Value.IsBuyerMaker ? "卖" : "买")} 量:{latestSig.TriggerTick.Value.Qty:F2}]"
                         : "";
-                    lblMetricLatestReversalSignal.Text = $"最新反转: [{modeStr}] {dirStr} @ {latestSig.Price:F2}{tickExtra} ({peakInfo} 止损:{latestSig.StopLossPrice:F2}, 止盈:{latestSig.TakeProfitPrice:F2}) [#{latestSig.Pattern.PatternId} C{latestSig.ObservationCycleIndex}] (Bar #{latestSig.BigBarIndex})";
+                    lblMetricLatestReversalSignal.Text = $"最新反转: [{modeStr}] {lineReactionInfo}{dirStr} @ {latestSig.Price:F2}{tickExtra} ({peakInfo} 止损:{latestSig.StopLossPrice:F2}, 止盈:{latestSig.TakeProfitPrice:F2}) [#{latestSig.Pattern.PatternId} C{latestSig.ObservationCycleIndex}] (Bar #{latestSig.BigBarIndex})";
                     lblMetricLatestReversalSignal.ForeColor = Color.FromArgb(250, 204, 21);
                 }
                 else
@@ -2429,6 +2584,41 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     tipMarker.Size = 7;
                     tipMarker.Color = ScottPlot.Color.FromHex("#38bdf8");
                 }
+            }
+
+            // 1.5 绘制 K 线高点与低点小圆形标记 (如果勾选)
+            if (chkShowKlineHighLow.Checked && barCount > 0)
+            {
+                double[] xsHigh = new double[barCount];
+                double[] ysHigh = new double[barCount];
+                double[] xsLow = new double[barCount];
+                double[] ysLow = new double[barCount];
+
+                for (int i = 0; i < barCount; i++)
+                {
+                    int kIdx = displayStart + i;
+                    var bar = allKlines[kIdx];
+                    xsHigh[i] = kIdx;
+                    ysHigh[i] = (double)bar.High;
+                    xsLow[i] = kIdx;
+                    ysLow[i] = (double)bar.Low;
+                }
+
+                // 高点小圆点标记 (翡翠绿实心小圆)
+                var highScatter = plot.Add.Scatter(xsHigh, ysHigh);
+                highScatter.LineWidth = 0;
+                highScatter.MarkerShape = MarkerShape.FilledCircle;
+                highScatter.MarkerSize = 4.5f;
+                highScatter.Color = ScottPlot.Color.FromHex("#22c55e");
+                highScatter.LegendText = "K线高点";
+
+                // 低点小圆点标记 (珊瑚红实心小圆)
+                var lowScatter = plot.Add.Scatter(xsLow, ysLow);
+                lowScatter.LineWidth = 0;
+                lowScatter.MarkerShape = MarkerShape.FilledCircle;
+                lowScatter.MarkerSize = 4.5f;
+                lowScatter.Color = ScottPlot.Color.FromHex("#ef4444");
+                lowScatter.LegendText = "K线低点";
             }
 
             // 2. 绘制动态通道
@@ -2911,20 +3101,57 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     var tr = trends[tIdx];
                     if (tr.ConfirmedBarIndex > _currentBarIndex) continue;
 
-                    int sIdx = tr.StartIndex;
+                    int sIdx = tr.ChannelStartIndex > 0 ? tr.ChannelStartIndex : tr.StartIndex;
                     int eIdx = Math.Min(tr.EndIndex, _currentBarIndex);
                     if (sIdx < 0 || sIdx >= allKlines.Count || eIdx < sIdx || eIdx >= allKlines.Count) continue;
 
                     bool isBullish = tr.Type == ConsecutiveTrendType.Bullish;
                     bool isSelected = _selectedConsecutiveTrend != null && _selectedConsecutiveTrend.Id == tr.Id;
 
-                    // 核心逻辑：通道斜率与截距严格在第 5 根 (confirmedAt) 确立时刻锁定，零未来函数，无需等待下一根！
+                    // 绘制被替换的历史旧通道 (若开启且存在历史快照)
+                    if (_engine.ShowHistoricalChannels && tr.PreviousChannels.Count > 0)
+                    {
+                        for (int pIdx = 0; pIdx < tr.PreviousChannels.Count; pIdx++)
+                        {
+                            var prev = tr.PreviousChannels[pIdx];
+                            int pStart = prev.StartIndex;
+                            int pEnd = Math.Min(prev.EndIndex, _currentBarIndex);
+                            if (pStart >= 0 && pEnd >= pStart && pEnd < allKlines.Count)
+                            {
+                                double pUpStart = (double)(prev.SlopeK * pStart + prev.UpperIntercept);
+                                double pUpEnd = (double)(prev.SlopeK * pEnd + prev.UpperIntercept);
+                                double pLowStart = (double)(prev.SlopeK * pStart + prev.LowerIntercept);
+                                double pLowEnd = (double)(prev.SlopeK * pEnd + prev.LowerIntercept);
+
+                                var oldUp = plot.Add.Line(pStart, pUpStart, pEnd, pUpEnd);
+                                oldUp.Color = ScottPlot.Color.FromHex("#94a3b8").WithAlpha(80);
+                                oldUp.LineWidth = 0.6f;
+                                oldUp.LinePattern = LinePattern.Dashed;
+
+                                var oldLow = plot.Add.Line(pStart, pLowStart, pEnd, pLowEnd);
+                                oldLow.Color = ScottPlot.Color.FromHex("#94a3b8").WithAlpha(80);
+                                oldLow.LineWidth = 0.6f;
+                                oldLow.LinePattern = LinePattern.Dashed;
+                            }
+
+                            // 在触发更新的 K 线上打上淡蓝小菱形标记
+                            if (prev.TriggerBarIndex >= 0 && prev.TriggerBarIndex <= _currentBarIndex && prev.TriggerBarIndex < allKlines.Count)
+                            {
+                                var updMarker = plot.Add.Marker(prev.TriggerBarIndex, (double)prev.TriggerPrice);
+                                updMarker.Shape = MarkerShape.FilledDiamond;
+                                updMarker.Size = 6;
+                                updMarker.Color = ScottPlot.Color.FromHex("#38bdf8"); // Sky 400
+                            }
+                        }
+                    }
+
+                    // 核心逻辑：通道斜率与截距由确立时刻或最新自动更新时刻锁定，零未来函数，无需等待下一根！
                     decimal slopeK = tr.SlopeK;
                     decimal upperB = tr.UpperIntercept;
                     decimal lowerB = tr.LowerIntercept;
                     if (!tr.HasChannel)
                     {
-                        ConsecutiveTrendDetector.FitParallelChannel(allKlines, sIdx, tr.ConfirmedBarIndex, out slopeK, out upperB, out lowerB);
+                        ConsecutiveTrendDetector.FitParallelChannel(allKlines, sIdx, tr.ConfirmedBarIndex, out slopeK, out upperB, out lowerB, tr.PriceMode);
                     }
 
                     // 绘制绿色 0.8f 平行通道 (选中时线宽加粗至1.5f且背景更亮)
@@ -2953,55 +3180,80 @@ namespace Test.ChannelPlayback.WinForms.Forms
                         channelPoly.FillColor = greenColor.WithAlpha(isSelected ? (byte)48 : (byte)22);
                         channelPoly.LineWidth = 0;
 
-                        // ② 上通道线 (绿色，线宽 0.8f，选中时 1.5f)
+                        // ② 上通道线 (100% 通道上轨，绿色，线宽 0.8f，选中时 1.5f)
                         var lineUp = plot.Add.Line(sIdx, yUpStart, eIdx, yUpEnd);
                         lineUp.Color = greenColor;
                         lineUp.LineWidth = isSelected ? 1.5f : 0.8f;
                         lineUp.LinePattern = LinePattern.Solid;
-                        if (tIdx == 0 || isSelected) lineUp.LegendText = isSelected ? "[选中] 连续平行通道上轨" : "[连续走势] 平行通道上轨 (0.8f绿色)";
+                        if (tIdx == 0 || isSelected) lineUp.LegendText = isSelected ? "[选中] 100% 通道上轨" : "[连续走势] 100% 通道上轨 (0.8f绿色)";
 
-                        // ③ 下通道线 (绿色，线宽 0.8f，选中时 1.5f)
+                        // ③ 下通道线 (0% 通道下轨，绿色，线宽 0.8f，选中时 1.5f)
                         var lineLow = plot.Add.Line(sIdx, yLowStart, eIdx, yLowEnd);
                         lineLow.Color = greenColor;
                         lineLow.LineWidth = isSelected ? 1.5f : 0.8f;
                         lineLow.LinePattern = LinePattern.Solid;
-                        if (tIdx == 0 || isSelected) lineLow.LegendText = isSelected ? "[选中] 连续平行通道下轨" : "[连续走势] 平行通道下轨 (0.8f绿色)";
+                        if (tIdx == 0 || isSelected) lineLow.LegendText = isSelected ? "[选中] 0% 通道下轨" : "[连续走势] 0% 通道下轨 (0.8f绿色)";
 
-                        // ④ 中通道线 (绿色半透明点虚线，线宽 0.8f)
+                        // ④ 中通道线 (50% 通道中线，绿色虚线，线宽 0.8f，选中时 1.2f)
                         var lineMid = plot.Add.Line(sIdx, yMidStart, eIdx, yMidEnd);
-                        lineMid.Color = greenColor.WithAlpha(isSelected ? (byte)210 : (byte)160);
-                        lineMid.LineWidth = 0.8f;
+                        lineMid.Color = greenColor.WithAlpha(isSelected ? (byte)230 : (byte)170);
+                        lineMid.LineWidth = isSelected ? 1.2f : 0.8f;
                         lineMid.LinePattern = LinePattern.Dashed;
+                        if (isSelected) lineMid.LegendText = "[选中] 50% 通道中线";
 
-                        // ⑤ 极值观察阶段区间线 (连续上涨在顶部部分绘制琥珀橙色虚线，连续下跌在底部部分绘制青蓝色虚线)
+                        // ⑤ 极值四等分观察线 (25% 青蓝虚线, 75% 琥珀橙虚线)
                         if (_engine.EnableReversalOrder)
                         {
-                            decimal zoneRatio = Math.Clamp(_engine.ReversalChannelZonePct, 0m, 50m) / 100m;
                             decimal heightB = upperB - lowerB;
-                            if (isBullish && zoneRatio > 0m)
+                            decimal quarter25B = lowerB + heightB * 0.25m;
+                            double y25Start = (double)(slopeK * sIdx + quarter25B);
+                            double y25End = (double)(slopeK * eIdx + quarter25B);
+                            var line25 = plot.Add.Line(sIdx, y25Start, eIdx, y25End);
+                            line25.Color = ScottPlot.Color.FromHex("#06b6d4").WithAlpha(isSelected ? (byte)210 : (byte)150);
+                            line25.LineWidth = isSelected ? 1.0f : 0.8f;
+                            line25.LinePattern = LinePattern.Dashed;
+                            if (isSelected) line25.LegendText = "[选中] 25% 通道高度线";
+
+                            decimal quarter75B = lowerB + heightB * 0.75m;
+                            double y75Start = (double)(slopeK * sIdx + quarter75B);
+                            double y75End = (double)(slopeK * eIdx + quarter75B);
+                            var line75 = plot.Add.Line(sIdx, y75Start, eIdx, y75End);
+                            line75.Color = ScottPlot.Color.FromHex("#f59e0b").WithAlpha(isSelected ? (byte)210 : (byte)150);
+                            line75.LineWidth = isSelected ? 1.0f : 0.8f;
+                            line75.LinePattern = LinePattern.Dashed;
+                            if (isSelected) line75.LegendText = "[选中] 75% 通道高度线";
+
+                            if (isSelected)
                             {
-                                decimal topZoneB = lowerB + heightB * (1m - zoneRatio);
-                                double yZoneStart = (double)(slopeK * sIdx + topZoneB);
-                                double yZoneEnd = (double)(slopeK * eIdx + topZoneB);
-                                var lineZone = plot.Add.Line(sIdx, yZoneStart, eIdx, yZoneEnd);
-                                lineZone.Color = ScottPlot.Color.FromHex("#f59e0b").WithAlpha(isSelected ? (byte)210 : (byte)140);
-                                lineZone.LineWidth = 0.8f;
-                                lineZone.LinePattern = LinePattern.Dashed;
-                            }
-                            else if (!isBullish && zoneRatio > 0m)
-                            {
-                                decimal bottomZoneB = lowerB + heightB * zoneRatio;
-                                double yZoneStart = (double)(slopeK * sIdx + bottomZoneB);
-                                double yZoneEnd = (double)(slopeK * eIdx + bottomZoneB);
-                                var lineZone = plot.Add.Line(sIdx, yZoneStart, eIdx, yZoneEnd);
-                                lineZone.Color = ScottPlot.Color.FromHex("#06b6d4").WithAlpha(isSelected ? (byte)210 : (byte)140);
-                                lineZone.LineWidth = 0.8f;
-                                lineZone.LinePattern = LinePattern.Dashed;
+                                var txt100 = plot.Add.Text("100%", eIdx + 0.5, yUpEnd);
+                                txt100.LabelFontColor = greenColor;
+                                txt100.LabelFontSize = 9f;
+                                txt100.Alignment = Alignment.MiddleLeft;
+
+                                var txt75 = plot.Add.Text("75%", eIdx + 0.5, y75End);
+                                txt75.LabelFontColor = ScottPlot.Color.FromHex("#f59e0b");
+                                txt75.LabelFontSize = 9f;
+                                txt75.Alignment = Alignment.MiddleLeft;
+
+                                var txt50 = plot.Add.Text("50%", eIdx + 0.5, yMidEnd);
+                                txt50.LabelFontColor = greenColor;
+                                txt50.LabelFontSize = 9f;
+                                txt50.Alignment = Alignment.MiddleLeft;
+
+                                var txt25 = plot.Add.Text("25%", eIdx + 0.5, y25End);
+                                txt25.LabelFontColor = ScottPlot.Color.FromHex("#06b6d4");
+                                txt25.LabelFontSize = 9f;
+                                txt25.Alignment = Alignment.MiddleLeft;
+
+                                var txt0 = plot.Add.Text("0%", eIdx + 0.5, yLowEnd);
+                                txt0.LabelFontColor = greenColor;
+                                txt0.LabelFontSize = 9f;
+                                txt0.Alignment = Alignment.MiddleLeft;
                             }
                         }
 
-                        // ⑥ 确立点三角标记 (在首次达标的第 5 根 K 线打上显式三角形标记)
-                        int cIdx = tr.ConfirmedBarIndex;
+                        // ⑥ 确立点三角标记 (在首次达标或新通道截止的 K 线打上显式三角形标记)
+                        int cIdx = tr.ChannelEndIndex > 0 ? tr.ChannelEndIndex : tr.ConfirmedBarIndex;
                         if (cIdx >= sIdx && cIdx < allKlines.Count)
                         {
                             double yConf = (double)allKlines[cIdx].Close;
@@ -3047,9 +3299,10 @@ namespace Test.ChannelPlayback.WinForms.Forms
                         var m4 = plot.Add.Marker(eIdx, yLowEnd); m4.Shape = MarkerShape.FilledCircle; m4.Size = isSelected ? 6 : 4; m4.Color = greenColor;
 
                         // ⑧ 文字气泡标签标注在通道外沿
-                        int curCount = eIdx - sIdx + 1;
+                        int curCount = eIdx - tr.StartIndex + 1;
                         decimal curPct = tr.StartPrice > 0 ? (allKlines[eIdx].Close - tr.StartPrice) / tr.StartPrice * 100m : 0m;
-                        string baseTag = isBullish ? $"🔥连涨 {curCount}根 (+{curPct:F1}%)" : $"❄️连跌 {curCount}根 ({curPct:F1}%)";
+                        string updateTag = tr.IsChannelUpdated ? $" 🔄[新通道#{tr.ChannelUpdateCount}]" : "";
+                        string baseTag = isBullish ? $"🔥连涨 {curCount}根 (+{curPct:F1}%){updateTag}" : $"❄️连跌 {curCount}根 ({curPct:F1}%){updateTag}";
                         string tag = isSelected ? $"⭐ [已选中] {baseTag}" : baseTag;
 
                         double midX = (sIdx + eIdx) / 2.0;
@@ -3062,6 +3315,38 @@ namespace Test.ChannelPlayback.WinForms.Forms
                         txt.LabelFontSize = isSelected ? 10.5f : 10;
                         txt.LabelBold = true;
                         txt.Alignment = isBullish ? Alignment.LowerCenter : Alignment.UpperCenter;
+
+                        // ⑨ 微观 Tick 跌破/突破通道标记 (上涨跌破下轨 / 下跌突破上轨)
+                        if (tr.HasTickBreakthrough && tr.TickBreakthroughBarIndex >= sIdx && tr.TickBreakthroughBarIndex < allKlines.Count)
+                        {
+                            int btIdx = tr.TickBreakthroughBarIndex;
+                            double btPrice = (double)tr.TickBreakthroughPrice;
+                            var btMarker = plot.Add.Marker(btIdx, btPrice);
+                            if (isBullish)
+                            {
+                                btMarker.Shape = MarkerShape.FilledTriangleDown;
+                                btMarker.Size = isSelected ? 13 : 10;
+                                btMarker.Color = ScottPlot.Color.FromHex("#f43f5e"); // Rose 500
+
+                                var btTxt = plot.Add.Text($"⚡跌破下轨 @ {btPrice:F2}", btIdx, btPrice);
+                                btTxt.LabelFontColor = ScottPlot.Color.FromHex("#f43f5e");
+                                btTxt.LabelFontSize = 9.5f;
+                                btTxt.LabelBold = true;
+                                btTxt.Alignment = Alignment.UpperCenter;
+                            }
+                            else
+                            {
+                                btMarker.Shape = MarkerShape.FilledTriangleUp;
+                                btMarker.Size = isSelected ? 13 : 10;
+                                btMarker.Color = ScottPlot.Color.FromHex("#fbbf24"); // Amber 400
+
+                                var btTxt = plot.Add.Text($"⚡突破上轨 @ {btPrice:F2}", btIdx, btPrice);
+                                btTxt.LabelFontColor = ScottPlot.Color.FromHex("#fbbf24");
+                                btTxt.LabelFontSize = 9.5f;
+                                btTxt.LabelBold = true;
+                                btTxt.Alignment = Alignment.LowerCenter;
+                            }
+                        }
                     }
                     else
                     {
@@ -3138,8 +3423,9 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     string dirStr = sig.IsBreakoutTrendFollowing
                         ? (sig.Direction == OrderSignalDirection.Sell ? "顺势高空" : "顺势低多")
                         : (sig.Direction == OrderSignalDirection.Sell ? "高点做空" : "低点做多");
+                    string lineTag = !string.IsNullOrEmpty(sig.ChannelLineReaction) ? $"[{sig.ChannelLineReaction}] " : "";
                     string modeTag = sig.IsTickStreamTriggered ? $" (极值:{sig.PeakTroughPrice:F2})" : "";
-                    string labelText = $"⚡{dirStr} @ {sig.Price:F2}{modeTag} [#{sig.Pattern.PatternId} C{sig.ObservationCycleIndex}]";
+                    string labelText = $"⚡{lineTag}{dirStr} @ {sig.Price:F2}{modeTag} [#{sig.Pattern.PatternId} C{sig.ObservationCycleIndex}]";
                     double barSpan = (double)(allKlines[sig.BigBarIndex].High - allKlines[sig.BigBarIndex].Low);
                     if (barSpan <= 0) barSpan = 10.0;
                     double labelY = sig.Direction == OrderSignalDirection.Sell ? y + barSpan * 0.25 : y - barSpan * 0.25;
@@ -3711,7 +3997,19 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     if ((double)t.Price > yUp)
                     {
                         countAboveUpper++;
-                        if (firstUpperIdx < 0) firstUpperIdx = i;
+                        if (firstUpperIdx < 0)
+                        {
+                            firstUpperIdx = i;
+                            if (consecCh.Type == ConsecutiveTrendType.Bearish && !consecCh.HasTickBreakthrough)
+                            {
+                                consecCh.HasTickBreakthrough = true;
+                                consecCh.TickBreakthroughBarIndex = tickBarIndices[i];
+                                consecCh.TickBreakthroughPrice = t.Price;
+                                consecCh.TickBreakthroughTime = t.Time;
+                                consecCh.TickBreakthroughTickIndex = i;
+                                consecCh.TickBreakthroughType = "⚡下跌突破上轨";
+                            }
+                        }
                         double diff = (double)t.Price - yUp;
                         if (diff > maxUpperDiff) { maxUpperDiff = diff; maxUpperPierceIdx = i; }
                         rel = "⚡破绿色上轨";
@@ -3719,7 +4017,19 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     else if ((double)t.Price < yLow)
                     {
                         countBelowLower++;
-                        if (firstLowerIdx < 0) firstLowerIdx = i;
+                        if (firstLowerIdx < 0)
+                        {
+                            firstLowerIdx = i;
+                            if (consecCh.Type == ConsecutiveTrendType.Bullish && !consecCh.HasTickBreakthrough)
+                            {
+                                consecCh.HasTickBreakthrough = true;
+                                consecCh.TickBreakthroughBarIndex = tickBarIndices[i];
+                                consecCh.TickBreakthroughPrice = t.Price;
+                                consecCh.TickBreakthroughTime = t.Time;
+                                consecCh.TickBreakthroughTickIndex = i;
+                                consecCh.TickBreakthroughType = "⚡上涨跌破下轨";
+                            }
+                        }
                         double diff = yLow - (double)t.Price;
                         if (diff > maxLowerDiff) { maxLowerDiff = diff; maxLowerPierceIdx = i; }
                         rel = "⚡破绿色下轨";
@@ -3765,9 +4075,18 @@ namespace Test.ChannelPlayback.WinForms.Forms
             {
                 double yUpEnd = consecSlope * (endIndex + 0.5) + consecUpB;
                 double yLowEnd = consecSlope * (endIndex + 0.5) + consecLowB;
-                chSummary += $" | 🟩绿色通道: 上轨{yUpEnd:F2} 下轨{yLowEnd:F2} (高度:{consecCh.ChannelHeight:F2})";
+                string modeDesc = consecCh.PriceMode == ConsecutiveChannelPriceMode.Close ? "Close窄通道" : "HighLow宽通道";
+                chSummary += $" | 🟩绿色通道({modeDesc}): 上轨{yUpEnd:F2} 下轨{yLowEnd:F2} (高度:{consecCh.ChannelHeight:F2})";
                 if (countAboveUpper > 0) chSummary += $" (破上轨:{countAboveUpper}笔)";
                 if (countBelowLower > 0) chSummary += $" (破下轨:{countBelowLower}笔)";
+                if (consecCh.Type == ConsecutiveTrendType.Bullish && firstLowerIdx >= 0)
+                {
+                    chSummary += $" | 🚨【微观跌破】Tick #{firstLowerIdx + 1} 跌破下轨 (${ticks[firstLowerIdx].Price:F2})";
+                }
+                else if (consecCh.Type == ConsecutiveTrendType.Bearish && firstUpperIdx >= 0)
+                {
+                    chSummary += $" | 🚨【微观突破】Tick #{firstUpperIdx + 1} 突破上轨 (${ticks[firstUpperIdx].Price:F2})";
+                }
             }
             else if (hasDynamicChannel)
             {
@@ -4046,6 +4365,36 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     mLowP.Size = 10;
                     mLowP.Color = ScottPlot.Color.FromHex("#f43f5e");
                     mLowP.LegendText = $"穿透绿色下轨 #{maxLowerPierceIdx + 1} (-{maxLowerDiff:F2})";
+                }
+
+                // 重点突破/跌破标记：上涨跌破下轨 / 下跌突破上轨 (双图联动标记)
+                if (consecCh.Type == ConsecutiveTrendType.Bullish && firstLowerIdx >= 0)
+                {
+                    var mBreak = formsPlotTick.Plot.Add.Marker(firstLowerIdx, (double)ticks![firstLowerIdx].Price);
+                    mBreak.Shape = MarkerShape.FilledTriangleDown;
+                    mBreak.Size = 14;
+                    mBreak.Color = ScottPlot.Color.FromHex("#f43f5e");
+                    mBreak.LegendText = $"⚡首次跌破下轨 #{firstLowerIdx + 1} ({ticks[firstLowerIdx].Price:F2})";
+
+                    var tBreak = formsPlotTick.Plot.Add.Text($"⚡跌破下轨 @ {ticks[firstLowerIdx].Price:F2} (Tick #{firstLowerIdx + 1})", firstLowerIdx, (double)ticks[firstLowerIdx].Price);
+                    tBreak.LabelFontColor = ScottPlot.Color.FromHex("#f43f5e");
+                    tBreak.LabelFontSize = 10f;
+                    tBreak.LabelBold = true;
+                    tBreak.Alignment = Alignment.UpperCenter;
+                }
+                else if (consecCh.Type == ConsecutiveTrendType.Bearish && firstUpperIdx >= 0)
+                {
+                    var mBreak = formsPlotTick.Plot.Add.Marker(firstUpperIdx, (double)ticks![firstUpperIdx].Price);
+                    mBreak.Shape = MarkerShape.FilledTriangleUp;
+                    mBreak.Size = 14;
+                    mBreak.Color = ScottPlot.Color.FromHex("#fbbf24");
+                    mBreak.LegendText = $"⚡首次突破上轨 #{firstUpperIdx + 1} ({ticks[firstUpperIdx].Price:F2})";
+
+                    var tBreak = formsPlotTick.Plot.Add.Text($"⚡突破上轨 @ {ticks[firstUpperIdx].Price:F2} (Tick #{firstUpperIdx + 1})", firstUpperIdx, (double)ticks[firstUpperIdx].Price);
+                    tBreak.LabelFontColor = ScottPlot.Color.FromHex("#fbbf24");
+                    tBreak.LabelFontSize = 10f;
+                    tBreak.LabelBold = true;
+                    tBreak.Alignment = Alignment.LowerCenter;
                 }
             }
             else if (hasDynamicChannel)
@@ -4653,6 +5002,34 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     var candlePlot = formsPlotTick.Plot.Add.Candlestick(ohlcList);
                     candlePlot.RisingColor = ScottPlot.Color.FromHex("#22c55e");
                     candlePlot.FallingColor = ScottPlot.Color.FromHex("#ef4444");
+
+                    // 绘制合成 K 线的高低点小圆形标记 (如果勾选)
+                    if (chkShowKlineHighLow.Checked)
+                    {
+                        double[] xsH = new double[totalKCount];
+                        double[] ysH = new double[totalKCount];
+                        double[] xsL = new double[totalKCount];
+                        double[] ysL = new double[totalKCount];
+                        for (int i = 0; i < totalKCount; i++)
+                        {
+                            xsH[i] = i;
+                            ysH[i] = (double)_displayedKlines[i].High;
+                            xsL[i] = i;
+                            ysL[i] = (double)_displayedKlines[i].Low;
+                        }
+
+                        var hScatter = formsPlotTick.Plot.Add.Scatter(xsH, ysH);
+                        hScatter.LineWidth = 0;
+                        hScatter.MarkerShape = MarkerShape.FilledCircle;
+                        hScatter.MarkerSize = 4f;
+                        hScatter.Color = ScottPlot.Color.FromHex("#22c55e");
+
+                        var lScatter = formsPlotTick.Plot.Add.Scatter(xsL, ysL);
+                        lScatter.LineWidth = 0;
+                        lScatter.MarkerShape = MarkerShape.FilledCircle;
+                        lScatter.MarkerSize = 4f;
+                        lScatter.Color = ScottPlot.Color.FromHex("#ef4444");
+                    }
 
                     // 成交量柱状图 (右 Y 轴)
                     var volBars = new List<ScottPlot.Bar>(totalKCount);

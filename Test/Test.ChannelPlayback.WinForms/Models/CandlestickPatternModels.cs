@@ -193,6 +193,16 @@ namespace Test.ChannelPlayback.WinForms.Models
         /// </summary>
         public long PeakTroughTime { get; set; }
 
+        /// <summary>
+        /// 反应的通道高度线条描述 (例如 "50% 通道中线", "75% 通道高度线", "100% 通道上轨", "25% 通道高度线", "0% 通道下轨")
+        /// </summary>
+        public string ChannelLineReaction { get; set; } = "";
+
+        /// <summary>
+        /// 反应线条对应的通道基准价格
+        /// </summary>
+        public decimal ChannelLinePrice { get; set; } = 0m;
+
         public override string ToString()
         {
             string tickInfo = "";

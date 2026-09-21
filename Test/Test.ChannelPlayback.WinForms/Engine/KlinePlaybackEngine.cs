@@ -58,6 +58,10 @@ namespace Test.ChannelPlayback.WinForms.Engine
         public int ConsecutiveTrendMinBars { get; set; } = 5;
         public decimal ConsecutiveTrendMinPct { get; set; } = 0.0m;
         public bool ShowConsecutiveChannel { get; set; } = true; // 连续走势绿色 0.8f 平行通道
+        public ConsecutiveChannelPriceMode ConsecutiveChannelPriceMode { get; set; } = ConsecutiveChannelPriceMode.Close;
+        public bool EnableChannelAutoUpdate { get; set; } = true;
+        public ChannelUpdateMode ChannelUpdateMode { get; set; } = ChannelUpdateMode.Rolling;
+        public bool ShowHistoricalChannels { get; set; } = true;
         public ConsecutiveTrendDetector ConsecutiveTrendDetector => _consecutiveTrendDetector;
 
         // 连续 5 根 K 线 3 分钟观察期反转做单驱动引擎
@@ -95,7 +99,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
         public event Action<ConsecutiveTrendItem, int>? OnConsecutiveTrendDetected;
         public event Action<ConsecutiveTrendItem, string>? OnReversalStrategyActivated;
         public event Action<ReversalOrderSignal, string>? OnReversalOrderSignal;
-        public event Action<ReversalObservationCycle, string>? OnObservationCycleUpdated;
+        public event Action<ReversalObservationCycle?, string>? OnObservationCycleUpdated;
 
         public KlinePlaybackEngine()
         {
@@ -133,6 +137,14 @@ namespace Test.ChannelPlayback.WinForms.Engine
                 string sign = t.PriceChangePct >= 0m ? "+" : "";
                 string icon = t.Type == ConsecutiveTrendType.Bullish ? "🔥 连续上涨形态" : "❄️ 连续下跌形态";
                 OnLogMessage?.Invoke($"[连涨连跌] ⚡ 在 K线 #{idx} 确认 {icon}！跨度: {t.BarCount} 根 (#{t.StartIndex}..#{t.EndIndex}), 累计涨跌幅: {sign}{t.PriceChangePct:F2}% (基准价:{t.StartPrice:F2} -> 现价:{t.EndPrice:F2})");
+            };
+
+            // 注入交易信号判定委托，供通道在突破时检查是否已产生做单信号
+            _consecutiveTrendDetector.HasTradingSignalFunc = (trendId, barIdx) => _reversalOrderEngine.HasTradingSignal(trendId, barIdx);
+
+            _consecutiveTrendDetector.OnChannelUpdated += (item, snap, msg) =>
+            {
+                OnLogMessage?.Invoke(msg);
             };
 
             _reversalOrderEngine.OnStrategyActivated += (trend, desc) =>
@@ -661,6 +673,9 @@ namespace Test.ChannelPlayback.WinForms.Engine
             _consecutiveTrendDetector.EnableDetection = EnableConsecutiveTrend;
             _consecutiveTrendDetector.MinBars = ConsecutiveTrendMinBars;
             _consecutiveTrendDetector.MinPriceChangePct = ConsecutiveTrendMinPct;
+            _consecutiveTrendDetector.ChannelPriceMode = ConsecutiveChannelPriceMode;
+            _consecutiveTrendDetector.EnableChannelAutoUpdate = EnableChannelAutoUpdate;
+            _consecutiveTrendDetector.ChannelUpdateMode = ChannelUpdateMode;
             _consecutiveTrendDetector.ProcessCurrentSequence(_allKlines, _currentIndex);
 
             // 驱动连续 5 根反转做单引擎配置同步

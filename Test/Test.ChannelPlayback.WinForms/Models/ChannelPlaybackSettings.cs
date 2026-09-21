@@ -31,6 +31,7 @@ namespace Test.ChannelPlayback.WinForms.Models
         public bool AutoScale { get; set; } = true;
         public bool FollowLatest { get; set; } = true;
         public bool ShowTouchMarkers { get; set; } = true;
+        public bool ShowKlineHighLow { get; set; } = true; // 显示K线高点与低点小圆形标记
         public bool ShowLegend { get; set; } = false;
         public int ChartType { get; set; } = 0;       // 0: 蜡烛图 (Candlestick), 1: 折线图 (Line Chart)
 
@@ -54,6 +55,10 @@ namespace Test.ChannelPlayback.WinForms.Models
         public int ConsecutiveTrendMinBars { get; set; } = 5;
         public decimal ConsecutiveTrendMinPct { get; set; } = 0.0m;
         public bool ShowConsecutiveChannel { get; set; } = true; // 连续走势绿色 0.8f 平行通道
+        public int ConsecutiveChannelPriceMode { get; set; } = 0; // 0: Close (收盘价窄通道), 1: HighLow (最高最低宽通道)
+        public bool EnableChannelAutoUpdate { get; set; } = true; // 超出通道且无交易信号时自动更新绘制新通道
+        public int ChannelUpdateMode { get; set; } = 0; // 0: Rolling (滚动最新N根), 1: Expanding (扩展全波段)
+        public bool ShowHistoricalChannels { get; set; } = true; // 显示更新前历史旧通道 (淡灰细虚线)
 
         // Tick 视图周期配置 (0: 原始逐笔 Tick, 1: 1分钟, 2: 5分钟, 3: 15分钟, 4: 自定义分钟)
         public int TickPeriodMode { get; set; } = 0;

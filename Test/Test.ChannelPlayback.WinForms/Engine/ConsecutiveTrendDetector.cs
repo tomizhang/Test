@@ -19,6 +19,47 @@ namespace Test.ChannelPlayback.WinForms.Engine
         private bool _enableDetection = true;
         private int _minBars = 5;
         private decimal _minPriceChangePct = 0.0m;
+        private ConsecutiveChannelPriceMode _channelPriceMode = ConsecutiveChannelPriceMode.Close;
+        private bool _enableChannelAutoUpdate = true;
+        private ChannelUpdateMode _channelUpdateMode = ChannelUpdateMode.Rolling;
+        private Func<int, int, bool>? _hasTradingSignalFunc;
+        private readonly HashSet<string> _loggedUpdateKeys = new();
+
+        /// <summary>
+        /// 平行通道拟合取值模式 (默认 Close 收盘价窄通道，可选 HighLow 宽通道)
+        /// </summary>
+        public ConsecutiveChannelPriceMode ChannelPriceMode
+        {
+            get => _channelPriceMode;
+            set => _channelPriceMode = value;
+        }
+
+        /// <summary>
+        /// 是否开启 K 线超出通道且无交易信号时自动更新绘制新通道 (默认开启)
+        /// </summary>
+        public bool EnableChannelAutoUpdate
+        {
+            get => _enableChannelAutoUpdate;
+            set => _enableChannelAutoUpdate = value;
+        }
+
+        /// <summary>
+        /// 通道动态更新模式 (默认 Rolling 滚动最新 MinBars 根，可选 Expanding 扩展全波段)
+        /// </summary>
+        public ChannelUpdateMode ChannelUpdateMode
+        {
+            get => _channelUpdateMode;
+            set => _channelUpdateMode = value;
+        }
+
+        /// <summary>
+        /// 外部交易信号查询委托：(trendId, upToBarIndex) => 是否已产生做单交易信号
+        /// </summary>
+        public Func<int, int, bool>? HasTradingSignalFunc
+        {
+            get => _hasTradingSignalFunc;
+            set => _hasTradingSignalFunc = value;
+        }
 
         /// <summary>
         /// 当前已识别并确认的所有连续涨跌波段列表
@@ -58,11 +99,17 @@ namespace Test.ChannelPlayback.WinForms.Engine
         public event Action<ConsecutiveTrendItem, int>? OnTrendDetected;
 
         /// <summary>
+        /// 通道动态更新事件委托 (波段对象, 历史快照, 描述说明)
+        /// </summary>
+        public event Action<ConsecutiveTrendItem, ChannelSnapshot, string>? OnChannelUpdated;
+
+        /// <summary>
         /// 重置所有状态与已识别形态
         /// </summary>
         public void Reset()
         {
             _detectedTrends.Clear();
+            _loggedUpdateKeys.Clear();
         }
 
         /// <summary>
@@ -88,6 +135,13 @@ namespace Test.ChannelPlayback.WinForms.Engine
                     t.IsActive = true;
                 }
             }
+
+            // 移除在 targetBarIndex 之后的通道更新日志标记
+            _loggedUpdateKeys.RemoveWhere(k =>
+            {
+                var parts = k.Split('_');
+                return parts.Length >= 2 && int.TryParse(parts[1], out int bIdx) && bIdx > targetBarIndex;
+            });
         }
 
         /// <summary>
@@ -102,7 +156,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
             }
 
             int maxIndex = Math.Clamp(currentBarIndex, 0, allKlines.Count - 1);
-            var scanned = ScanTrends(allKlines, maxIndex, _minBars, _minPriceChangePct);
+            var scanned = ScanTrends(allKlines, maxIndex, _minBars, _minPriceChangePct, _channelPriceMode, _enableChannelAutoUpdate, _channelUpdateMode, _hasTradingSignalFunc);
 
             // 比对新触发的确认事件
             var existingIds = new HashSet<int>();
@@ -118,6 +172,26 @@ namespace Test.ChannelPlayback.WinForms.Engine
                 {
                     OnTrendDetected?.Invoke(t, t.ConfirmedBarIndex);
                 }
+
+                // 检查是否有新的通道更新事件需要通知
+                if (t.IsChannelUpdated && t.PreviousChannels.Count > 0)
+                {
+                    for (int sIdx = 0; sIdx < t.PreviousChannels.Count; sIdx++)
+                    {
+                        var snap = t.PreviousChannels[sIdx];
+                        string updateKey = $"{t.Id}_{snap.TriggerBarIndex}";
+                        if (!_loggedUpdateKeys.Contains(updateKey))
+                        {
+                            _loggedUpdateKeys.Add(updateKey);
+                            string trendDir = t.Type == ConsecutiveTrendType.Bullish ? "连续上涨" : "连续下跌";
+                            string modeDesc = _channelUpdateMode == ChannelUpdateMode.Rolling ? $"滚动最新{_minBars}根" : "扩展全波段";
+                            string msg = $"[通道动态更新] 🔄 {trendDir}形态已在 Bar #{snap.TriggerBarIndex} 更新绘制新通道！\n" +
+                                         $"  └ 📋 更新理由: {snap.Reason} 且未出现交易信号\n" +
+                                         $"  └ 📐 新通道参数: 拟合区间: Bar #{t.ChannelStartIndex}~#{t.ChannelEndIndex} ({modeDesc}) | 斜率:{t.SlopeK:+0.00;-0.00} | 高度:{t.ChannelHeight:F2} | 第 {sIdx + 1} 次更新";
+                            OnChannelUpdated?.Invoke(t, snap, msg);
+                        }
+                    }
+                }
             }
         }
 
@@ -128,7 +202,11 @@ namespace Test.ChannelPlayback.WinForms.Engine
             IReadOnlyList<RawKline> klines,
             int maxIndex,
             int minBars,
-            decimal minChangePct)
+            decimal minChangePct,
+            ConsecutiveChannelPriceMode priceMode = ConsecutiveChannelPriceMode.Close,
+            bool enableAutoUpdate = true,
+            ChannelUpdateMode updateMode = ChannelUpdateMode.Rolling,
+            Func<int, int, bool>? hasTradingSignalFunc = null)
         {
             var result = new List<ConsecutiveTrendItem>();
             if (klines == null || maxIndex < minBars - 1) return result;
@@ -197,7 +275,83 @@ namespace Test.ChannelPlayback.WinForms.Engine
 
                     // 核心关键：平行通道基准形态严格在首次达到门槛的 K 线 [streakStart, confirmedAt]（例如正好第 5 根）确立！
                     // 无需知道下一根（第 6 根、第 7 根...），在第 5 根闭合时通道即刻完全成型并立马绘制！
-                    FitParallelChannel(klines, streakStart, confirmedAt, out decimal slopeK, out decimal upperB, out decimal lowerB);
+                    FitParallelChannel(klines, streakStart, confirmedAt, out decimal slopeK, out decimal upperB, out decimal lowerB, priceMode);
+
+                    int activeStart = streakStart;
+                    int activeEnd = confirmedAt;
+                    decimal activeSlope = slopeK;
+                    decimal activeUpper = upperB;
+                    decimal activeLower = lowerB;
+                    int updateCount = 0;
+                    var snapshots = new List<ChannelSnapshot>();
+
+                    // 优化 1：若开启超出通道自动更新新通道，考察 [confirmedAt + 1, streakEnd] 区间
+                    if (enableAutoUpdate && confirmedAt < streakEnd)
+                    {
+                        for (int k = confirmedAt + 1; k <= streakEnd; k++)
+                        {
+                            // 检查在 bar k 结束前是否已产生做单交易信号
+                            bool hasSignal = hasTradingSignalFunc != null && hasTradingSignalFunc(stableId, k);
+                            if (hasSignal)
+                            {
+                                // 一旦产生做单交易信号，锁定通道不再更新
+                                break;
+                            }
+
+                            // 检查 bar k 是否超出当前活跃通道
+                            bool exceeded = false;
+                            decimal checkPrice = 0m;
+                            if (currentStreakDir == 1) // Bullish
+                            {
+                                decimal curUpper = activeSlope * k + activeUpper;
+                                checkPrice = priceMode == ConsecutiveChannelPriceMode.Close
+                                    ? klines[k].Close
+                                    : Math.Max(klines[k].High, klines[k].Close);
+                                exceeded = checkPrice > curUpper;
+                            }
+                            else // Bearish
+                            {
+                                decimal curLower = activeSlope * k + activeLower;
+                                checkPrice = priceMode == ConsecutiveChannelPriceMode.Close
+                                    ? klines[k].Close
+                                    : Math.Min(klines[k].Low, klines[k].Close);
+                                exceeded = checkPrice < curLower;
+                            }
+
+                            if (exceeded)
+                            {
+                                // 记录旧通道快照
+                                string dirDesc = currentStreakDir == 1 ? "超出通道上轨" : "跌破通道下轨";
+                                decimal boundVal = currentStreakDir == 1 ? (activeSlope * k + activeUpper) : (activeSlope * k + activeLower);
+                                var snap = new ChannelSnapshot
+                                {
+                                    StartIndex = activeStart,
+                                    EndIndex = activeEnd,
+                                    SlopeK = activeSlope,
+                                    UpperIntercept = activeUpper,
+                                    LowerIntercept = activeLower,
+                                    TriggerBarIndex = k,
+                                    TriggerPrice = checkPrice,
+                                    Reason = $"Bar #{k} {dirDesc} (价:{checkPrice:F2}, 轨:{boundVal:F2})"
+                                };
+                                snapshots.Add(snap);
+
+                                // 计算新通道拟合区间
+                                int newStart = updateMode == ChannelUpdateMode.Rolling
+                                    ? Math.Max(streakStart, k - minBars + 1)
+                                    : streakStart;
+                                int newEnd = k;
+
+                                FitParallelChannel(klines, newStart, newEnd, out decimal newSlope, out decimal newUpper, out decimal newLower, priceMode);
+                                activeStart = newStart;
+                                activeEnd = newEnd;
+                                activeSlope = newSlope;
+                                activeUpper = newUpper;
+                                activeLower = newLower;
+                                updateCount++;
+                            }
+                        }
+                    }
 
                     var item = new ConsecutiveTrendItem
                     {
@@ -210,11 +364,17 @@ namespace Test.ChannelPlayback.WinForms.Engine
                         PriceChangePct = finalChangePct,
                         ConfirmedBarIndex = confirmedAt,
                         IsActive = isActive,
-                        SlopeK = slopeK,
-                        UpperIntercept = upperB,
-                        LowerIntercept = lowerB,
-                        HasChannel = upperB > lowerB
+                        PriceMode = priceMode,
+                        SlopeK = activeSlope,
+                        UpperIntercept = activeUpper,
+                        LowerIntercept = activeLower,
+                        HasChannel = activeUpper > activeLower,
+                        ChannelStartIndex = activeStart,
+                        ChannelEndIndex = activeEnd,
+                        IsChannelUpdated = updateCount > 0,
+                        ChannelUpdateCount = updateCount
                     };
+                    item.PreviousChannels.AddRange(snapshots);
                     result.Add(item);
                 }
 
@@ -226,8 +386,9 @@ namespace Test.ChannelPlayback.WinForms.Engine
         }
 
         /// <summary>
-        /// 针对指定连续 K 线区间拟合严格平行的外包络通道
-        /// 核心：通过线性回归计算波段整体斜率 k，并通过最大 High 差值与最小 Low 差值确定平行的上轨与下轨
+        /// 针对指定连续 K 线区间拟合严格平行的通道
+        /// 1. Close 模式：以 Close 进行一元线性回归斜率拟合，并以 Close 在回归线上的最大正残差和最大负残差作为上轨与下轨（紧贴实体窄通道）
+        /// 2. HighLow 模式：以 (High+Low)/2 进行回归，以 High 最大残差与 Low 最小残差作为外包络（宽通道）
         /// </summary>
         public static void FitParallelChannel(
             IReadOnlyList<RawKline> klines,
@@ -235,7 +396,8 @@ namespace Test.ChannelPlayback.WinForms.Engine
             int endIndex,
             out decimal slopeK,
             out decimal upperB,
-            out decimal lowerB)
+            out decimal lowerB,
+            ConsecutiveChannelPriceMode priceMode = ConsecutiveChannelPriceMode.Close)
         {
             slopeK = 0m;
             upperB = 0m;
@@ -248,45 +410,105 @@ namespace Test.ChannelPlayback.WinForms.Engine
             int n = endIndex - startIndex + 1;
             if (n < 2)
             {
-                upperB = klines[startIndex].High;
-                lowerB = klines[startIndex].Low;
+                if (priceMode == ConsecutiveChannelPriceMode.Close)
+                {
+                    decimal c = klines[startIndex].Close;
+                    decimal span = Math.Max(0.01m, c * 0.0005m);
+                    upperB = c + span;
+                    lowerB = c - span;
+                }
+                else
+                {
+                    upperB = klines[startIndex].High;
+                    lowerB = klines[startIndex].Low;
+                }
                 return;
             }
 
-            decimal sumX = 0m;
-            decimal sumY = 0m;
-            for (int idx = startIndex; idx <= endIndex; idx++)
+            if (priceMode == ConsecutiveChannelPriceMode.Close)
             {
-                sumX += idx;
-                sumY += (klines[idx].High + klines[idx].Low) / 2m;
-            }
-            decimal meanX = sumX / n;
-            decimal meanY = sumY / n;
+                // 1. 窄通道拟合：以 Close 价格序列作为回归中心
+                decimal sumX = 0m;
+                decimal sumY = 0m;
+                for (int idx = startIndex; idx <= endIndex; idx++)
+                {
+                    sumX += idx;
+                    sumY += klines[idx].Close;
+                }
+                decimal meanX = sumX / n;
+                decimal meanY = sumY / n;
 
-            decimal num = 0m;
-            decimal den = 0m;
-            for (int idx = startIndex; idx <= endIndex; idx++)
+                decimal num = 0m;
+                decimal den = 0m;
+                for (int idx = startIndex; idx <= endIndex; idx++)
+                {
+                    decimal dx = idx - meanX;
+                    decimal dy = klines[idx].Close - meanY;
+                    num += dx * dy;
+                    den += dx * dx;
+                }
+
+                slopeK = den != 0m ? num / den : 0m;
+
+                // 2. 窄通道边界：以 Close 在回归线上的最大残差作为上轨，最小残差作为下轨
+                decimal maxDiffC = decimal.MinValue;
+                decimal minDiffC = decimal.MaxValue;
+                for (int idx = startIndex; idx <= endIndex; idx++)
+                {
+                    decimal diffC = klines[idx].Close - slopeK * idx;
+                    if (diffC > maxDiffC) maxDiffC = diffC;
+                    if (diffC < minDiffC) minDiffC = diffC;
+                }
+
+                upperB = maxDiffC;
+                lowerB = minDiffC;
+
+                // 若所有 Close 恰好共线 (上轨 == 下轨)，赋予极小的微通道厚度保证通道存在
+                if (upperB <= lowerB)
+                {
+                    decimal minHeight = Math.Max(0.01m, meanY * 0.0005m);
+                    upperB += minHeight / 2m;
+                    lowerB -= minHeight / 2m;
+                }
+            }
+            else
             {
-                decimal dx = idx - meanX;
-                decimal dy = ((klines[idx].High + klines[idx].Low) / 2m) - meanY;
-                num += dx * dy;
-                den += dx * dx;
+                // 宽通道拟合：以 (High + Low) / 2 为回归中心，以 High 的最大偏差和 Low 的最小偏差作为外包络
+                decimal sumX = 0m;
+                decimal sumY = 0m;
+                for (int idx = startIndex; idx <= endIndex; idx++)
+                {
+                    sumX += idx;
+                    sumY += (klines[idx].High + klines[idx].Low) / 2m;
+                }
+                decimal meanX = sumX / n;
+                decimal meanY = sumY / n;
+
+                decimal num = 0m;
+                decimal den = 0m;
+                for (int idx = startIndex; idx <= endIndex; idx++)
+                {
+                    decimal dx = idx - meanX;
+                    decimal dy = ((klines[idx].High + klines[idx].Low) / 2m) - meanY;
+                    num += dx * dy;
+                    den += dx * dx;
+                }
+
+                slopeK = den != 0m ? num / den : 0m;
+
+                decimal maxDiffH = decimal.MinValue;
+                decimal minDiffL = decimal.MaxValue;
+                for (int idx = startIndex; idx <= endIndex; idx++)
+                {
+                    decimal diffH = klines[idx].High - slopeK * idx;
+                    decimal diffL = klines[idx].Low - slopeK * idx;
+                    if (diffH > maxDiffH) maxDiffH = diffH;
+                    if (diffL < minDiffL) minDiffL = diffL;
+                }
+
+                upperB = maxDiffH;
+                lowerB = minDiffL;
             }
-
-            slopeK = den != 0m ? num / den : 0m;
-
-            decimal maxDiffH = decimal.MinValue;
-            decimal minDiffL = decimal.MaxValue;
-            for (int idx = startIndex; idx <= endIndex; idx++)
-            {
-                decimal diffH = klines[idx].High - slopeK * idx;
-                decimal diffL = klines[idx].Low - slopeK * idx;
-                if (diffH > maxDiffH) maxDiffH = diffH;
-                if (diffL < minDiffL) minDiffL = diffL;
-            }
-
-            upperB = maxDiffH;
-            lowerB = minDiffL;
         }
 
         /// <summary>
