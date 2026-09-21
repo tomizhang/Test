@@ -65,6 +65,8 @@ namespace Test.ChannelPlayback.WinForms.Models
         public decimal ReversalPLong { get; set; } = 1.0m;
         public decimal ReversalPMedium { get; set; } = 0.35m;
         public decimal ReversalPShort { get; set; } = 0.35m;
+        public decimal ReversalTickPullbackPct { get; set; } = 0.06m; // Tick 流冲高滞涨回落 / 探底企稳回升触发阈值 (%)
+        public decimal ReversalChannelZonePct { get; set; } = 25.0m; // 绿色通道顶部/底部观察阶段进入区间阈值(%), 默认 25% (即上涨需到达通道上部 25% 或突破上轨，下跌需到达通道下部 25% 或突破下轨)
         public bool ShowReversalYellowLines { get; set; } = true;
 
         // 回放控制参数

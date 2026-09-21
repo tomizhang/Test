@@ -140,6 +140,30 @@ namespace Test.ChannelPlayback.WinForms.Models
 
         #endregion
 
+        #region 观察阶段属性 (绿色通道顶部/底部极值区)
+
+        /// <summary>
+        /// 进入观察阶段的 K 线索引 (首次达到绿色通道顶部或底部时的 Bar 索引，未达到时为 -1)
+        /// </summary>
+        public int ObservationEntryBarIndex { get; set; } = -1;
+
+        /// <summary>
+        /// 进入观察阶段的价格 (达到通道顶部时的 High 或达到底部时的 Low)
+        /// </summary>
+        public decimal ObservationEntryPrice { get; set; } = 0m;
+
+        /// <summary>
+        /// 进入观察阶段的 K 线收盘时间戳 (作为第 1 个观察期的起点 T0)
+        /// </summary>
+        public long ObservationEntryTime { get; set; } = 0L;
+
+        /// <summary>
+        /// 是否已满足条件进入观察阶段
+        /// </summary>
+        public bool IsObservationEntered => ObservationEntryBarIndex >= 0;
+
+        #endregion
+
         public override string ToString()
         {
             return $"[{TypeName}] #{StartIndex}..#{EndIndex} (共{BarCount}根), 幅度:{PriceChangePct:+0.00;-0.00}% (确认于#{ConfirmedBarIndex})";

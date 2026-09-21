@@ -150,6 +150,13 @@ namespace Test.ChannelPlayback.WinForms.Models
         public long TriggerTime { get; set; }
         public DateTime TriggerDateTime => DateTimeOffset.FromUnixTimeMilliseconds(TriggerTime).LocalDateTime;
         public decimal Price { get; set; }
+        public decimal StopLossPrice { get; set; }
+        public decimal TakeProfitPrice { get; set; }
+        public decimal HighPointPrice { get; set; }
+        public decimal LowPointPrice { get; set; }
+        public decimal PeakTroughPrice { get; set; }
+        public decimal PullbackPct { get; set; }
+        public bool IsTickStreamTriggered { get; set; } = true;
         public OrderSignalDirection Direction { get; set; }
         public string DirectionText => Direction == OrderSignalDirection.Buy ? "🟢 做多 (Buy)" : (Direction == OrderSignalDirection.Sell ? "🔴 做空 (Sell)" : "无");
 
@@ -162,7 +169,8 @@ namespace Test.ChannelPlayback.WinForms.Models
 
         public override string ToString()
         {
-            return $"[信号 #{ObservationCycleIndex}] {DirectionText} @ {Price:F2} | 形态: [{Pattern.PatternId}] {Pattern.PatternName} ({TriggerDateTime:HH:mm:ss})";
+            string tickInfo = IsTickStreamTriggered ? $" [Tick流 极值:{PeakTroughPrice:F2} 回落:{PullbackPct:F2}%]" : "";
+            return $"[信号 #{ObservationCycleIndex}] {DirectionText} @ {Price:F2}{tickInfo} (止损:{StopLossPrice:F2}, 止盈:{TakeProfitPrice:F2}) | 形态: [{Pattern.PatternId}] {Pattern.PatternName} ({TriggerDateTime:HH:mm:ss})";
         }
     }
 

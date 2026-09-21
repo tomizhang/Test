@@ -11,7 +11,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
     public static class CandlestickPatternClassifier
     {
         public const decimal DefaultPLong = 1.0m;    // 长实体阈值 (大K线 >= 1.0%)
-        public const decimal DefaultPMedium = 0.35m; // 中实体阈值 (0.35% <= 中实体 < 1.0%)
+        public const decimal DefaultPMedium = 0.55m; // 中实体阈值 (0.35% <= 中实体 < 1.0%)
         public const decimal DefaultPShort = 0.35m;  // 短实体阈值 (< 0.35% 为小K线)
 
         /// <summary>
@@ -223,6 +223,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
                     res.PatternType = CandlestickPatternType.LowerShadowMediumBearish;
                     res.PatternName = "实体中 + 下跌 (抵抗下跌中阴 / 减速探底阴)";
                     res.SemanticLogic = "空方进攻踢到铁板。空头无法将价格按死在最低点，低位承接盘浮现，下行动能初现衰竭，市场步入多空相持。";
+                    res.SuggestedDirection = OrderSignalDirection.Buy;
                     return res;
                 }
                 if (bodyPct < pShort && lowerShadowRangeRatio >= 0.60m && isUp)
@@ -271,6 +272,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
                     res.PatternType = CandlestickPatternType.UpperShadowMediumBullish;
                     res.PatternName = "实体中 + 上涨 (冲高回落中阳 / 阻力探测线)";
                     res.SemanticLogic = "多头试盘遭遇阶段性解套盘抛压。多方虽保住胜果，但冲高回落表明上方筹码密集，跟风买力不足，多方主动撤退重新蓄力。";
+                    res.SuggestedDirection = OrderSignalDirection.Sell;
                     return res;
                 }
                 if (bodyPct >= pMedium && bodyPct < pLong && upperShadow >= 1.0m * body && isDown)
@@ -321,16 +323,17 @@ namespace Test.ChannelPlayback.WinForms.Engine
 
             if (priorTrend == ConsecutiveTrendType.Bullish)
             {
-                // 前序为连续上涨 (5根以上)，反转方向为：做空 (Sell)
+                // 前序为连续上涨 (5根以上)，反转方向为：观察达到高点后做空 (Sell)
+                // 必须是在高点受到空方强阻力压制（具备显著上影线或滞涨拒收特征），
+                // 排除无上影线顺势砸盘的大阴线/中阴线(避免在低点追空导致止损过大无利润)
                 switch (pattern.PatternType)
                 {
                     case CandlestickPatternType.UpperShadowLongBearish:   // [8] 冲高反杀断头阴 / 假突破全面崩盘
                     case CandlestickPatternType.UpperShadowMediumBearish: // [10] 常规冲高杀跌阴 / 射击之星中阴
                     case CandlestickPatternType.UpperShadowShortBearish:  // [12] 标准流星线 Shooting Star / 墓碑十字阴
-                    case CandlestickPatternType.FullBodyLongBearish:      // [2] 实体长 + 下跌 (大阴线 / 巨阴杀跌)
-                    case CandlestickPatternType.FullBodyMediumBearish:    // [4] 实体中 + 下跌 (中阴线 / 稳步阴跌)
+                    case CandlestickPatternType.UpperShadowLongBullish:   // [7] 巨幅放量滞涨阳 (高位买力耗尽)
+                    case CandlestickPatternType.UpperShadowMediumBullish: // [9] 冲高回落中阳 (阻力探测线)
                     case CandlestickPatternType.LowerShadowShortBearish:  // [18] 高位吊颈线 (高位防线被深度击穿)
-                    case CandlestickPatternType.UpperShadowLongBullish:   // [7] 巨幅放量滞涨阳 (买力枯竭)
                         direction = OrderSignalDirection.Sell;
                         pattern.IsReversalSignal = true;
                         pattern.SuggestedDirection = OrderSignalDirection.Sell;
@@ -342,14 +345,16 @@ namespace Test.ChannelPlayback.WinForms.Engine
             }
             else if (priorTrend == ConsecutiveTrendType.Bearish)
             {
-                // 前序为连续下跌 (5根以上)，反转方向为：做多 (Buy)
+                // 前序为连续下跌 (5根以上)，反转方向为：观察达到低点后做多 (Buy)
+                // 必须是在低位受到多方强支撑托底（具备显著下影线或探底回升特征），
+                // 排除无下影线顺势暴拉的大阳线/中阳线(避免在高点追多导致止损过大无利润)
                 switch (pattern.PatternType)
                 {
                     case CandlestickPatternType.LowerShadowLongBullish:   // [13] 深水反包巨阳 / 惊天 V 转
                     case CandlestickPatternType.LowerShadowMediumBullish: // [15] 探底回升中阳 / 稳固托底线
                     case CandlestickPatternType.LowerShadowShortBullish:  // [17] 经典锤子阳 Hammer / 蜻蜓阳线
-                    case CandlestickPatternType.FullBodyLongBullish:      // [1] 实体长 + 上涨 (大阳线 / 巨阳破位)
-                    case CandlestickPatternType.FullBodyMediumBullish:    // [3] 实体中 + 上涨 (中阳线 / 稳步推升)
+                    case CandlestickPatternType.LowerShadowLongBearish:   // [14] 宽幅杀跌抵抗阴 / 深水承接
+                    case CandlestickPatternType.LowerShadowMediumBearish: // [16] 抵抗下跌中阴 / 减速探底阴
                     case CandlestickPatternType.LowerShadowShortBearish:  // [18] 低位蜻蜓阴线 (空方砸盘被全盘接下筑底)
                     case CandlestickPatternType.UpperShadowShortBullish:  // [11] 倒锤子阳 / 仙人指路 (低位试盘)
                         direction = OrderSignalDirection.Buy;

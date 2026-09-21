@@ -67,6 +67,8 @@ namespace Test.ChannelPlayback.WinForms.Engine
         public decimal ReversalPLong { get; set; } = CandlestickPatternClassifier.DefaultPLong;
         public decimal ReversalPMedium { get; set; } = CandlestickPatternClassifier.DefaultPMedium;
         public decimal ReversalPShort { get; set; } = CandlestickPatternClassifier.DefaultPShort;
+        public decimal ReversalTickPullbackPct { get; set; } = 0.06m;
+        public decimal ReversalChannelZonePct { get; set; } = 25.0m;
         public bool ShowReversalYellowLines { get; set; } = true;
         public ReversalOrderEngine ReversalOrderEngine => _reversalOrderEngine;
 
@@ -666,6 +668,8 @@ namespace Test.ChannelPlayback.WinForms.Engine
             _reversalOrderEngine.PLong = ReversalPLong;
             _reversalOrderEngine.PMedium = ReversalPMedium;
             _reversalOrderEngine.PShort = ReversalPShort;
+            _reversalOrderEngine.TickPullbackThresholdPct = ReversalTickPullbackPct;
+            _reversalOrderEngine.ChannelZonePct = ReversalChannelZonePct;
 
             // 驱动反转做单策略：在连续同向第 5 根收盘时刻激活并实时推演观察期
             if (EnableReversalOrder && _consecutiveTrendDetector.DetectedTrends.Count > 0)
