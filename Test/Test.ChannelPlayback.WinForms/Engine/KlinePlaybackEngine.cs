@@ -70,6 +70,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
         public decimal ReversalTickPullbackPct { get; set; } = 0.06m;
         public decimal ReversalChannelZonePct { get; set; } = 25.0m;
         public bool ShowReversalYellowLines { get; set; } = true;
+        public bool ShowObservationCycles { get; set; } = true;
         public ReversalOrderEngine ReversalOrderEngine => _reversalOrderEngine;
 
         // 底层 1m 真实 K 线缓存 (用于反转做单 3m 观察期双模自适应回退聚合)

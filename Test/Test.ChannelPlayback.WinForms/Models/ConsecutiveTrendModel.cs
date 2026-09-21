@@ -162,6 +162,26 @@ namespace Test.ChannelPlayback.WinForms.Models
         /// </summary>
         public bool IsObservationEntered => ObservationEntryBarIndex >= 0;
 
+        /// <summary>
+        /// 历史走势中是否曾有高点达到通道顶部(上涨)或低点达到通道底部(下跌)
+        /// </summary>
+        public bool HasHistoricalReachedExtreme { get; set; }
+
+        /// <summary>
+        /// 历史走势中首次达到通道极值区域的 K 线索引
+        /// </summary>
+        public int HistoricalExtremeBarIndex { get; set; } = -1;
+
+        /// <summary>
+        /// 历史 K 线实体部分是否曾超过通道 (上涨实体突破上轨 / 下跌实体跌破下轨)
+        /// </summary>
+        public bool HasBodyExceededChannel { get; set; }
+
+        /// <summary>
+        /// 实体首次超过通道的 K 线索引
+        /// </summary>
+        public int BreakoutBarIndex { get; set; } = -1;
+
         #endregion
 
         public override string ToString()

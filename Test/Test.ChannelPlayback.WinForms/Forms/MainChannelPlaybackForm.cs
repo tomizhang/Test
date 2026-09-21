@@ -97,6 +97,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
         private NumericUpDown numReversalTickPullback = null!;
         private NumericUpDown numReversalChannelZone = null!;
         private CheckBox chkShowReversalYellowLines = null!;
+        private CheckBox chkShowObservationCycles = null!;
 
         // Tab 2: 数据源控件
         private ComboBox cboCoin = null!;
@@ -1271,6 +1272,25 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     RenderPlot();
                 };
 
+                chkShowObservationCycles = new CheckBox
+                {
+                    Text = "⏱️ 在Tick窗口标记出观察周期",
+                    Font = new Font("Microsoft YaHei", 9F, FontStyle.Regular),
+                    ForeColor = Color.FromArgb(56, 189, 248),
+                    Location = new Point(15, 874),
+                    AutoSize = true,
+                    Checked = true
+                };
+                chkShowObservationCycles.CheckedChanged += (s, e) =>
+                {
+                    _engine.ShowObservationCycles = chkShowObservationCycles.Checked;
+                    SaveSettingsFromUi();
+                    if (_cachedRawTicks != null && _cachedRawTicks.Length > 0 && _cachedTickStartIndex >= 0 && _cachedTickEndIndex >= 0)
+                    {
+                        DisplayTicksInternal(_cachedTickStartIndex, _cachedTickEndIndex, _cachedRawTicks);
+                    }
+                };
+
                 tabChannel.Controls.AddRange(new Control[] {
                     lblL, numLeftLen, lblR, numRightLen, lblTotalLength,
                     lblMode, cboCalcMode, lblWin, cboWindowMode,
@@ -1286,7 +1306,8 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     lblRevPLong, numReversalPLong, lblRevPMed, numReversalPMedium, numReversalPShort,
                     lblRevPullback, numReversalTickPullback,
                     lblRevChannelZone, numReversalChannelZone,
-                    chkShowReversalYellowLines
+                    chkShowReversalYellowLines,
+                    chkShowObservationCycles
                 });
             }
 
@@ -1644,6 +1665,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
                 decimal channelZoneVal = s.ReversalChannelZonePct <= 0 ? 25.0m : s.ReversalChannelZonePct;
                 numReversalChannelZone.Value = Math.Clamp(channelZoneVal, numReversalChannelZone.Minimum, numReversalChannelZone.Maximum);
                 chkShowReversalYellowLines.Checked = s.ShowReversalYellowLines;
+                chkShowObservationCycles.Checked = s.ShowObservationCycles;
 
                 // 恢复回放速度
                 tbSpeed.Value = Math.Clamp(s.SpeedIntervalMs, tbSpeed.Minimum, tbSpeed.Maximum);
@@ -1677,6 +1699,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
                 _engine.ReversalTickPullbackPct = numReversalTickPullback.Value;
                 _engine.ReversalChannelZonePct = numReversalChannelZone.Value;
                 _engine.ShowReversalYellowLines = chkShowReversalYellowLines.Checked;
+                _engine.ShowObservationCycles = chkShowObservationCycles.Checked;
 
                 // 恢复 Tick 查看周期设置
                 _tickPeriodMode = Math.Clamp(s.TickPeriodMode, 0, 4);
@@ -1746,6 +1769,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     ReversalTickPullbackPct = numReversalTickPullback.Value,
                     ReversalChannelZonePct = numReversalChannelZone.Value,
                     ShowReversalYellowLines = chkShowReversalYellowLines.Checked,
+                    ShowObservationCycles = chkShowObservationCycles.Checked,
                     TickPeriodMode = _tickPeriodMode,
                     CustomTickMinutes = (int)numCustomTickPeriod.Value
                 };
@@ -2304,9 +2328,14 @@ namespace Test.ChannelPlayback.WinForms.Forms
                 if (latestSig != null)
                 {
                     string modeStr = latestSig.IsTickStreamTriggered ? "Tick实时" : "1m回退";
-                    string dirStr = latestSig.Direction == OrderSignalDirection.Sell ? "🔴高点做空" : "🟢低点做多";
+                    string dirStr = latestSig.IsBreakoutTrendFollowing
+                        ? (latestSig.Direction == OrderSignalDirection.Sell ? "🔴顺势高空" : "🟢顺势低多")
+                        : (latestSig.Direction == OrderSignalDirection.Sell ? "🔴高点做空" : "🟢低点做多");
                     string peakInfo = latestSig.IsTickStreamTriggered ? $" 极值:{latestSig.PeakTroughPrice:F2} 回撤:{latestSig.PullbackPct:F2}% |" : "";
-                    lblMetricLatestReversalSignal.Text = $"最新反转: [{modeStr}] {dirStr} @ {latestSig.Price:F2} ({peakInfo} 止损:{latestSig.StopLossPrice:F2}, 止盈:{latestSig.TakeProfitPrice:F2}) [#{latestSig.Pattern.PatternId} C{latestSig.ObservationCycleIndex}] (Bar #{latestSig.BigBarIndex})";
+                    string tickExtra = latestSig.IsTickStreamTriggered && latestSig.TriggerTick.HasValue
+                        ? $" [Tick #{latestSig.TriggerTickIndex + 1}/{latestSig.CycleTotalTicks} {(latestSig.TriggerTick.Value.IsBuyerMaker ? "卖" : "买")} 量:{latestSig.TriggerTick.Value.Qty:F2}]"
+                        : "";
+                    lblMetricLatestReversalSignal.Text = $"最新反转: [{modeStr}] {dirStr} @ {latestSig.Price:F2}{tickExtra} ({peakInfo} 止损:{latestSig.StopLossPrice:F2}, 止盈:{latestSig.TakeProfitPrice:F2}) [#{latestSig.Pattern.PatternId} C{latestSig.ObservationCycleIndex}] (Bar #{latestSig.BigBarIndex})";
                     lblMetricLatestReversalSignal.ForeColor = Color.FromArgb(250, 204, 21);
                 }
                 else
@@ -3105,8 +3134,10 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     arrowMarker.Size = 9;
                     arrowMarker.Color = sig.Direction == OrderSignalDirection.Sell ? ScottPlot.Color.FromHex("#ef4444") : ScottPlot.Color.FromHex("#22c55e");
 
-                    // 气泡标签文字：如 "⚡高点做空 @ 68480.00 (顶:68520) [#10 C1]" 或 "⚡低点做多 @ 67220.00 (底:67180) [#15 C2]"
-                    string dirStr = sig.Direction == OrderSignalDirection.Sell ? "高点做空" : "低点做多";
+                    // 气泡标签文字：如 "⚡顺势低多 @ 68480.00" 或 "⚡高点做空 @ 68480.00"
+                    string dirStr = sig.IsBreakoutTrendFollowing
+                        ? (sig.Direction == OrderSignalDirection.Sell ? "顺势高空" : "顺势低多")
+                        : (sig.Direction == OrderSignalDirection.Sell ? "高点做空" : "低点做多");
                     string modeTag = sig.IsTickStreamTriggered ? $" (极值:{sig.PeakTroughPrice:F2})" : "";
                     string labelText = $"⚡{dirStr} @ {sig.Price:F2}{modeTag} [#{sig.Pattern.PatternId} C{sig.ObservationCycleIndex}]";
                     double barSpan = (double)(allKlines[sig.BigBarIndex].High - allKlines[sig.BigBarIndex].Low);
@@ -3567,11 +3598,19 @@ namespace Test.ChannelPlayback.WinForms.Forms
                 for (int t = trends.Count - 1; t >= 0; t--)
                 {
                     var tr = trends[t];
-                    if (tr.ConfirmedBarIndex <= _currentBarIndex && tr.HasChannel &&
-                        Math.Max(startIndex, tr.StartIndex) <= Math.Min(endIndex, tr.EndIndex))
+                    if (tr.ConfirmedBarIndex <= _currentBarIndex && tr.HasChannel)
                     {
-                        consecCh = tr;
-                        break;
+                        long trStartT = allKlines[tr.StartIndex].OpenTime;
+                        long trEndBarT = allKlines[Math.Min(tr.EndIndex, allKlines.Count - 1)].CloseTime;
+                        long obsReachT = trEndBarT + (long)_engine.ReversalOrderEngine.ObservationMinutes * 60_000L * 15;
+
+                        // 扩大判定：不仅包含波段本体，还包含后续的观察期跨度
+                        if (Math.Max(startIndex, tr.StartIndex) <= Math.Min(endIndex, tr.EndIndex) ||
+                            (klineEnd.CloseTime >= trStartT && klineStart.OpenTime <= obsReachT))
+                        {
+                            consecCh = tr;
+                            break;
+                        }
                     }
                 }
             }
@@ -3756,10 +3795,19 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     for (int t = 0; t < trends.Count; t++)
                     {
                         var tr = trends[t];
-                        if (tr.ConfirmedBarIndex <= endIndex && tr.StartIndex <= endIndex && tr.EndIndex >= startIndex)
+                        if (tr.ConfirmedBarIndex <= _currentBarIndex)
                         {
-                            var sigs = _engine.ReversalOrderEngine.EvaluateObservationCycles(tr, allKlines, ticks, endIndex);
-                            if (sigs.Count > 0) hasNewSignals = true;
+                            long trStartT = allKlines[tr.StartIndex].OpenTime;
+                            long trEndBarT = allKlines[Math.Min(tr.EndIndex, allKlines.Count - 1)].CloseTime;
+                            long obsReachT = trEndBarT + (long)_engine.ReversalOrderEngine.ObservationMinutes * 60_000L * 15;
+                            long selStartT = klineStart.OpenTime;
+                            long selEndT = klineEnd.CloseTime;
+
+                            if (selEndT >= trStartT && selStartT <= obsReachT)
+                            {
+                                var sigs = _engine.ReversalOrderEngine.EvaluateObservationCycles(tr, allKlines, ticks, Math.Min(_currentBarIndex, endIndex));
+                                if (sigs.Count > 0) hasNewSignals = true;
+                            }
                         }
                     }
                     if (hasNewSignals)
@@ -3773,6 +3821,32 @@ namespace Test.ChannelPlayback.WinForms.Forms
                 }
             }
 
+            // 提取当前可见 Tick 窗口覆盖的所有反转观察周期
+            var relevantCycles = new List<ReversalObservationCycle>();
+            if (_engine.EnableReversalOrder && _engine.ShowObservationCycles && totalTicks > 0)
+            {
+                long minT = ticks[0].Time;
+                long maxT = ticks[totalTicks - 1].Time;
+
+                var allCycles = _engine.ReversalOrderEngine.AllCycles;
+                for (int c = 0; c < allCycles.Count; c++)
+                {
+                    var cyc = allCycles[c];
+                    if (cyc.StartTime <= maxT && cyc.EndTime >= minT)
+                    {
+                        relevantCycles.Add(cyc);
+                    }
+                }
+            }
+
+            string obsSummary = "";
+            if (relevantCycles.Count > 0)
+            {
+                obsSummary = $" | ⏱️观察周期: 共{relevantCycles.Count}期 (" +
+                    string.Join(", ", relevantCycles.Select(c => $"C{c.CycleIndex}:" + (c.IsSignalTriggered ? "⚡已做单" : (c.IsCompleted ? "推演完" : "观察中")))) +
+                    ")";
+            }
+
             if (_tickPeriodMode == 0)
             {
                 UpdateTickPeriodTabs(0, totalTicks, "原始Tick");
@@ -3780,21 +3854,23 @@ namespace Test.ChannelPlayback.WinForms.Forms
 
                 if (hasConsecChannel && consecCh != null)
                 {
-                    lblTickTitle.Text = $"🟩 [连续走势绿色平行通道] #{consecCh.StartIndex}~#{consecCh.EndIndex} ({consecCh.TypeName}) 详情与逐笔 Tick";
+                    string obsTag = relevantCycles.Count > 0 ? $" [⏱️观察期: {relevantCycles.Count}期]" : "";
+                    lblTickTitle.Text = $"🟩 [连续走势绿色平行通道] #{consecCh.StartIndex}~#{consecCh.EndIndex} ({consecCh.TypeName}) 详情与逐笔 Tick{obsTag}";
                     lblTickTitle.ForeColor = Color.FromArgb(74, 222, 128);
 
-                lblTickInfo.Text = $"【{consecCh.TypeName}】Bar #{consecCh.StartIndex}~#{consecCh.EndIndex} (共{barCount}根, 确立于#{consecCh.ConfirmedBarIndex}) | " +
-                                   $"时间: {kOpenTime:yyyy-MM-dd HH:mm:ss} ~ {kCloseTime:HH:mm:ss} | " +
-                                   $"涨跌: {consecCh.PriceChangePct:+0.00;-0.00}% ({consecCh.StartPrice:F2} -> {consecCh.EndPrice:F2}) | " +
-                                   $"斜率k: {consecCh.SlopeK:F4} | 高度: {consecCh.ChannelHeight:F2} USDT | " +
-                                   $"Tick总量: {totalTicks:N0}笔 (主买:{takerBuyRatio:F1}%)" + chSummary;
-            }
-            else
-            {
-                lblTickTitle.Text = $"🎯 {barRangeStr} 微观逐笔成交明细";
-                lblTickTitle.ForeColor = Color.FromArgb(56, 189, 248);
-                lblTickInfo.Text = $"{barRangeStr} ({dirStr}) | {kOpenTime:HH:mm:ss} ~ {kCloseTime:HH:mm:ss} | {totalTicks:N0} 笔 Tick | 范围: {overallLow:F2} ~ {overallHigh:F2} | 主买: {takerBuyRatio:F1}%" + chSummary;
-            }
+                    lblTickInfo.Text = $"【{consecCh.TypeName}】Bar #{consecCh.StartIndex}~#{consecCh.EndIndex} (共{barCount}根, 确立于#{consecCh.ConfirmedBarIndex}) | " +
+                                       $"时间: {kOpenTime:yyyy-MM-dd HH:mm:ss} ~ {kCloseTime:HH:mm:ss} | " +
+                                       $"涨跌: {consecCh.PriceChangePct:+0.00;-0.00}% ({consecCh.StartPrice:F2} -> {consecCh.EndPrice:F2}) | " +
+                                       $"斜率k: {consecCh.SlopeK:F4} | 高度: {consecCh.ChannelHeight:F2} USDT | " +
+                                       $"Tick总量: {totalTicks:N0}笔 (主买:{takerBuyRatio:F1}%)" + chSummary + obsSummary;
+                }
+                else
+                {
+                    string obsTag = relevantCycles.Count > 0 ? $" [⏱️包含 {relevantCycles.Count} 个观察期]" : "";
+                    lblTickTitle.Text = $"🎯 {barRangeStr} 微观逐笔成交明细{obsTag}";
+                    lblTickTitle.ForeColor = Color.FromArgb(56, 189, 248);
+                    lblTickInfo.Text = $"{barRangeStr} ({dirStr}) | {kOpenTime:HH:mm:ss} ~ {kCloseTime:HH:mm:ss} | {totalTicks:N0} 笔 Tick | 范围: {overallLow:F2} ~ {overallHigh:F2} | 主买: {takerBuyRatio:F1}%" + chSummary + obsSummary;
+                }
 
             // 1. 渲染微观 Tick 分时走势图 (ScottPlot 5)
             formsPlotTick.Plot.Clear();
@@ -4137,6 +4213,40 @@ namespace Test.ChannelPlayback.WinForms.Forms
                 }
             }
 
+            // 4. 绘制反转策略观察周期半透明背景底色带 (置于价格折线之下)
+            if (relevantCycles.Count > 0)
+            {
+                for (int c = 0; c < relevantCycles.Count; c++)
+                {
+                    var cyc = relevantCycles[c];
+                    int sTick = -1, eTick = -1;
+                    for (int i = 0; i < totalTicks; i++)
+                    {
+                        if (sTick < 0 && ticks[i].Time >= cyc.StartTime) sTick = i;
+                        if (ticks[i].Time <= cyc.EndTime) eTick = i;
+                    }
+                    if (sTick < 0 && ticks[0].Time >= cyc.StartTime) sTick = 0;
+                    if (eTick < 0 && ticks[totalTicks - 1].Time <= cyc.EndTime) eTick = totalTicks - 1;
+                    if (sTick < 0) sTick = 0;
+                    if (eTick < sTick) eTick = sTick;
+
+                    bool isBullish = cyc.PriorTrendType == ConsecutiveTrendType.Bullish;
+                    var bandColor = isBullish ? ScottPlot.Color.FromHex("#f59e0b") : ScottPlot.Color.FromHex("#06b6d4");
+                    byte alphaVal = cyc.IsSignalTriggered ? (byte)32 : (byte)16;
+
+                    var shadeCoords = new Coordinates[]
+                    {
+                        new Coordinates(sTick, (double)overallLow - 2000),
+                        new Coordinates(eTick, (double)overallLow - 2000),
+                        new Coordinates(eTick, (double)overallHigh + 2000),
+                        new Coordinates(sTick, (double)overallHigh + 2000)
+                    };
+                    var cPoly = formsPlotTick.Plot.Add.Polygon(shadeCoords);
+                    cPoly.FillColor = bandColor.WithAlpha(alphaVal);
+                    cPoly.LineWidth = 0;
+                }
+            }
+
             // 绘制微观 Tick 价格折线
             var scatter = formsPlotTick.Plot.Add.ScatterLine(xs, ys);
             scatter.Color = klineEnd.Close >= klineStart.Open ? ScottPlot.Color.FromHex("#22c55e") : ScottPlot.Color.FromHex("#ef4444");
@@ -4163,6 +4273,102 @@ namespace Test.ChannelPlayback.WinForms.Forms
             mClose.Shape = MarkerShape.FilledSquare;
             mClose.Size = 7;
             mClose.Color = ScottPlot.Color.FromHex("#f97316");
+
+            // 5. 绘制反转策略观察周期的垂直边界线、顶部跨度标尺与状态徽标
+            if (relevantCycles.Count > 0)
+            {
+                double spanH = (double)(overallHigh - overallLow);
+                if (spanH <= 0) spanH = 10.0;
+                double obsBracketY = barCount > 1
+                    ? (double)overallHigh + spanH * 0.16
+                    : (double)overallHigh + spanH * 0.08;
+                double dropTick = Math.Max(0.2, spanH * 0.025);
+
+                for (int c = 0; c < relevantCycles.Count; c++)
+                {
+                    var cyc = relevantCycles[c];
+                    int sTick = -1, eTick = -1;
+                    for (int i = 0; i < totalTicks; i++)
+                    {
+                        if (sTick < 0 && ticks[i].Time >= cyc.StartTime) sTick = i;
+                        if (ticks[i].Time <= cyc.EndTime) eTick = i;
+                    }
+                    if (sTick < 0 && ticks[0].Time >= cyc.StartTime) sTick = 0;
+                    if (eTick < 0 && ticks[totalTicks - 1].Time <= cyc.EndTime) eTick = totalTicks - 1;
+                    if (sTick < 0) sTick = 0;
+                    if (eTick < sTick) eTick = sTick;
+
+                    bool isBullish = cyc.PriorTrendType == ConsecutiveTrendType.Bullish;
+                    var bandColor = isBullish ? ScottPlot.Color.FromHex("#f59e0b") : ScottPlot.Color.FromHex("#06b6d4");
+
+                    // 起始垂直虚线
+                    var vLineStart = formsPlotTick.Plot.Add.VerticalLine(sTick);
+                    vLineStart.Color = bandColor.WithAlpha(210);
+                    vLineStart.LineWidth = 1.4f;
+                    vLineStart.LinePattern = LinePattern.Dashed;
+
+                    // 结束垂直虚线 (若未贴最右边缘)
+                    if (eTick < totalTicks - 1)
+                    {
+                        var vLineEnd = formsPlotTick.Plot.Add.VerticalLine(eTick);
+                        vLineEnd.Color = bandColor.WithAlpha(150);
+                        vLineEnd.LineWidth = 1.1f;
+                        vLineEnd.LinePattern = LinePattern.Dotted;
+                    }
+
+                    // 顶部横向跨度标尺指示线
+                    var hLine = formsPlotTick.Plot.Add.Line(sTick, obsBracketY, eTick, obsBracketY);
+                    hLine.Color = cyc.IsSignalTriggered ? ScottPlot.Color.FromHex("#facc15") : bandColor;
+                    hLine.LineWidth = 1.8f;
+                    hLine.LinePattern = LinePattern.Solid;
+                    if (c == 0) hLine.LegendText = $"⏱️ 观察周期 ({_engine.ReversalObservationMinutes}分钟)";
+
+                    // 左右向下小刻度
+                    var endDropL = formsPlotTick.Plot.Add.Line(sTick, obsBracketY, sTick, obsBracketY - dropTick);
+                    endDropL.Color = hLine.Color; endDropL.LineWidth = 1.8f;
+                    var endDropR = formsPlotTick.Plot.Add.Line(eTick, obsBracketY, eTick, obsBracketY - dropTick);
+                    endDropR.Color = hLine.Color; endDropR.LineWidth = 1.8f;
+
+                    // 顶部徽标文字
+                    double midX = (sTick + eTick) / 2.0;
+                    DateTime dtStart = TimeHelper.FromUnixTimeMilliseconds(cyc.StartTime).ToLocalTime();
+                    DateTime dtEnd = TimeHelper.FromUnixTimeMilliseconds(cyc.EndTime).ToLocalTime();
+                    string timeStr = $"{dtStart:HH:mm:ss}~{dtEnd:HH:mm:ss}";
+
+                    string badgeText;
+                    ScottPlot.Color badgeColor;
+
+                    if (cyc.IsSignalTriggered && cyc.Signal != null)
+                    {
+                        string sigDirName = cyc.Signal.IsBreakoutTrendFollowing
+                            ? (cyc.Signal.Direction == OrderSignalDirection.Sell ? "顺势高空" : "顺势低多")
+                            : (cyc.Signal.Direction == OrderSignalDirection.Sell ? "高点做空" : "低点做多");
+                        badgeText = $"⏱️ 第{cyc.CycleIndex}观察期 ({_engine.ReversalObservationMinutes}m) ⚡【{sigDirName}】\n{timeStr}";
+                        badgeColor = ScottPlot.Color.FromHex("#facc15"); // 亮金色
+                    }
+                    else if (cyc.IsCompleted)
+                    {
+                        badgeText = $"⏱️ 第{cyc.CycleIndex}观察期 ({_engine.ReversalObservationMinutes}m) [推演完毕]\n{timeStr}";
+                        badgeColor = isBullish ? ScottPlot.Color.FromHex("#fb923c") : ScottPlot.Color.FromHex("#38bdf8");
+                    }
+                    else
+                    {
+                        badgeText = $"⏱️ 第{cyc.CycleIndex}观察期 ({_engine.ReversalObservationMinutes}m) [推演中...]\n{timeStr}";
+                        badgeColor = ScottPlot.Color.FromHex("#94a3b8");
+                    }
+
+                    var txtBadge = formsPlotTick.Plot.Add.Text(badgeText, midX, obsBracketY + dropTick * 0.6);
+                    txtBadge.LabelFontColor = badgeColor;
+                    txtBadge.LabelFontSize = 8.8f;
+                    txtBadge.LabelBold = true;
+                    txtBadge.Alignment = Alignment.LowerCenter;
+
+                    if (obsBracketY + dropTick * 3.5 > (double)overallHigh)
+                    {
+                        overallHigh = (decimal)(obsBracketY + dropTick * 3.5);
+                    }
+                }
+            }
 
             // 绘制反转做单短黄线标记 (如果命中反转做单信号)
             if (_engine.EnableReversalOrder && _engine.ShowReversalYellowLines)
@@ -4227,7 +4433,9 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     arrow.Color = sig.Direction == OrderSignalDirection.Sell ? ScottPlot.Color.FromHex("#ef4444") : ScottPlot.Color.FromHex("#22c55e");
 
                     // 气泡文字标签
-                    string sigDirStr = sig.Direction == OrderSignalDirection.Sell ? "高点做空" : "低点做多";
+                    string sigDirStr = sig.IsBreakoutTrendFollowing
+                        ? (sig.Direction == OrderSignalDirection.Sell ? "顺势高空" : "顺势低多")
+                        : (sig.Direction == OrderSignalDirection.Sell ? "高点做空" : "低点做多");
                     string tickDetail = sig.IsTickStreamTriggered 
                         ? $" (极值:{sig.PeakTroughPrice:F2}, 回落:{sig.PullbackPct:F2}%, 止损:{sig.StopLossPrice:F2})" 
                         : $" (止损:{sig.StopLossPrice:F2})";
@@ -4590,12 +4798,81 @@ namespace Test.ChannelPlayback.WinForms.Forms
                                 arrow.Size = 9;
                                 arrow.Color = sig.Direction == OrderSignalDirection.Sell ? ScottPlot.Color.FromHex("#ef4444") : ScottPlot.Color.FromHex("#22c55e");
 
-                                string revDirStr = sig.Direction == OrderSignalDirection.Sell ? "做空" : "做多";
+                                string revDirStr = sig.IsBreakoutTrendFollowing
+                                    ? (sig.Direction == OrderSignalDirection.Sell ? "顺势高空" : "顺势低多")
+                                    : (sig.Direction == OrderSignalDirection.Sell ? "做空" : "做多");
                                 var txt = formsPlotTick.Plot.Add.Text($"⚡{revDirStr} [#{sig.Pattern.PatternId} C{sig.ObservationCycleIndex}]", kIdx, y);
                                 txt.LabelFontColor = yellowCol;
                                 txt.LabelFontSize = 9.0f;
                                 txt.LabelBold = true;
                                 txt.Alignment = sig.Direction == OrderSignalDirection.Sell ? Alignment.LowerCenter : Alignment.UpperCenter;
+                            }
+                        }
+                    }
+
+                    // 绘制反转策略观察周期标注 (在合成K线模式下)
+                    if (_engine.EnableReversalOrder && _engine.ShowObservationCycles && totalKCount > 0)
+                    {
+                        var allCycles = _engine.ReversalOrderEngine.AllCycles;
+                        double spanHK = Math.Max(1.0, maxP - minP);
+                        double obsBracketYK = maxP + spanHK * 0.12;
+                        double dropTickK = Math.Max(0.2, spanHK * 0.025);
+
+                        for (int c = 0; c < allCycles.Count; c++)
+                        {
+                            var cyc = allCycles[c];
+                            int sK = -1, eK = -1;
+                            for (int i = 0; i < totalKCount; i++)
+                            {
+                                var k = _displayedKlines[i];
+                                if (sK < 0 && k.CloseTime >= cyc.StartTime) sK = i;
+                                if (k.OpenTime <= cyc.EndTime) eK = i;
+                            }
+                            if (sK >= 0 && eK >= sK && sK < totalKCount && eK < totalKCount)
+                            {
+                                bool isBullish = cyc.PriorTrendType == ConsecutiveTrendType.Bullish;
+                                var bandCol = isBullish ? ScottPlot.Color.FromHex("#f59e0b") : ScottPlot.Color.FromHex("#06b6d4");
+
+                                // 观察期垂直虚线边界
+                                var vStart = formsPlotTick.Plot.Add.VerticalLine(sK - 0.45);
+                                vStart.Color = bandCol.WithAlpha(180);
+                                vStart.LineWidth = 1.2f;
+                                vStart.LinePattern = LinePattern.Dashed;
+
+                                if (eK < totalKCount - 1)
+                                {
+                                    var vEnd = formsPlotTick.Plot.Add.VerticalLine(eK + 0.45);
+                                    vEnd.Color = bandCol.WithAlpha(140);
+                                    vEnd.LineWidth = 1.0f;
+                                    vEnd.LinePattern = LinePattern.Dotted;
+                                }
+
+                                // 顶部横向标尺
+                                double x0 = sK - 0.45;
+                                double x1 = eK + 0.45;
+                                var hLineK = formsPlotTick.Plot.Add.Line(x0, obsBracketYK, x1, obsBracketYK);
+                                hLineK.Color = cyc.IsSignalTriggered ? ScottPlot.Color.FromHex("#facc15") : bandCol;
+                                hLineK.LineWidth = 1.6f;
+
+                                var bL = formsPlotTick.Plot.Add.Line(x0, obsBracketYK, x0, obsBracketYK - dropTickK);
+                                bL.Color = hLineK.Color; bL.LineWidth = 1.6f;
+                                var bR = formsPlotTick.Plot.Add.Line(x1, obsBracketYK, x1, obsBracketYK - dropTickK);
+                                bR.Color = hLineK.Color; bR.LineWidth = 1.6f;
+
+                                double midXK = (x0 + x1) / 2.0;
+                                string bText = cyc.IsSignalTriggered
+                                    ? $"⏱️ 观察期 C{cyc.CycleIndex} ⚡触发"
+                                    : (cyc.IsCompleted ? $"⏱️ 观察期 C{cyc.CycleIndex} [完毕]" : $"⏱️ 观察期 C{cyc.CycleIndex}");
+                                var txtB = formsPlotTick.Plot.Add.Text(bText, midXK, obsBracketYK + dropTickK * 0.5);
+                                txtB.LabelFontColor = cyc.IsSignalTriggered ? ScottPlot.Color.FromHex("#facc15") : bandCol;
+                                txtB.LabelFontSize = 8.5f;
+                                txtB.LabelBold = true;
+                                txtB.Alignment = Alignment.LowerCenter;
+
+                                if (obsBracketYK + dropTickK * 3.0 > maxP)
+                                {
+                                    maxP = obsBracketYK + dropTickK * 3.0;
+                                }
                             }
                         }
                     }

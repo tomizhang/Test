@@ -157,8 +157,14 @@ namespace Test.ChannelPlayback.WinForms.Models
         public decimal PeakTroughPrice { get; set; }
         public decimal PullbackPct { get; set; }
         public bool IsTickStreamTriggered { get; set; } = true;
+        /// <summary>
+        /// 是否属于历史K线实体超出通道时的顺势做单 (连涨实体突破上轨->顺势低多，连跌实体跌破下轨->顺势高空)
+        /// </summary>
+        public bool IsBreakoutTrendFollowing { get; set; } = false;
         public OrderSignalDirection Direction { get; set; }
-        public string DirectionText => Direction == OrderSignalDirection.Buy ? "🟢 做多 (Buy)" : (Direction == OrderSignalDirection.Sell ? "🔴 做空 (Sell)" : "无");
+        public string DirectionText => IsBreakoutTrendFollowing
+            ? (Direction == OrderSignalDirection.Buy ? "🟢 顺势低多 (Buy)" : (Direction == OrderSignalDirection.Sell ? "🔴 顺势高空 (Sell)" : "无"))
+            : (Direction == OrderSignalDirection.Buy ? "🟢 做多 (Buy)" : (Direction == OrderSignalDirection.Sell ? "🔴 做空 (Sell)" : "无"));
 
         public CandlestickPatternResult Pattern { get; set; } = new();
         public int BigBarIndex { get; set; }
@@ -167,9 +173,39 @@ namespace Test.ChannelPlayback.WinForms.Models
         public long ObservationStartTime { get; set; }
         public long ObservationEndTime { get; set; }
 
+        /// <summary>
+        /// 触发该信号瞬间的原始逐笔成交 Tick 数据 (含 TradeId, Qty, QuoteQty, IsBuyerMaker 等)
+        /// </summary>
+        public RawTick? TriggerTick { get; set; }
+
+        /// <summary>
+        /// 触发 Tick 在当前观察期中的索引位置 (从 0 计数)
+        /// </summary>
+        public int TriggerTickIndex { get; set; } = -1;
+
+        /// <summary>
+        /// 触发时观察期累计接收的 Tick 总数
+        /// </summary>
+        public int CycleTotalTicks { get; set; } = 0;
+
+        /// <summary>
+        /// 极值点 (波峰/波谷) 发生的时间戳 (毫秒)
+        /// </summary>
+        public long PeakTroughTime { get; set; }
+
         public override string ToString()
         {
-            string tickInfo = IsTickStreamTriggered ? $" [Tick流 极值:{PeakTroughPrice:F2} 回落:{PullbackPct:F2}%]" : "";
+            string tickInfo = "";
+            if (IsTickStreamTriggered && TriggerTick.HasValue)
+            {
+                var t = TriggerTick.Value;
+                string side = t.IsBuyerMaker ? "主动卖出(Taker Sell)" : "主动买入(Taker Buy)";
+                tickInfo = $" [Tick #{TriggerTickIndex + 1}/{CycleTotalTicks}: {t.Price:F2} USDT, 量:{t.Qty:F4}, 额:{t.QuoteQty:F2}, {side}, TradeId:{t.TradeId}, 极值:{PeakTroughPrice:F2} 回落/反弹:{PullbackPct:F2}%]";
+            }
+            else if (IsTickStreamTriggered)
+            {
+                tickInfo = $" [Tick流 极值:{PeakTroughPrice:F2} 回落/反弹:{PullbackPct:F2}%]";
+            }
             return $"[信号 #{ObservationCycleIndex}] {DirectionText} @ {Price:F2}{tickInfo} (止损:{StopLossPrice:F2}, 止盈:{TakeProfitPrice:F2}) | 形态: [{Pattern.PatternId}] {Pattern.PatternName} ({TriggerDateTime:HH:mm:ss})";
         }
     }

@@ -106,7 +106,166 @@ namespace Test.ChannelPlayback.WinForms.Engine
         }
 
         /// <summary>
-        /// 检查连续走势中首次达到绿色通道顶部部分或顶部(上涨)/底部部分或底部(下跌)的进入观察阶段 K 线
+        /// 确保平行通道参数已计算拟合
+        /// </summary>
+        public static void EnsureChannelFitted(ConsecutiveTrendItem trend, IReadOnlyList<RawKline> allKlines)
+        {
+            if (trend == null || allKlines == null) return;
+            if (!trend.HasChannel || trend.UpperIntercept <= trend.LowerIntercept)
+            {
+                ConsecutiveTrendDetector.FitParallelChannel(
+                    allKlines,
+                    trend.StartIndex,
+                    trend.ConfirmedBarIndex,
+                    out decimal sk, out decimal ub, out decimal lb);
+                trend.SlopeK = sk;
+                trend.UpperIntercept = ub;
+                trend.LowerIntercept = lb;
+                trend.HasChannel = ub > lb;
+            }
+        }
+
+        /// <summary>
+        /// 检查连续走势中历史 K 线实体部分是否曾超过通道 (上涨实体突破上轨 / 下跌实体跌破下轨)
+        /// 实体上界: Math.Max(bar.Open, bar.Close)
+        /// 实体下界: Math.Min(bar.Open, bar.Close)
+        /// </summary>
+        public bool CheckBodyExceededChannel(
+            ConsecutiveTrendItem trend,
+            IReadOnlyList<RawKline> allKlines,
+            int currentBarIndex,
+            out int breakoutBarIndex)
+        {
+            breakoutBarIndex = -1;
+            if (trend == null || allKlines == null) return false;
+
+            // 保持回放时序完整性：若已记录的突破 Bar 索引位于当前播放帧之后，重置状态
+            if (trend.BreakoutBarIndex > currentBarIndex)
+            {
+                trend.HasBodyExceededChannel = false;
+                trend.BreakoutBarIndex = -1;
+            }
+
+            if (trend.HasBodyExceededChannel && trend.BreakoutBarIndex >= 0 && trend.BreakoutBarIndex <= currentBarIndex)
+            {
+                breakoutBarIndex = trend.BreakoutBarIndex;
+                return true;
+            }
+
+            EnsureChannelFitted(trend, allKlines);
+            if (!trend.HasChannel || trend.UpperIntercept <= trend.LowerIntercept)
+            {
+                return false;
+            }
+
+            int maxBar = Math.Min(trend.EndIndex, currentBarIndex);
+            for (int b = trend.StartIndex; b <= maxBar && b < allKlines.Count; b++)
+            {
+                var bar = allKlines[b];
+                decimal upper = trend.GetUpperPrice(b);
+                decimal lower = trend.GetLowerPrice(b);
+
+                if (trend.Type == ConsecutiveTrendType.Bullish)
+                {
+                    decimal bodyTop = Math.Max(bar.Open, bar.Close);
+                    if (bodyTop > upper)
+                    {
+                        breakoutBarIndex = b;
+                        trend.HasBodyExceededChannel = true;
+                        trend.BreakoutBarIndex = b;
+                        return true;
+                    }
+                }
+                else if (trend.Type == ConsecutiveTrendType.Bearish)
+                {
+                    decimal bodyBottom = Math.Min(bar.Open, bar.Close);
+                    if (bodyBottom < lower)
+                    {
+                        breakoutBarIndex = b;
+                        trend.HasBodyExceededChannel = true;
+                        trend.BreakoutBarIndex = b;
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// 检查连续走势在历史中 (从 StartIndex 到 currentBarIndex) 是否曾有高点达到通道顶部(上涨)或低点达到通道底部(下跌)
+        /// </summary>
+        public bool CheckHistoricalExtremeReached(
+            ConsecutiveTrendItem trend,
+            IReadOnlyList<RawKline> allKlines,
+            int currentBarIndex,
+            out int extremeBarIndex)
+        {
+            extremeBarIndex = -1;
+            if (trend == null || allKlines == null) return false;
+
+            // 保持回放时序完整性：若已记录的极值 Bar 索引位于当前播放帧之后，重置状态
+            if (trend.HistoricalExtremeBarIndex > currentBarIndex)
+            {
+                trend.HasHistoricalReachedExtreme = false;
+                trend.HistoricalExtremeBarIndex = -1;
+            }
+
+            if (trend.HasHistoricalReachedExtreme && trend.HistoricalExtremeBarIndex >= 0 && trend.HistoricalExtremeBarIndex <= currentBarIndex)
+            {
+                extremeBarIndex = trend.HistoricalExtremeBarIndex;
+                return true;
+            }
+
+            EnsureChannelFitted(trend, allKlines);
+            if (!trend.HasChannel || trend.UpperIntercept <= trend.LowerIntercept)
+            {
+                return false;
+            }
+
+            decimal zoneRatio = Math.Clamp(ChannelZonePct, 0m, 50m) / 100m;
+            int maxBar = Math.Min(trend.EndIndex, currentBarIndex);
+
+            for (int b = trend.StartIndex; b <= maxBar && b < allKlines.Count; b++)
+            {
+                var bar = allKlines[b];
+                decimal upper = trend.GetUpperPrice(b);
+                decimal lower = trend.GetLowerPrice(b);
+                decimal height = upper - lower;
+                if (height <= 0m) continue;
+
+                if (trend.Type == ConsecutiveTrendType.Bullish)
+                {
+                    decimal topZonePrice = lower + height * (1m - zoneRatio);
+                    if (bar.High >= topZonePrice || bar.High >= upper * 0.999m)
+                    {
+                        extremeBarIndex = b;
+                        trend.HasHistoricalReachedExtreme = true;
+                        trend.HistoricalExtremeBarIndex = b;
+                        return true;
+                    }
+                }
+                else if (trend.Type == ConsecutiveTrendType.Bearish)
+                {
+                    decimal bottomZonePrice = lower + height * zoneRatio;
+                    if (bar.Low <= bottomZonePrice || bar.Low <= lower * 1.001m)
+                    {
+                        extremeBarIndex = b;
+                        trend.HasHistoricalReachedExtreme = true;
+                        trend.HistoricalExtremeBarIndex = b;
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// 检查连续走势进入观察阶段的 K 线：
+        /// 1. 优化 2：若历史 K 线实体部分已超过通道，突破成立直接进入观察阶段 (转为顺势做单)；
+        /// 2. 优化 1：若历史上涨中曾有高点达到通道顶部，后续判定仅需达到通道中线以上附近即可 (反之同理)；
+        /// 3. 常规：达到绿色通道顶部部分或顶部 (上涨) / 底部部分或底部 (下跌)。
         /// </summary>
         public bool TryFindObservationEntry(
             ConsecutiveTrendItem trend,
@@ -131,30 +290,37 @@ namespace Test.ChannelPlayback.WinForms.Engine
             int fifthBarIndex = trend.StartIndex + 4;
             if (currentBarIndex < fifthBarIndex || fifthBarIndex >= allKlines.Count) return false;
 
-            // 确保具有平行通道参数 (若未拟合则即时拟合)
-            if (!trend.HasChannel || trend.UpperIntercept <= trend.LowerIntercept)
+            // 确保具有平行通道参数
+            EnsureChannelFitted(trend, allKlines);
+
+            // 优化 2 优先判定：历史 K 线实体部分是否曾超过通道
+            bool isBodyExceeded = CheckBodyExceededChannel(trend, allKlines, currentBarIndex, out int breakoutBarIdx);
+            if (isBodyExceeded)
             {
-                ConsecutiveTrendDetector.FitParallelChannel(
-                    allKlines,
-                    trend.StartIndex,
-                    trend.ConfirmedBarIndex,
-                    out decimal sk, out decimal ub, out decimal lb);
-                trend.SlopeK = sk;
-                trend.UpperIntercept = ub;
-                trend.LowerIntercept = lb;
-                trend.HasChannel = ub > lb;
+                entryBarIndex = Math.Max(fifthBarIndex, breakoutBarIdx);
+                entryTime = allKlines[entryBarIndex].CloseTime;
+                entryPrice = allKlines[entryBarIndex].Close;
+                channelUpper = trend.GetUpperPrice(entryBarIndex);
+                channelLower = trend.GetLowerPrice(entryBarIndex);
+                decimal h = channelUpper - channelLower;
+                channelPosPct = h > 0m ? Math.Round((entryPrice - channelLower) / h * 100m, 1) : 100m;
+                return true;
             }
+
+            // 优化 1 判定：历史走势中是否曾有高点达到通道顶部 (上涨) 或低点达到通道底部 (下跌)
+            bool hasHistExtreme = CheckHistoricalExtremeReached(trend, allKlines, currentBarIndex, out int _);
 
             decimal zoneRatio = Math.Clamp(ChannelZonePct, 0m, 50m) / 100m;
             int maxBar = Math.Min(trend.EndIndex, currentBarIndex);
 
-            // 从第 5 根开始向后寻找首次达到通道顶部部分(上涨)或底部部分(下跌)的 K 线
+            // 从第 5 根开始向后寻找满足进入观察阶段条件的 K 线
             for (int b = fifthBarIndex; b <= maxBar; b++)
             {
                 var bar = allKlines[b];
                 decimal upper = trend.GetUpperPrice(b);
                 decimal lower = trend.GetLowerPrice(b);
                 decimal height = upper - lower;
+                decimal mid = (upper + lower) / 2m;
 
                 if (height <= 0m)
                 {
@@ -169,10 +335,13 @@ namespace Test.ChannelPlayback.WinForms.Engine
 
                 if (trend.Type == ConsecutiveTrendType.Bullish)
                 {
-                    // 连续上涨：顶部部分起始价位 (默认上部 25% 区域，即 >= Lower + Height * 0.75)
                     decimal topZonePrice = lower + height * (1m - zoneRatio);
-                    // 触及顶部部分或突破/触及上轨
-                    if (bar.High >= topZonePrice || bar.Close >= topZonePrice)
+                    // 优化 1：若历史曾达通道顶部，后续判定仅需达到通道中线以上附近即可 (mid - 5% height)
+                    bool reached = hasHistExtreme
+                        ? (bar.High >= mid - height * 0.05m || bar.Close >= mid - height * 0.05m)
+                        : (bar.High >= topZonePrice || bar.Close >= topZonePrice);
+
+                    if (reached)
                     {
                         entryBarIndex = b;
                         entryTime = bar.CloseTime;
@@ -185,10 +354,13 @@ namespace Test.ChannelPlayback.WinForms.Engine
                 }
                 else if (trend.Type == ConsecutiveTrendType.Bearish)
                 {
-                    // 连续下跌：底部部分起始价位 (默认下部 25% 区域，即 <= Lower + Height * 0.25)
                     decimal bottomZonePrice = lower + height * zoneRatio;
-                    // 触及底部部分或跌破/触及下轨
-                    if (bar.Low <= bottomZonePrice || bar.Close <= bottomZonePrice)
+                    // 优化 1：若历史曾达通道底部，后续判定仅需达到通道中线以下附近即可 (mid + 5% height)
+                    bool reached = hasHistExtreme
+                        ? (bar.Low <= mid + height * 0.05m || bar.Close <= mid + height * 0.05m)
+                        : (bar.Low <= bottomZonePrice || bar.Close <= bottomZonePrice);
+
+                    if (reached)
                     {
                         entryBarIndex = b;
                         entryTime = bar.CloseTime;
@@ -205,7 +377,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
         }
 
         /// <summary>
-        /// 检查并激活指定波段的反转做单策略 (当连续走势达到绿色通道顶部/底部时激活并正式进入观察阶段)
+        /// 检查并激活指定波段的反转做单策略 (当满足观察阶段进入条件时激活并正式开启观察期)
         /// </summary>
         public bool TryActivateStrategy(ConsecutiveTrendItem trend, IReadOnlyList<RawKline> allKlines, int currentBarIndex, out string activationMsg)
         {
@@ -214,7 +386,6 @@ namespace Test.ChannelPlayback.WinForms.Engine
 
             if (_activatedTrendIds.Contains(trend.Id)) return false;
 
-            // 核心要求：如果是连续上涨，必须在绿色通道顶部部分或顶部进入观察阶段；如果是连续下跌，反之同理
             if (!TryFindObservationEntry(
                 trend,
                 allKlines,
@@ -234,9 +405,25 @@ namespace Test.ChannelPlayback.WinForms.Engine
             trend.ObservationEntryPrice = entryPrice;
             trend.ObservationEntryTime = entryTime;
 
-            string dirStr = trend.Type == ConsecutiveTrendType.Bullish
-                ? $"🔥 连续上涨到达绿色通道顶部部分 (Bar #{entryBarIndex}, 触顶价:{entryPrice:F2}, 上轨:{channelUpper:F2}, 通道位:{channelPosPct:F1}%)"
-                : $"❄️ 连续下跌到达绿色通道底部部分 (Bar #{entryBarIndex}, 探底价:{entryPrice:F2}, 下轨:{channelLower:F2}, 通道位:{channelPosPct:F1}%)";
+            string dirStr;
+            if (trend.HasBodyExceededChannel)
+            {
+                dirStr = trend.Type == ConsecutiveTrendType.Bullish
+                    ? $"🔥 连续上涨K线实体突破通道上轨 (Bar #{entryBarIndex}, 实体突破价:{entryPrice:F2}, 上轨:{channelUpper:F2})，模式切换为【顺势低点做多】"
+                    : $"❄️ 连续下跌K线实体跌破通道下轨 (Bar #{entryBarIndex}, 实体跌破价:{entryPrice:F2}, 下轨:{channelLower:F2})，模式切换为【顺势高点做空】";
+            }
+            else if (trend.HasHistoricalReachedExtreme)
+            {
+                dirStr = trend.Type == ConsecutiveTrendType.Bullish
+                    ? $"🔥 连续上涨历史曾达通道顶部 (Bar #{entryBarIndex}, 触及中线上方:{entryPrice:F2}, 通道位:{channelPosPct:F1}%)"
+                    : $"❄️ 连续下跌历史曾达通道底部 (Bar #{entryBarIndex}, 探及中线下方:{entryPrice:F2}, 通道位:{channelPosPct:F1}%)";
+            }
+            else
+            {
+                dirStr = trend.Type == ConsecutiveTrendType.Bullish
+                    ? $"🔥 连续上涨到达绿色通道顶部部分 (Bar #{entryBarIndex}, 触顶价:{entryPrice:F2}, 上轨:{channelUpper:F2}, 通道位:{channelPosPct:F1}%)"
+                    : $"❄️ 连续下跌到达绿色通道底部部分 (Bar #{entryBarIndex}, 探底价:{entryPrice:F2}, 下轨:{channelLower:F2}, 通道位:{channelPosPct:F1}%)";
+            }
 
             activationMsg = $"[策略激活] ⚡ {dirStr}，正式进入观察阶段！开启第1个{ObservationMinutes}分钟观察期";
 
@@ -463,211 +650,432 @@ namespace Test.ChannelPlayback.WinForms.Engine
                         runningVol += t.Qty;
                         runningQuoteVol += t.QuoteQty;
 
+                        int targetBigBarIndex = currentBarIndex;
+                        for (int b = entryBarIndex; b < allKlines.Count; b++)
+                        {
+                            if (t.Time >= allKlines[b].OpenTime && t.Time <= allKlines[b].CloseTime)
+                            {
+                                targetBigBarIndex = b;
+                                break;
+                            }
+                        }
+
+                        decimal curBarUpper = trend.GetUpperPrice(targetBigBarIndex);
+                        decimal curBarLower = trend.GetLowerPrice(targetBigBarIndex);
+                        decimal curBarHeight = curBarUpper - curBarLower;
+                        decimal curBarMid = (curBarUpper + curBarLower) / 2m;
+                        bool hasHistExtreme = trend.HasHistoricalReachedExtreme;
+                        bool isBodyExceeded = trend.HasBodyExceededChannel;
+
                         if (trend.Type == ConsecutiveTrendType.Bullish)
                         {
-                            // 连涨后观察期做空监控
-                            if (t.Price > localPeak)
+                            if (!isBodyExceeded)
                             {
-                                localPeak = t.Price;
-                                localPeakIdx = ti;
-                                localPeakTime = t.Time;
-                            }
-
-                            int targetBigBarIndex = currentBarIndex;
-                            for (int b = entryBarIndex; b < allKlines.Count; b++)
-                            {
-                                if (t.Time >= allKlines[b].OpenTime && t.Time <= allKlines[b].CloseTime)
+                                // 【常规连续上涨反转做空：高点做空 (Sell)】
+                                if (t.Price > localPeak)
                                 {
-                                    targetBigBarIndex = b;
-                                    break;
+                                    localPeak = t.Price;
+                                    localPeakIdx = ti;
+                                    localPeakTime = t.Time;
+                                }
+
+                                // 优化 1：若历史上涨曾达到通道顶部，后续判定仅需达到通道中线以上附近即可 (mid - 5% height)
+                                decimal minHigh = hasHistExtreme ? (curBarMid - curBarHeight * 0.05m) : (curBarLower + curBarHeight * (1m - zoneRatio));
+                                bool reachedHigh = localPeak >= minHigh || localPeak >= curBarUpper * 0.999m;
+
+                                if (reachedHigh && ti > localPeakIdx)
+                                {
+                                    decimal pullbackPct = (localPeak - t.Price) / localPeak * 100m;
+                                    decimal upperShadow = localPeak - Math.Max(runningOpen, t.Price);
+                                    decimal totalRange = localPeak - runningLow;
+                                    decimal shadowRatio = totalRange > 0 ? upperShadow / totalRange : 0m;
+
+                                    // 实时触发做空：微观从波峰回落 >= 阈值 (默认 0.06%)，且形成了上影线或翻阴
+                                    if (pullbackPct >= TickPullbackThresholdPct && (shadowRatio >= 0.25m || t.Price <= runningOpen))
+                                    {
+                                        tickTriggered = true;
+
+                                        var runningBar = new RawKline
+                                        {
+                                            OpenTime = curCycleStart,
+                                            CloseTime = t.Time,
+                                            Open = runningOpen,
+                                            High = runningHigh,
+                                            Low = runningLow,
+                                            Close = t.Price,
+                                            Volume = runningVol,
+                                            QuoteVolume = runningQuoteVol
+                                        };
+
+                                        var pattern = CandlestickPatternClassifier.Classify(runningBar, PLong, PMedium, PShort);
+                                        if (pattern.PatternType == CandlestickPatternType.None ||
+                                            pattern.PatternType == CandlestickPatternType.FullBodyLongBullish ||
+                                            pattern.PatternType == CandlestickPatternType.FullBodyMediumBullish)
+                                        {
+                                            pattern.PatternType = CandlestickPatternType.UpperShadowMediumBearish;
+                                            pattern.PatternName = "Tick流冲高滞涨回落阴";
+                                            pattern.SuggestedDirection = OrderSignalDirection.Sell;
+                                        }
+
+                                        decimal entryPrice = t.Price; // 实时触发瞬间的当前 Tick 价格
+                                        long triggerTime = t.Time;
+                                        decimal stopLoss = Math.Round(localPeak * 1.0015m, 2); // 防守止损精准锁定在波峰上方 0.15%
+                                        decimal takeProfit = trend.StartPrice;
+
+                                        var signal = new ReversalOrderSignal
+                                        {
+                                            TrendId = trend.Id,
+                                            PriorTrendType = trend.Type,
+                                            ObservationCycleIndex = cycleIndex,
+                                            TriggerTime = triggerTime,
+                                            Price = entryPrice,
+                                            StopLossPrice = stopLoss,
+                                            TakeProfitPrice = takeProfit,
+                                            HighPointPrice = localPeak,
+                                            LowPointPrice = runningLow,
+                                            PeakTroughPrice = localPeak,
+                                            PullbackPct = pullbackPct,
+                                            IsTickStreamTriggered = true,
+                                            IsBreakoutTrendFollowing = false,
+                                            Direction = OrderSignalDirection.Sell,
+                                            Pattern = pattern,
+                                            BigBarIndex = targetBigBarIndex,
+                                            SmallKline = runningBar,
+                                            ObservationStartTime = curCycleStart,
+                                            ObservationEndTime = curCycleEnd,
+                                            TriggerTick = t,
+                                            TriggerTickIndex = ti,
+                                            CycleTotalTicks = cycleTicks.Count,
+                                            PeakTroughTime = localPeakTime
+                                        };
+
+                                        cycleObj.ResultKline = runningBar;
+                                        cycleObj.PatternResult = pattern;
+                                        cycleObj.IsCompleted = true;
+                                        cycleObj.IsSignalTriggered = true;
+                                        cycleObj.Signal = signal;
+                                        _processedCycleKeys.Add(cycleKey);
+                                        _allSignals.Add(signal);
+                                        newSignals.Add(signal);
+
+                                        DateTime tickDt = DateTimeOffset.FromUnixTimeMilliseconds(t.Time).LocalDateTime;
+                                        DateTime peakDt = DateTimeOffset.FromUnixTimeMilliseconds(localPeakTime).LocalDateTime;
+                                        string tickSide = t.IsBuyerMaker ? "主动卖出(Taker Sell)" : "主动买入(Taker Buy)";
+                                        string histNote = hasHistExtreme ? " (历史曾达通道顶，放宽至中线上方)" : "";
+
+                                        string notify = $"[做单信号] ⚡ 第 {cycleIndex} 个 {ObservationMinutes}分钟观察期 Tick流实时动态触发 🔴高点做空(Sell)！{histNote}\n" +
+                                                        $"  └ 🎯 触发Tick明细: 时间:{tickDt:yyyy-MM-dd HH:mm:ss.fff} | 价:{t.Price:F2} USDT | 量:{t.Qty:F4} | 额:{t.QuoteQty:F2} USDT | 属性:{tickSide} | TradeId:{t.TradeId} | 第 {ti + 1}/{cycleTicks.Count} 笔\n" +
+                                                        $"  └ 📊 极值推演风控: 波峰:{localPeak:F2} (形成于 {peakDt:HH:mm:ss.fff}) | 滞涨回落:-{pullbackPct:F2}% (门槛:{TickPullbackThresholdPct:F2}%) | 防守止损:{stopLoss:F2} (+0.15%), 目标止盈:{takeProfit:F2} | 已标记短黄线";
+                                        OnReversalOrderSignal?.Invoke(signal, notify);
+                                        break;
+                                    }
                                 }
                             }
-
-                            // 验证价格是否位于绿色通道顶部部分或顶部 (或者突破上轨)
-                            decimal curBarUpper = trend.GetUpperPrice(targetBigBarIndex);
-                            decimal curBarLower = trend.GetLowerPrice(targetBigBarIndex);
-                            decimal curBarHeight = curBarUpper - curBarLower;
-                            decimal topZonePrice = curBarLower + curBarHeight * (1m - zoneRatio);
-
-                            bool reachedHigh = localPeak >= topZonePrice || localPeak >= curBarUpper * 0.999m;
-
-                            if (reachedHigh && ti > localPeakIdx)
+                            else
                             {
-                                decimal pullbackPct = (localPeak - t.Price) / localPeak * 100m;
-                                decimal upperShadow = localPeak - Math.Max(runningOpen, t.Price);
-                                decimal totalRange = localPeak - runningLow;
-                                decimal shadowRatio = totalRange > 0 ? upperShadow / totalRange : 0m;
-
-                                // 实时触发做空：微观从波峰回落 >= 阈值 (默认 0.06%)，且形成了上影线或翻阴
-                                if (pullbackPct >= TickPullbackThresholdPct && (shadowRatio >= 0.25m || t.Price <= runningOpen))
+                                // 优化 2：【连续上涨历史实体突破通道上轨 -> 顺势低点做多 (Buy)】
+                                if (t.Price < localTrough)
                                 {
-                                    tickTriggered = true;
+                                    localTrough = t.Price;
+                                    localTroughIdx = ti;
+                                    localTroughTime = t.Time;
+                                }
 
-                                    var runningBar = new RawKline
-                                    {
-                                        OpenTime = curCycleStart,
-                                        CloseTime = t.Time,
-                                        Open = runningOpen,
-                                        High = runningHigh,
-                                        Low = runningLow,
-                                        Close = t.Price,
-                                        Volume = runningVol,
-                                        QuoteVolume = runningQuoteVol
-                                    };
+                                // 允许在通道中线以上附近进行微观回踩企稳做多
+                                bool validDip = localTrough >= curBarMid - curBarHeight * 0.15m || localTrough >= curBarLower;
 
-                                    var pattern = CandlestickPatternClassifier.Classify(runningBar, PLong, PMedium, PShort);
-                                    if (pattern.PatternType == CandlestickPatternType.None ||
-                                        pattern.PatternType == CandlestickPatternType.FullBodyLongBullish ||
-                                        pattern.PatternType == CandlestickPatternType.FullBodyMediumBullish)
+                                if (validDip && ti > localTroughIdx)
+                                {
+                                    decimal bouncePct = (t.Price - localTrough) / localTrough * 100m;
+                                    decimal lowerShadow = Math.Min(runningOpen, t.Price) - localTrough;
+                                    decimal totalRange = runningHigh - localTrough;
+                                    decimal shadowRatio = totalRange > 0 ? lowerShadow / totalRange : 0m;
+
+                                    // 实时触发做多：微观从波谷企稳反弹 >= 阈值 (默认 0.06%)，且形成了下影线或翻阳
+                                    if (bouncePct >= TickPullbackThresholdPct && (shadowRatio >= 0.25m || t.Price >= runningOpen))
                                     {
-                                        pattern.PatternType = CandlestickPatternType.UpperShadowMediumBearish;
-                                        pattern.PatternName = "Tick流冲高滞涨回落阴";
-                                        pattern.SuggestedDirection = OrderSignalDirection.Sell;
+                                        tickTriggered = true;
+
+                                        var runningBar = new RawKline
+                                        {
+                                            OpenTime = curCycleStart,
+                                            CloseTime = t.Time,
+                                            Open = runningOpen,
+                                            High = runningHigh,
+                                            Low = runningLow,
+                                            Close = t.Price,
+                                            Volume = runningVol,
+                                            QuoteVolume = runningQuoteVol
+                                        };
+
+                                        var pattern = CandlestickPatternClassifier.Classify(runningBar, PLong, PMedium, PShort);
+                                        if (pattern.PatternType == CandlestickPatternType.None ||
+                                            pattern.PatternType == CandlestickPatternType.FullBodyLongBearish ||
+                                            pattern.PatternType == CandlestickPatternType.FullBodyMediumBearish)
+                                        {
+                                            pattern.PatternType = CandlestickPatternType.LowerShadowMediumBullish;
+                                            pattern.PatternName = "Tick流突破回踩企稳阳";
+                                            pattern.SuggestedDirection = OrderSignalDirection.Buy;
+                                        }
+
+                                        decimal entryPrice = t.Price; // 实时触发瞬间的当前 Tick 价格
+                                        long triggerTime = t.Time;
+                                        decimal stopLoss = Math.Round(localTrough * 0.9985m, 2); // 防守止损精准锁定在波谷下方 0.15%
+                                        decimal risk = entryPrice - stopLoss;
+                                        decimal takeProfit = Math.Round(entryPrice + Math.Max(risk * 2m, entryPrice * 0.01m), 2);
+
+                                        var signal = new ReversalOrderSignal
+                                        {
+                                            TrendId = trend.Id,
+                                            PriorTrendType = trend.Type,
+                                            ObservationCycleIndex = cycleIndex,
+                                            TriggerTime = triggerTime,
+                                            Price = entryPrice,
+                                            StopLossPrice = stopLoss,
+                                            TakeProfitPrice = takeProfit,
+                                            HighPointPrice = runningHigh,
+                                            LowPointPrice = localTrough,
+                                            PeakTroughPrice = localTrough,
+                                            PullbackPct = bouncePct,
+                                            IsTickStreamTriggered = true,
+                                            IsBreakoutTrendFollowing = true,
+                                            Direction = OrderSignalDirection.Buy,
+                                            Pattern = pattern,
+                                            BigBarIndex = targetBigBarIndex,
+                                            SmallKline = runningBar,
+                                            ObservationStartTime = curCycleStart,
+                                            ObservationEndTime = curCycleEnd,
+                                            TriggerTick = t,
+                                            TriggerTickIndex = ti,
+                                            CycleTotalTicks = cycleTicks.Count,
+                                            PeakTroughTime = localTroughTime
+                                        };
+
+                                        cycleObj.ResultKline = runningBar;
+                                        cycleObj.PatternResult = pattern;
+                                        cycleObj.IsCompleted = true;
+                                        cycleObj.IsSignalTriggered = true;
+                                        cycleObj.Signal = signal;
+                                        _processedCycleKeys.Add(cycleKey);
+                                        _allSignals.Add(signal);
+                                        newSignals.Add(signal);
+
+                                        DateTime tickDt = DateTimeOffset.FromUnixTimeMilliseconds(t.Time).LocalDateTime;
+                                        DateTime troughDt = DateTimeOffset.FromUnixTimeMilliseconds(localTroughTime).LocalDateTime;
+                                        string tickSide = t.IsBuyerMaker ? "主动卖出(Taker Sell)" : "主动买入(Taker Buy)";
+
+                                        string notify = $"[做单信号] ⚡ 第 {cycleIndex} 个 {ObservationMinutes}分钟观察期 实体突破通道顺势触发 🟢低点做多(Buy)！\n" +
+                                                        $"  └ 🎯 触发Tick明细: 时间:{tickDt:yyyy-MM-dd HH:mm:ss.fff} | 价:{t.Price:F2} USDT | 量:{t.Qty:F4} | 额:{t.QuoteQty:F2} USDT | 属性:{tickSide} | TradeId:{t.TradeId} | 第 {ti + 1}/{cycleTicks.Count} 笔\n" +
+                                                        $"  └ 📊 极值推演风控: 回踩波谷:{localTrough:F2} (形成于 {troughDt:HH:mm:ss.fff}) | 企稳反弹:+{bouncePct:F2}% (门槛:{TickPullbackThresholdPct:F2}%) | 防守止损:{stopLoss:F2} (-0.15%), 目标止盈:{takeProfit:F2} | 已标记短黄线";
+                                        OnReversalOrderSignal?.Invoke(signal, notify);
+                                        break;
                                     }
-
-                                    decimal entryPrice = t.Price; // 实时触发瞬间的当前 Tick 价格
-                                    long triggerTime = t.Time;
-                                    decimal stopLoss = Math.Round(localPeak * 1.0015m, 2); // 防守止损精准锁定在波峰上方 0.15%
-                                    decimal takeProfit = trend.StartPrice;
-
-                                    var signal = new ReversalOrderSignal
-                                    {
-                                        TrendId = trend.Id,
-                                        PriorTrendType = trend.Type,
-                                        ObservationCycleIndex = cycleIndex,
-                                        TriggerTime = triggerTime,
-                                        Price = entryPrice,
-                                        StopLossPrice = stopLoss,
-                                        TakeProfitPrice = takeProfit,
-                                        HighPointPrice = localPeak,
-                                        LowPointPrice = runningLow,
-                                        PeakTroughPrice = localPeak,
-                                        PullbackPct = pullbackPct,
-                                        IsTickStreamTriggered = true,
-                                        Direction = OrderSignalDirection.Sell,
-                                        Pattern = pattern,
-                                        BigBarIndex = targetBigBarIndex,
-                                        SmallKline = runningBar,
-                                        ObservationStartTime = curCycleStart,
-                                        ObservationEndTime = curCycleEnd
-                                    };
-
-                                    cycleObj.ResultKline = runningBar;
-                                    cycleObj.PatternResult = pattern;
-                                    cycleObj.IsCompleted = true;
-                                    cycleObj.IsSignalTriggered = true;
-                                    cycleObj.Signal = signal;
-                                    _processedCycleKeys.Add(cycleKey);
-                                    _allSignals.Add(signal);
-                                    newSignals.Add(signal);
-
-                                    string notify = $"[做单信号] ⚡ 第 {cycleIndex} 个 {ObservationMinutes}分钟观察期 Tick流实时动态触发 🔴高点做空(Sell)！实时入场价: {signal.Price:F2} USDT (波峰: {localPeak:F2}, 滞涨回落: -{pullbackPct:F2}%, 防守止损: {stopLoss:F2}, 目标止盈: {takeProfit:F2}, 已标记短黄线)";
-                                    OnReversalOrderSignal?.Invoke(signal, notify);
-                                    break;
                                 }
                             }
                         }
                         else if (trend.Type == ConsecutiveTrendType.Bearish)
                         {
-                            // 连跌后观察期做多监控
-                            if (t.Price < localTrough)
+                            if (!isBodyExceeded)
                             {
-                                localTrough = t.Price;
-                                localTroughIdx = ti;
-                                localTroughTime = t.Time;
-                            }
-
-                            int targetBigBarIndex = currentBarIndex;
-                            for (int b = entryBarIndex; b < allKlines.Count; b++)
-                            {
-                                if (t.Time >= allKlines[b].OpenTime && t.Time <= allKlines[b].CloseTime)
+                                // 【常规连续下跌反转做多：低点做多 (Buy)】
+                                if (t.Price < localTrough)
                                 {
-                                    targetBigBarIndex = b;
-                                    break;
+                                    localTrough = t.Price;
+                                    localTroughIdx = ti;
+                                    localTroughTime = t.Time;
+                                }
+
+                                // 优化 1：若历史下跌曾达到通道底部，后续判定仅需达到通道中线以下附近即可 (mid + 5% height)
+                                decimal maxLow = hasHistExtreme ? (curBarMid + curBarHeight * 0.05m) : (curBarLower + curBarHeight * zoneRatio);
+                                bool reachedLow = localTrough <= maxLow || localTrough <= curBarLower * 1.001m;
+
+                                if (reachedLow && ti > localTroughIdx)
+                                {
+                                    decimal bouncePct = (t.Price - localTrough) / localTrough * 100m;
+                                    decimal lowerShadow = Math.Min(runningOpen, t.Price) - localTrough;
+                                    decimal totalRange = runningHigh - localTrough;
+                                    decimal shadowRatio = totalRange > 0 ? lowerShadow / totalRange : 0m;
+
+                                    // 实时触发做多：微观从波谷反弹 >= 阈值 (默认 0.06%)，且形成了下影线或翻阳
+                                    if (bouncePct >= TickPullbackThresholdPct && (shadowRatio >= 0.25m || t.Price >= runningOpen))
+                                    {
+                                        tickTriggered = true;
+
+                                        var runningBar = new RawKline
+                                        {
+                                            OpenTime = curCycleStart,
+                                            CloseTime = t.Time,
+                                            Open = runningOpen,
+                                            High = runningHigh,
+                                            Low = runningLow,
+                                            Close = t.Price,
+                                            Volume = runningVol,
+                                            QuoteVolume = runningQuoteVol
+                                        };
+
+                                        var pattern = CandlestickPatternClassifier.Classify(runningBar, PLong, PMedium, PShort);
+                                        if (pattern.PatternType == CandlestickPatternType.None ||
+                                            pattern.PatternType == CandlestickPatternType.FullBodyLongBearish ||
+                                            pattern.PatternType == CandlestickPatternType.FullBodyMediumBearish)
+                                        {
+                                            pattern.PatternType = CandlestickPatternType.LowerShadowMediumBullish;
+                                            pattern.PatternName = "Tick流探底企稳回升阳";
+                                            pattern.SuggestedDirection = OrderSignalDirection.Buy;
+                                        }
+
+                                        decimal entryPrice = t.Price; // 实时触发瞬间的当前 Tick 价格
+                                        long triggerTime = t.Time;
+                                        decimal stopLoss = Math.Round(localTrough * 0.9985m, 2); // 防守止损精准锁定在波谷下方 0.15%
+                                        decimal takeProfit = trend.StartPrice;
+
+                                        var signal = new ReversalOrderSignal
+                                        {
+                                            TrendId = trend.Id,
+                                            PriorTrendType = trend.Type,
+                                            ObservationCycleIndex = cycleIndex,
+                                            TriggerTime = triggerTime,
+                                            Price = entryPrice,
+                                            StopLossPrice = stopLoss,
+                                            TakeProfitPrice = takeProfit,
+                                            HighPointPrice = runningHigh,
+                                            LowPointPrice = localTrough,
+                                            PeakTroughPrice = localTrough,
+                                            PullbackPct = bouncePct,
+                                            IsTickStreamTriggered = true,
+                                            IsBreakoutTrendFollowing = false,
+                                            Direction = OrderSignalDirection.Buy,
+                                            Pattern = pattern,
+                                            BigBarIndex = targetBigBarIndex,
+                                            SmallKline = runningBar,
+                                            ObservationStartTime = curCycleStart,
+                                            ObservationEndTime = curCycleEnd,
+                                            TriggerTick = t,
+                                            TriggerTickIndex = ti,
+                                            CycleTotalTicks = cycleTicks.Count,
+                                            PeakTroughTime = localTroughTime
+                                        };
+
+                                        cycleObj.ResultKline = runningBar;
+                                        cycleObj.PatternResult = pattern;
+                                        cycleObj.IsCompleted = true;
+                                        cycleObj.IsSignalTriggered = true;
+                                        cycleObj.Signal = signal;
+                                        _processedCycleKeys.Add(cycleKey);
+                                        _allSignals.Add(signal);
+                                        newSignals.Add(signal);
+
+                                        DateTime tickDt = DateTimeOffset.FromUnixTimeMilliseconds(t.Time).LocalDateTime;
+                                        DateTime troughDt = DateTimeOffset.FromUnixTimeMilliseconds(localTroughTime).LocalDateTime;
+                                        string tickSide = t.IsBuyerMaker ? "主动卖出(Taker Sell)" : "主动买入(Taker Buy)";
+                                        string histNote = hasHistExtreme ? " (历史曾达通道底，放宽至中线下方)" : "";
+
+                                        string notify = $"[做单信号] ⚡ 第 {cycleIndex} 个 {ObservationMinutes}分钟观察期 Tick流实时动态触发 🟢低点做多(Buy)！{histNote}\n" +
+                                                        $"  └ 🎯 触发Tick明细: 时间:{tickDt:yyyy-MM-dd HH:mm:ss.fff} | 价:{t.Price:F2} USDT | 量:{t.Qty:F4} | 额:{t.QuoteQty:F2} USDT | 属性:{tickSide} | TradeId:{t.TradeId} | 第 {ti + 1}/{cycleTicks.Count} 笔\n" +
+                                                        $"  └ 📊 极值推演风控: 波谷:{localTrough:F2} (形成于 {troughDt:HH:mm:ss.fff}) | 企稳反弹:+{bouncePct:F2}% (门槛:{TickPullbackThresholdPct:F2}%) | 防守止损:{stopLoss:F2} (-0.15%), 目标止盈:{takeProfit:F2} | 已标记短黄线";
+                                        OnReversalOrderSignal?.Invoke(signal, notify);
+                                        break;
+                                    }
                                 }
                             }
-
-                            // 验证价格是否位于绿色通道底部部分或底部 (或者跌破下轨)
-                            decimal curBarUpper = trend.GetUpperPrice(targetBigBarIndex);
-                            decimal curBarLower = trend.GetLowerPrice(targetBigBarIndex);
-                            decimal curBarHeight = curBarUpper - curBarLower;
-                            decimal bottomZonePrice = curBarLower + curBarHeight * zoneRatio;
-
-                            bool reachedLow = localTrough <= bottomZonePrice || localTrough <= curBarLower * 1.001m;
-
-                            if (reachedLow && ti > localTroughIdx)
+                            else
                             {
-                                decimal bouncePct = (t.Price - localTrough) / localTrough * 100m;
-                                decimal lowerShadow = Math.Min(runningOpen, t.Price) - localTrough;
-                                decimal totalRange = runningHigh - localTrough;
-                                decimal shadowRatio = totalRange > 0 ? lowerShadow / totalRange : 0m;
-
-                                // 实时触发做多：微观从波谷反弹 >= 阈值 (默认 0.06%)，且形成了下影线或翻阳
-                                if (bouncePct >= TickPullbackThresholdPct && (shadowRatio >= 0.25m || t.Price >= runningOpen))
+                                // 优化 2：【连续下跌历史实体跌破通道下轨 -> 顺势高点做空 (Sell)】
+                                if (t.Price > localPeak)
                                 {
-                                    tickTriggered = true;
+                                    localPeak = t.Price;
+                                    localPeakIdx = ti;
+                                    localPeakTime = t.Time;
+                                }
 
-                                    var runningBar = new RawKline
-                                    {
-                                        OpenTime = curCycleStart,
-                                        CloseTime = t.Time,
-                                        Open = runningOpen,
-                                        High = runningHigh,
-                                        Low = runningLow,
-                                        Close = t.Price,
-                                        Volume = runningVol,
-                                        QuoteVolume = runningQuoteVol
-                                    };
+                                // 允许在通道中线以下附近进行微观反抽滞涨做空
+                                bool validRally = localPeak <= curBarMid + curBarHeight * 0.15m || localPeak <= curBarUpper;
 
-                                    var pattern = CandlestickPatternClassifier.Classify(runningBar, PLong, PMedium, PShort);
-                                    if (pattern.PatternType == CandlestickPatternType.None ||
-                                        pattern.PatternType == CandlestickPatternType.FullBodyLongBearish ||
-                                        pattern.PatternType == CandlestickPatternType.FullBodyMediumBearish)
+                                if (validRally && ti > localPeakIdx)
+                                {
+                                    decimal pullbackPct = (localPeak - t.Price) / localPeak * 100m;
+                                    decimal upperShadow = localPeak - Math.Max(runningOpen, t.Price);
+                                    decimal totalRange = localPeak - runningLow;
+                                    decimal shadowRatio = totalRange > 0 ? upperShadow / totalRange : 0m;
+
+                                    // 实时触发做空：微观从波峰滞涨回落 >= 阈值 (默认 0.06%)，且形成了上影线或翻阴
+                                    if (pullbackPct >= TickPullbackThresholdPct && (shadowRatio >= 0.25m || t.Price <= runningOpen))
                                     {
-                                        pattern.PatternType = CandlestickPatternType.LowerShadowMediumBullish;
-                                        pattern.PatternName = "Tick流探底企稳回升阳";
-                                        pattern.SuggestedDirection = OrderSignalDirection.Buy;
+                                        tickTriggered = true;
+
+                                        var runningBar = new RawKline
+                                        {
+                                            OpenTime = curCycleStart,
+                                            CloseTime = t.Time,
+                                            Open = runningOpen,
+                                            High = runningHigh,
+                                            Low = runningLow,
+                                            Close = t.Price,
+                                            Volume = runningVol,
+                                            QuoteVolume = runningQuoteVol
+                                        };
+
+                                        var pattern = CandlestickPatternClassifier.Classify(runningBar, PLong, PMedium, PShort);
+                                        if (pattern.PatternType == CandlestickPatternType.None ||
+                                            pattern.PatternType == CandlestickPatternType.FullBodyLongBullish ||
+                                            pattern.PatternType == CandlestickPatternType.FullBodyMediumBullish)
+                                        {
+                                            pattern.PatternType = CandlestickPatternType.UpperShadowMediumBearish;
+                                            pattern.PatternName = "Tick流跌破反抽滞涨阴";
+                                            pattern.SuggestedDirection = OrderSignalDirection.Sell;
+                                        }
+
+                                        decimal entryPrice = t.Price; // 实时触发瞬间的当前 Tick 价格
+                                        long triggerTime = t.Time;
+                                        decimal stopLoss = Math.Round(localPeak * 1.0015m, 2); // 防守止损精准锁定在波峰上方 0.15%
+                                        decimal risk = stopLoss - entryPrice;
+                                        decimal takeProfit = Math.Round(entryPrice - Math.Max(risk * 2m, entryPrice * 0.01m), 2);
+
+                                        var signal = new ReversalOrderSignal
+                                        {
+                                            TrendId = trend.Id,
+                                            PriorTrendType = trend.Type,
+                                            ObservationCycleIndex = cycleIndex,
+                                            TriggerTime = triggerTime,
+                                            Price = entryPrice,
+                                            StopLossPrice = stopLoss,
+                                            TakeProfitPrice = takeProfit,
+                                            HighPointPrice = localPeak,
+                                            LowPointPrice = runningLow,
+                                            PeakTroughPrice = localPeak,
+                                            PullbackPct = pullbackPct,
+                                            IsTickStreamTriggered = true,
+                                            IsBreakoutTrendFollowing = true,
+                                            Direction = OrderSignalDirection.Sell,
+                                            Pattern = pattern,
+                                            BigBarIndex = targetBigBarIndex,
+                                            SmallKline = runningBar,
+                                            ObservationStartTime = curCycleStart,
+                                            ObservationEndTime = curCycleEnd,
+                                            TriggerTick = t,
+                                            TriggerTickIndex = ti,
+                                            CycleTotalTicks = cycleTicks.Count,
+                                            PeakTroughTime = localPeakTime
+                                        };
+
+                                        cycleObj.ResultKline = runningBar;
+                                        cycleObj.PatternResult = pattern;
+                                        cycleObj.IsCompleted = true;
+                                        cycleObj.IsSignalTriggered = true;
+                                        cycleObj.Signal = signal;
+                                        _processedCycleKeys.Add(cycleKey);
+                                        _allSignals.Add(signal);
+                                        newSignals.Add(signal);
+
+                                        DateTime tickDt = DateTimeOffset.FromUnixTimeMilliseconds(t.Time).LocalDateTime;
+                                        DateTime peakDt = DateTimeOffset.FromUnixTimeMilliseconds(localPeakTime).LocalDateTime;
+                                        string tickSide = t.IsBuyerMaker ? "主动卖出(Taker Sell)" : "主动买入(Taker Buy)";
+
+                                        string notify = $"[做单信号] ⚡ 第 {cycleIndex} 个 {ObservationMinutes}分钟观察期 实体跌破通道顺势触发 🔴高点做空(Sell)！\n" +
+                                                        $"  └ 🎯 触发Tick明细: 时间:{tickDt:yyyy-MM-dd HH:mm:ss.fff} | 价:{t.Price:F2} USDT | 量:{t.Qty:F4} | 额:{t.QuoteQty:F2} USDT | 属性:{tickSide} | TradeId:{t.TradeId} | 第 {ti + 1}/{cycleTicks.Count} 笔\n" +
+                                                        $"  └ 📊 极值推演风控: 反抽波峰:{localPeak:F2} (形成于 {peakDt:HH:mm:ss.fff}) | 滞涨回落:-{pullbackPct:F2}% (门槛:{TickPullbackThresholdPct:F2}%) | 防守止损:{stopLoss:F2} (+0.15%), 目标止盈:{takeProfit:F2} | 已标记短黄线";
+                                        OnReversalOrderSignal?.Invoke(signal, notify);
+                                        break;
                                     }
-
-                                    decimal entryPrice = t.Price; // 实时触发瞬间的当前 Tick 价格
-                                    long triggerTime = t.Time;
-                                    decimal stopLoss = Math.Round(localTrough * 0.9985m, 2); // 防守止损精准锁定在波谷下方 0.15%
-                                    decimal takeProfit = trend.StartPrice;
-
-                                    var signal = new ReversalOrderSignal
-                                    {
-                                        TrendId = trend.Id,
-                                        PriorTrendType = trend.Type,
-                                        ObservationCycleIndex = cycleIndex,
-                                        TriggerTime = triggerTime,
-                                        Price = entryPrice,
-                                        StopLossPrice = stopLoss,
-                                        TakeProfitPrice = takeProfit,
-                                        HighPointPrice = runningHigh,
-                                        LowPointPrice = localTrough,
-                                        PeakTroughPrice = localTrough,
-                                        PullbackPct = bouncePct,
-                                        IsTickStreamTriggered = true,
-                                        Direction = OrderSignalDirection.Buy,
-                                        Pattern = pattern,
-                                        BigBarIndex = targetBigBarIndex,
-                                        SmallKline = runningBar,
-                                        ObservationStartTime = curCycleStart,
-                                        ObservationEndTime = curCycleEnd
-                                    };
-
-                                    cycleObj.ResultKline = runningBar;
-                                    cycleObj.PatternResult = pattern;
-                                    cycleObj.IsCompleted = true;
-                                    cycleObj.IsSignalTriggered = true;
-                                    cycleObj.Signal = signal;
-                                    _processedCycleKeys.Add(cycleKey);
-                                    _allSignals.Add(signal);
-                                    newSignals.Add(signal);
-
-                                    string notify = $"[做单信号] ⚡ 第 {cycleIndex} 个 {ObservationMinutes}分钟观察期 Tick流实时动态触发 🟢低点做多(Buy)！实时入场价: {signal.Price:F2} USDT (波谷: {localTrough:F2}, 企稳反弹: +{bouncePct:F2}%, 防守止损: {stopLoss:F2}, 目标止盈: {takeProfit:F2}, 已标记短黄线)";
-                                    OnReversalOrderSignal?.Invoke(signal, notify);
-                                    break;
                                 }
                             }
                         }
@@ -692,7 +1100,10 @@ namespace Test.ChannelPlayback.WinForms.Engine
                         if (!_processedCycleKeys.Contains(cycleKey))
                         {
                             _processedCycleKeys.Add(cycleKey);
-                            OnObservationCycleUpdated?.Invoke(cycleObj, $"[观察期推演] 第 {cycleIndex} 个 {ObservationMinutes}分钟 Tick流未满足滞涨/企稳反转，进入第 {cycleIndex + 1} 期...");
+                            string cycleTickDetail = cycleTicks != null && cycleTicks.Count > 0
+                                ? $" (共推演 {cycleTicks.Count} 笔Tick, 最高:{runningHigh:F2}, 最低:{runningLow:F2})"
+                                : "";
+                            OnObservationCycleUpdated?.Invoke(cycleObj, $"[观察期推演] 第 {cycleIndex} 个 {ObservationMinutes}分钟 Tick流未满足滞涨/企稳反转{cycleTickDetail}，进入第 {cycleIndex + 1} 期...");
                         }
                         curCycleStart += cycleSpanMs;
                         cycleIndex++;
@@ -718,8 +1129,33 @@ namespace Test.ChannelPlayback.WinForms.Engine
                     var pattern = CandlestickPatternClassifier.Classify(sb, PLong, PMedium, PShort);
                     cycleObj.PatternResult = pattern;
 
-                    // 判定是否符合前序趋势的反转做单信号
-                    bool isReversal = CandlestickPatternClassifier.IsReversalOrderSignal(trend.Type, pattern, out var direction);
+                    // 判定是否符合前序趋势的反转做单或突破顺势信号
+                    bool isBreakout = trend.HasBodyExceededChannel;
+                    bool hasHistExtreme = trend.HasHistoricalReachedExtreme;
+
+                    OrderSignalDirection direction;
+                    bool isReversal;
+
+                    if (isBreakout)
+                    {
+                        if (trend.Type == ConsecutiveTrendType.Bullish)
+                        {
+                            // 连涨实体突破通道上轨 -> 顺势低点做多 (寻找多头启明星/下影企稳阳)
+                            isReversal = CandlestickPatternClassifier.IsReversalOrderSignal(ConsecutiveTrendType.Bearish, pattern, out _);
+                            direction = OrderSignalDirection.Buy;
+                        }
+                        else
+                        {
+                            // 连跌实体跌破通道下轨 -> 顺势高点做空 (寻找空头黄昏星/上影滞涨阴)
+                            isReversal = CandlestickPatternClassifier.IsReversalOrderSignal(ConsecutiveTrendType.Bullish, pattern, out _);
+                            direction = OrderSignalDirection.Sell;
+                        }
+                    }
+                    else
+                    {
+                        // 常规反转做单
+                        isReversal = CandlestickPatternClassifier.IsReversalOrderSignal(trend.Type, pattern, out direction);
+                    }
 
                     if (isReversal)
                     {
@@ -736,17 +1172,34 @@ namespace Test.ChannelPlayback.WinForms.Engine
                         decimal curBarUpper = trend.GetUpperPrice(targetBigBarIndex);
                         decimal curBarLower = trend.GetLowerPrice(targetBigBarIndex);
                         decimal curBarHeight = curBarUpper - curBarLower;
+                        decimal curBarMid = (curBarUpper + curBarLower) / 2m;
                         decimal zoneRatio = Math.Clamp(ChannelZonePct, 0m, 50m) / 100m;
 
-                        if (trend.Type == ConsecutiveTrendType.Bullish)
+                        if (direction == OrderSignalDirection.Sell)
                         {
-                            decimal topZonePrice = curBarLower + curBarHeight * (1m - zoneRatio);
-                            if (sb.High < topZonePrice && sb.High < curBarUpper * 0.999m) isReversal = false;
+                            if (hasHistExtreme || isBreakout)
+                            {
+                                // 优化 1 & 2：达到通道中线以上附近即可 (mid - 5% height)
+                                if (sb.High < curBarMid - curBarHeight * 0.05m && sb.High < curBarUpper * 0.999m) isReversal = false;
+                            }
+                            else
+                            {
+                                decimal topZonePrice = curBarLower + curBarHeight * (1m - zoneRatio);
+                                if (sb.High < topZonePrice && sb.High < curBarUpper * 0.999m) isReversal = false;
+                            }
                         }
-                        else if (trend.Type == ConsecutiveTrendType.Bearish)
+                        else if (direction == OrderSignalDirection.Buy)
                         {
-                            decimal bottomZonePrice = curBarLower + curBarHeight * zoneRatio;
-                            if (sb.Low > bottomZonePrice && sb.Low > curBarLower * 1.001m) isReversal = false;
+                            if (hasHistExtreme || isBreakout)
+                            {
+                                // 优化 1 & 2：达到通道中线以下附近即可 (mid + 5% height)
+                                if (sb.Low > curBarMid + curBarHeight * 0.05m && sb.Low > curBarLower * 1.001m) isReversal = false;
+                            }
+                            else
+                            {
+                                decimal bottomZonePrice = curBarLower + curBarHeight * zoneRatio;
+                                if (sb.Low > bottomZonePrice && sb.Low > curBarLower * 1.001m) isReversal = false;
+                            }
                         }
                     }
 
@@ -770,7 +1223,19 @@ namespace Test.ChannelPlayback.WinForms.Engine
                         decimal stopLoss = direction == OrderSignalDirection.Sell
                             ? Math.Round(entryPrice * 1.0015m, 2)
                             : Math.Round(entryPrice * 0.9985m, 2);
-                        decimal takeProfit = trend.StartPrice;
+
+                        decimal takeProfit;
+                        if (isBreakout)
+                        {
+                            decimal risk = Math.Abs(entryPrice - stopLoss);
+                            takeProfit = direction == OrderSignalDirection.Buy
+                                ? Math.Round(entryPrice + Math.Max(risk * 2m, entryPrice * 0.01m), 2)
+                                : Math.Round(entryPrice - Math.Max(risk * 2m, entryPrice * 0.01m), 2);
+                        }
+                        else
+                        {
+                            takeProfit = trend.StartPrice;
+                        }
 
                         var signal = new ReversalOrderSignal
                         {
@@ -786,6 +1251,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
                             PeakTroughPrice = direction == OrderSignalDirection.Sell ? sb.High : sb.Low,
                             PullbackPct = 0m,
                             IsTickStreamTriggered = false,
+                            IsBreakoutTrendFollowing = isBreakout,
                             Direction = direction,
                             Pattern = pattern,
                             BigBarIndex = targetBigBarIndex,
@@ -798,10 +1264,14 @@ namespace Test.ChannelPlayback.WinForms.Engine
                         _allSignals.Add(signal);
                         newSignals.Add(signal);
 
-                        string dirText = direction == OrderSignalDirection.Sell ? "🔴高点做空(Sell)" : "🟢低点做多(Buy)";
-                        string notify = direction == OrderSignalDirection.Sell
-                            ? $"[做单信号] ⚡ 第 {cycleIndex} 个 {ObservationMinutes}分钟观察期 1m回退触发 {dirText}！形态: [{pattern.PatternId}]{pattern.PatternName}, 入场价: {signal.Price:F2} USDT (防守止损: {stopLoss:F2}, 目标止盈: {takeProfit:F2}, 已标记短黄线)"
-                            : $"[做单信号] ⚡ 第 {cycleIndex} 个 {ObservationMinutes}分钟观察期 1m回退触发 {dirText}！形态: [{pattern.PatternId}]{pattern.PatternName}, 入场价: {signal.Price:F2} USDT (防守止损: {stopLoss:F2}, 目标止盈: {takeProfit:F2}, 已标记短黄线)";
+                        DateTime barStart = TimeHelper.FromUnixTimeMilliseconds(sb.OpenTime).ToLocalTime();
+                        DateTime barEnd = TimeHelper.FromUnixTimeMilliseconds(sb.CloseTime).ToLocalTime();
+                        string dirText = isBreakout
+                            ? (direction == OrderSignalDirection.Sell ? "🔴顺势高空(Sell)" : "🟢顺势低多(Buy)")
+                            : (direction == OrderSignalDirection.Sell ? "🔴高点做空(Sell)" : "🟢低点做多(Buy)");
+                        string notify = $"[做单信号] ⚡ 第 {cycleIndex} 个 {ObservationMinutes}分钟观察期 1m回退触发 {dirText}！\n" +
+                                        $"  └ 📊 观察期K线明细: 时间:{barStart:HH:mm:ss}~{barEnd:HH:mm:ss} | 开:{sb.Open:F2} 高:{sb.High:F2} 低:{sb.Low:F2} 收:{sb.Close:F2} | 量:{sb.Volume:F2} | 形态:[#{pattern.PatternId}]{pattern.PatternName}\n" +
+                                        $"  └ 🎯 做单风控信息: 入场价:{signal.Price:F2} USDT | 防守止损:{stopLoss:F2}, 目标止盈:{takeProfit:F2} | 已标记短黄线";
 
                         OnReversalOrderSignal?.Invoke(signal, notify);
                         break;
@@ -809,9 +1279,9 @@ namespace Test.ChannelPlayback.WinForms.Engine
                     else if (!isReversal && !_processedCycleKeys.Contains(cycleKey))
                     {
                         _processedCycleKeys.Add(cycleKey);
-                        string reason = CandlestickPatternClassifier.IsReversalOrderSignal(trend.Type, pattern, out _)
-                            ? "未达到高/低点验证区间"
-                            : $"形态 [{pattern.PatternName}] 未满足反转";
+                        string reason = isBreakout
+                            ? "未达到突破顺势区间或形态未满足"
+                            : (CandlestickPatternClassifier.IsReversalOrderSignal(trend.Type, pattern, out _) ? "未达到高/低点验证区间" : $"形态 [{pattern.PatternName}] 未满足反转");
                         OnObservationCycleUpdated?.Invoke(cycleObj, $"[观察期推演] 第 {cycleIndex} 期 {reason}，进入第 {cycleIndex + 1} 期...");
                     }
                 }
