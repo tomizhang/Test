@@ -44,6 +44,16 @@ namespace Test.ChannelPlayback.WinForms.Engine
         /// </summary>
         public decimal ChannelZonePct { get; set; } = 25.0m;
 
+        /// <summary>
+        /// 到达百分比观察线附近的容差比例 (占通道高度百分比，默认 8.0%，即距离百分比线 8% 通道高度以内均视为到达线附近)
+        /// </summary>
+        public decimal NearLineTolerancePct { get; set; } = 8.0m;
+
+        /// <summary>
+        /// 到达线附近后确认相对高点/低点所需的最小后续 Tick 笔数 (默认 2 笔)
+        /// </summary>
+        public int MinTicksAfterNearLine { get; set; } = 2;
+
         public IReadOnlyList<ReversalOrderSignal> AllSignals => _allSignals;
         public IReadOnlyList<ReversalObservationCycle> AllCycles => _allCycles;
 
@@ -691,6 +701,8 @@ namespace Test.ChannelPlayback.WinForms.Engine
                     decimal lastRequiredExtremePrice = 0m;
                     string testedLineDesc = "无";
                     decimal testedLinePrice = 0m;
+                    bool hasEnteredNearZone = false;
+                    int firstNearTickIdx = -1;
 
                     for (int ti = 0; ti < cycleTicks.Count; ti++)
                     {
@@ -717,6 +729,8 @@ namespace Test.ChannelPlayback.WinForms.Engine
                         decimal curBarLower = trend.GetLowerPrice(targetBigBarIndex);
                         decimal curBarHeight = curBarUpper - curBarLower;
                         decimal tol = curBarHeight * 0.02m;
+                        decimal nearTol = curBarHeight * (NearLineTolerancePct / 100m);
+                        if (nearTol <= 0m) nearTol = curBarHeight * 0.08m;
                         bool hasHistExtreme = trend.HasHistoricalReachedExtreme;
                         bool isBodyExceeded = trend.HasBodyExceededChannel;
 
@@ -745,7 +759,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
 
                         if (trend.Type == ConsecutiveTrendType.Bullish)
                         {
-                            // 【连续上涨反转做空：高点滞涨回落做空 (Sell)】
+                            // 【连续上涨反转做空：到达线附近后过几个Tick，出现相对高点做空 (Sell)】
                             if (t.Price > localPeak)
                             {
                                 localPeak = t.Price;
@@ -754,36 +768,53 @@ namespace Test.ChannelPlayback.WinForms.Engine
                             }
 
                             decimal topZoneThreshold = curBarLower + curBarHeight * (1m - zoneRatio);
+                            decimal topTarget = Math.Min(curBar75, topZoneThreshold);
 
-                            // 四等分观察线识别：100%上轨、75%高度线/顶部极值区、50%中线
-                            bool lineEligible = false;
-                            if (localPeak >= curBarUpper - tol)
+                            // 检查当前价格是否已到达线附近 (100%上轨附近、75%高度线/顶部极值区附近、50%中线附近)
+                            bool isCurNearLine = (t.Price >= curBarUpper - nearTol) ||
+                                                 (t.Price >= topTarget - nearTol) ||
+                                                 (hasHistExtreme && t.Price >= curBarMid - nearTol);
+                            if (isCurNearLine && !hasEnteredNearZone)
                             {
-                                testedLineDesc = localPeak > curBarUpper + tol ? "100%通道上轨(突破超买极值)" : "100%通道上轨";
+                                hasEnteredNearZone = true;
+                                firstNearTickIdx = ti;
+                            }
+
+                            // 四等分观察线识别：不要求严格压线，到线附近即纳入合格防守线
+                            bool lineEligible = false;
+                            if (localPeak >= curBarUpper - nearTol)
+                            {
+                                testedLineDesc = localPeak > curBarUpper + tol
+                                    ? "100%通道上轨(突破超买极值)"
+                                    : (localPeak >= curBarUpper - tol ? "100%通道上轨" : "100%通道上轨附近");
                                 testedLinePrice = curBarUpper;
                                 lineEligible = true;
                             }
-                            else if (localPeak >= Math.Min(curBar75, topZoneThreshold) - tol)
+                            else if (localPeak >= topTarget - nearTol)
                             {
-                                testedLineDesc = "75%通道高度线(顶部极值区)";
+                                testedLineDesc = localPeak >= topTarget - tol
+                                    ? "75%通道高度线(顶部极值区)"
+                                    : "75%通道高度线附近";
                                 testedLinePrice = curBar75;
                                 lineEligible = true;
                             }
-                            else if (localPeak >= curBarMid - tol)
+                            else if (localPeak >= curBarMid - nearTol)
                             {
-                                testedLineDesc = "50%通道中线";
+                                testedLineDesc = localPeak >= curBarMid - tol
+                                    ? "50%通道中线"
+                                    : "50%通道中线附近";
                                 testedLinePrice = curBarMid;
-                                // 若历史曾达通道顶，放宽至中线即可触发做空；若未曾达顶，常规做空要求至少触及顶部极值区
+                                // 若历史曾达通道顶，放宽至中线即可触发做空
                                 lineEligible = hasHistExtreme;
                             }
                             else
                             {
-                                testedLineDesc = "未达50%中线";
+                                testedLineDesc = "未达50%中线附近";
                                 testedLinePrice = curBarMid;
                                 lineEligible = false;
                             }
 
-                            lastRequiredExtremePrice = hasHistExtreme ? curBarMid : Math.Min(curBar75, topZoneThreshold);
+                            lastRequiredExtremePrice = hasHistExtreme ? curBarMid : (topTarget - nearTol);
                             if (lineEligible) everReachedExtreme = true;
 
                             if (ti > localPeakIdx)
@@ -791,8 +822,20 @@ namespace Test.ChannelPlayback.WinForms.Engine
                                 decimal pullbackPct = (localPeak - t.Price) / localPeak * 100m;
                                 if (pullbackPct > maxPullbackPct) maxPullbackPct = pullbackPct;
 
-                                // 实时触发做空：达到通道顶部极值区域，微观从波峰回落 >= 门槛阈值 (默认 0.06%)
-                                if (lineEligible && pullbackPct >= TickPullbackThresholdPct)
+                                // 判定是否满足【到线附近后过几个Tick，出现相对Tick的高点】:
+                                int ticksSinceNear = hasEnteredNearZone ? (ti - firstNearTickIdx) : (ti - localPeakIdx);
+                                int ticksSincePeak = ti - localPeakIdx;
+                                bool ticksEnough = ticksSinceNear >= MinTicksAfterNearLine;
+
+                                // 出现相对高点并转折回落:
+                                // 1) 达到标准回落阈值 (如 >= 0.06%);
+                                // 2) 或在到线经过数笔Tick后，波峰确立并连续回落 (ticksSincePeak >= 2 且回落 >= 0.02% 或价格低于波峰)
+                                bool isRelativeHighConfirmed = ticksEnough && (t.Price < localPeak) && (
+                                    (pullbackPct >= TickPullbackThresholdPct) ||
+                                    (ticksSincePeak >= 2 && pullbackPct >= 0.02m)
+                                );
+
+                                if (lineEligible && isRelativeHighConfirmed)
                                 {
                                     tickTriggered = true;
 
@@ -864,11 +907,14 @@ namespace Test.ChannelPlayback.WinForms.Engine
                                     DateTime tickDt = DateTimeOffset.FromUnixTimeMilliseconds(t.Time).LocalDateTime;
                                     DateTime peakDt = DateTimeOffset.FromUnixTimeMilliseconds(localPeakTime).LocalDateTime;
                                     string tickSide = t.IsBuyerMaker ? "主动卖出(Taker Sell)" : "主动买入(Taker Buy)";
-                                    string histNote = hasHistExtreme ? " (历史曾达通道顶，放宽至中线)" : "";
+                                    string histNote = hasHistExtreme ? " (历史曾达极值)" : "";
+                                    string triggerReason = pullbackPct >= TickPullbackThresholdPct
+                                        ? $"滞涨回落:-{pullbackPct:F2}% (门槛:{TickPullbackThresholdPct:F2}%)"
+                                        : $"相对高点确立(回落:-{pullbackPct:F2}%, 到线后经{ticksSinceNear + 1}笔Tick)";
 
                                     string notify = $"[做单信号] ⚡ 第 {cycleIndex} 个 {ObservationMinutes}分钟观察期 Tick流在【{testedLineDesc}】(价格:{testedLinePrice:F2}) 触发 🔴高点做空(Sell)！{histNote}\n" +
                                                     $"  └ 🎯 触发Tick明细: 时间:{tickDt:yyyy-MM-dd HH:mm:ss.fff} | 价:{t.Price:F2} USDT | 量:{t.Qty:F4} | 额:{t.QuoteQty:F2} USDT | 属性:{tickSide} | TradeId:{t.TradeId} | 第 {ti + 1}/{cycleTicks.Count} 笔\n" +
-                                                    $"  └ 📊 极值推演风控: 波峰:{localPeak:F2} (形成于 {peakDt:HH:mm:ss.fff}) | 滞涨回落:-{pullbackPct:F2}% (门槛:{TickPullbackThresholdPct:F2}%) | 防守止损:{stopLoss:F2} (+0.15%), 目标止盈:{takeProfit:F2} | 已标记短黄线";
+                                                    $"  └ 📊 极值推演风控: 波峰:{localPeak:F2} (形成于 {peakDt:HH:mm:ss.fff}) | {triggerReason} | 防守止损:{stopLoss:F2} (+0.15%), 目标止盈:{takeProfit:F2} | 已标记短黄线";
                                     OnReversalOrderSignal?.Invoke(signal, notify);
                                     break;
                                 }
@@ -876,7 +922,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
                         }
                         else if (trend.Type == ConsecutiveTrendType.Bearish)
                         {
-                            // 【连续下跌反转做多：低点探底回升做多 (Buy)】
+                            // 【连续下跌反转做多：到达线附近后过几个Tick，出现相对低点做多 (Buy)】
                             if (t.Price < localTrough)
                             {
                                 localTrough = t.Price;
@@ -885,36 +931,53 @@ namespace Test.ChannelPlayback.WinForms.Engine
                             }
 
                             decimal bottomZoneThreshold = curBarLower + curBarHeight * zoneRatio;
+                            decimal bottomTarget = Math.Max(curBar25, bottomZoneThreshold);
 
-                            // 四等分观察线识别：0%下轨、25%高度线/底部极值区、50%中线
-                            bool lineEligible = false;
-                            if (localTrough <= curBarLower + tol)
+                            // 检查当前价格是否已到达线附近 (0%下轨附近、25%高度线/底部极值区附近、50%中线附近)
+                            bool isCurNearLine = (t.Price <= curBarLower + nearTol) ||
+                                                 (t.Price <= bottomTarget + nearTol) ||
+                                                 (hasHistExtreme && t.Price <= curBarMid + nearTol);
+                            if (isCurNearLine && !hasEnteredNearZone)
                             {
-                                testedLineDesc = localTrough < curBarLower - tol ? "0%通道下轨(跌破超卖极值)" : "0%通道下轨";
+                                hasEnteredNearZone = true;
+                                firstNearTickIdx = ti;
+                            }
+
+                            // 四等分观察线识别：不要求严格压线，到线附近即纳入合格防守线
+                            bool lineEligible = false;
+                            if (localTrough <= curBarLower + nearTol)
+                            {
+                                testedLineDesc = localTrough < curBarLower - tol
+                                    ? "0%通道下轨(跌破超卖极值)"
+                                    : (localTrough <= curBarLower + tol ? "0%通道下轨" : "0%通道下轨附近");
                                 testedLinePrice = curBarLower;
                                 lineEligible = true;
                             }
-                            else if (localTrough <= Math.Max(curBar25, bottomZoneThreshold) + tol)
+                            else if (localTrough <= bottomTarget + nearTol)
                             {
-                                testedLineDesc = "25%通道高度线(底部极值区)";
+                                testedLineDesc = localTrough <= bottomTarget + tol
+                                    ? "25%通道高度线(底部极值区)"
+                                    : "25%通道高度线附近";
                                 testedLinePrice = curBar25;
                                 lineEligible = true;
                             }
-                            else if (localTrough <= curBarMid + tol)
+                            else if (localTrough <= curBarMid + nearTol)
                             {
-                                testedLineDesc = "50%通道中线";
+                                testedLineDesc = localTrough <= curBarMid + tol
+                                    ? "50%通道中线"
+                                    : "50%通道中线附近";
                                 testedLinePrice = curBarMid;
-                                // 若历史曾达通道底，放宽至中线即可触发做多；若未曾达底，常规做多要求至少触及 25% 观察线
+                                // 若历史曾达通道底，放宽至中线即可触发做多
                                 lineEligible = hasHistExtreme;
                             }
                             else
                             {
-                                testedLineDesc = "未达50%中线";
+                                testedLineDesc = "未达50%中线附近";
                                 testedLinePrice = curBarMid;
                                 lineEligible = false;
                             }
 
-                            lastRequiredExtremePrice = hasHistExtreme ? curBarMid : Math.Max(curBar25, bottomZoneThreshold);
+                            lastRequiredExtremePrice = hasHistExtreme ? curBarMid : (bottomTarget + nearTol);
                             if (lineEligible) everReachedExtreme = true;
 
                             if (ti > localTroughIdx)
@@ -922,8 +985,20 @@ namespace Test.ChannelPlayback.WinForms.Engine
                                 decimal bouncePct = (t.Price - localTrough) / localTrough * 100m;
                                 if (bouncePct > maxBouncePct) maxBouncePct = bouncePct;
 
-                                // 实时触发做多：达到通道底部极值区域，微观从波谷反弹 >= 门槛阈值 (默认 0.06%)
-                                if (lineEligible && bouncePct >= TickPullbackThresholdPct)
+                                // 判定是否满足【到线附近后过几个Tick，出现相对Tick的低点】:
+                                int ticksSinceNear = hasEnteredNearZone ? (ti - firstNearTickIdx) : (ti - localTroughIdx);
+                                int ticksSinceTrough = ti - localTroughIdx;
+                                bool ticksEnough = ticksSinceNear >= MinTicksAfterNearLine;
+
+                                // 出现相对低点并转折回升:
+                                // 1) 达到标准反弹阈值 (如 >= 0.06%);
+                                // 2) 或在到线经过数笔Tick后，波谷确立并连续回升 (ticksSinceTrough >= 2 且反弹 >= 0.02% 或价格高于波谷)
+                                bool isRelativeLowConfirmed = ticksEnough && (t.Price > localTrough) && (
+                                    (bouncePct >= TickPullbackThresholdPct) ||
+                                    (ticksSinceTrough >= 2 && bouncePct >= 0.02m)
+                                );
+
+                                if (lineEligible && isRelativeLowConfirmed)
                                 {
                                     tickTriggered = true;
 
@@ -995,11 +1070,14 @@ namespace Test.ChannelPlayback.WinForms.Engine
                                     DateTime tickDt = DateTimeOffset.FromUnixTimeMilliseconds(t.Time).LocalDateTime;
                                     DateTime troughDt = DateTimeOffset.FromUnixTimeMilliseconds(localTroughTime).LocalDateTime;
                                     string tickSide = t.IsBuyerMaker ? "主动卖出(Taker Sell)" : "主动买入(Taker Buy)";
-                                    string histNote = hasHistExtreme ? " (历史曾达通道底，放宽至中线)" : "";
+                                    string histNote = hasHistExtreme ? " (历史曾达极值)" : "";
+                                    string triggerReason = bouncePct >= TickPullbackThresholdPct
+                                        ? $"企稳反弹:+{bouncePct:F2}% (门槛:{TickPullbackThresholdPct:F2}%)"
+                                        : $"相对低点确立(反弹:+{bouncePct:F2}%, 到线后经{ticksSinceNear + 1}笔Tick)";
 
                                     string notify = $"[做单信号] ⚡ 第 {cycleIndex} 个 {ObservationMinutes}分钟观察期 Tick流在【{testedLineDesc}】(价格:{testedLinePrice:F2}) 触发 🟢低点做多(Buy)！{histNote}\n" +
                                                     $"  └ 🎯 触发Tick明细: 时间:{tickDt:yyyy-MM-dd HH:mm:ss.fff} | 价:{t.Price:F2} USDT | 量:{t.Qty:F4} | 额:{t.QuoteQty:F2} USDT | 属性:{tickSide} | TradeId:{t.TradeId} | 第 {ti + 1}/{cycleTicks.Count} 笔\n" +
-                                                    $"  └ 📊 极值推演风控: 波谷:{localTrough:F2} (形成于 {troughDt:HH:mm:ss.fff}) | 企稳反弹:+{bouncePct:F2}% (门槛:{TickPullbackThresholdPct:F2}%) | 防守止损:{stopLoss:F2} (-0.15%), 目标止盈:{takeProfit:F2} | 已标记短黄线";
+                                                    $"  └ 📊 极值推演风控: 波谷:{localTrough:F2} (形成于 {troughDt:HH:mm:ss.fff}) | {triggerReason} | 防守止损:{stopLoss:F2} (-0.15%), 目标止盈:{takeProfit:F2} | 已标记短黄线";
                                     OnReversalOrderSignal?.Invoke(signal, notify);
                                     break;
                                 }
@@ -1034,17 +1112,22 @@ namespace Test.ChannelPlayback.WinForms.Engine
                             }
                             else if (trend.Type == ConsecutiveTrendType.Bullish)
                             {
+                                int finalTicksSinceNear = hasEnteredNearZone ? (cycleTicks.Count - 1 - firstNearTickIdx) : 0;
                                 if (!everReachedExtreme)
                                 {
-                                    failureReason = $"最高价 {localPeak:F2} 未触及有效观察线 (未达到 50%/75%/100% 观察线，当前要求中线:{lastRequiredExtremePrice:F2})";
+                                    failureReason = $"最高价 {localPeak:F2} 未触及有效观察线附近 (要求触及 50%/75%/100% 观察线附近:{lastRequiredExtremePrice:F2})";
                                 }
-                                else if (localPeakIdx >= cycleTicks.Count - 5)
+                                else if (!hasEnteredNearZone || finalTicksSinceNear < MinTicksAfterNearLine)
                                 {
-                                    failureReason = $"在【{testedLineDesc}】附近冲高至 {localPeak:F2}，推演周期结束前无充分滞涨回落动作";
+                                    failureReason = $"在【{testedLineDesc}】附近仅短暂触及，未达到至少经历 {MinTicksAfterNearLine} 笔Tick的观察门槛";
+                                }
+                                else if (localPeakIdx >= cycleTicks.Count - 2)
+                                {
+                                    failureReason = $"在【{testedLineDesc}】最高冲至 {localPeak:F2}，但出现于周期最末尾，尚未形成转折相对高点";
                                 }
                                 else if (maxPullbackPct < TickPullbackThresholdPct)
                                 {
-                                    failureReason = $"测试【{testedLineDesc}】后波峰 {localPeak:F2} 最大回落仅 -{maxPullbackPct:F3}% (未达门槛 -{TickPullbackThresholdPct:F2}%)";
+                                    failureReason = $"测试【{testedLineDesc}】后波峰 {localPeak:F2} 最大回落仅 -{maxPullbackPct:F3}%，未确立相对高点转折 (门槛 -{TickPullbackThresholdPct:F2}%)";
                                 }
                                 else
                                 {
@@ -1053,17 +1136,22 @@ namespace Test.ChannelPlayback.WinForms.Engine
                             }
                             else // Bearish
                             {
+                                int finalTicksSinceNear = hasEnteredNearZone ? (cycleTicks.Count - 1 - firstNearTickIdx) : 0;
                                 if (!everReachedExtreme)
                                 {
-                                    failureReason = $"最低价 {localTrough:F2} 未触及有效观察线 (未达到 50%/25%/0% 观察线，当前要求中线:{lastRequiredExtremePrice:F2})";
+                                    failureReason = $"最低价 {localTrough:F2} 未触及有效观察线附近 (要求触及 50%/25%/0% 观察线附近:{lastRequiredExtremePrice:F2})";
                                 }
-                                else if (localTroughIdx >= cycleTicks.Count - 5)
+                                else if (!hasEnteredNearZone || finalTicksSinceNear < MinTicksAfterNearLine)
                                 {
-                                    failureReason = $"在【{testedLineDesc}】附近探底至 {localTrough:F2}，推演周期结束前无充分企稳反弹动作";
+                                    failureReason = $"在【{testedLineDesc}】附近仅短暂触及，未达到至少经历 {MinTicksAfterNearLine} 笔Tick的观察门槛";
+                                }
+                                else if (localTroughIdx >= cycleTicks.Count - 2)
+                                {
+                                    failureReason = $"在【{testedLineDesc}】最低探至 {localTrough:F2}，但出现于周期最末尾，尚未形成转折相对低点";
                                 }
                                 else if (maxBouncePct < TickPullbackThresholdPct)
                                 {
-                                    failureReason = $"测试【{testedLineDesc}】后波谷 {localTrough:F2} 最大反弹仅 +{maxBouncePct:F3}% (未达门槛 +{TickPullbackThresholdPct:F2}%)";
+                                    failureReason = $"测试【{testedLineDesc}】后波谷 {localTrough:F2} 最大反弹仅 +{maxBouncePct:F3}%，未确立相对低点转折 (门槛 +{TickPullbackThresholdPct:F2}%)";
                                 }
                                 else
                                 {
@@ -1127,6 +1215,8 @@ namespace Test.ChannelPlayback.WinForms.Engine
                     decimal curBarLower = trend.GetLowerPrice(targetBigBarIndex);
                     decimal curBarHeight = curBarUpper - curBarLower;
                     decimal tol = curBarHeight * 0.02m;
+                    decimal nearTol = curBarHeight * (NearLineTolerancePct / 100m);
+                    if (nearTol <= 0m) nearTol = curBarHeight * 0.08m;
                     decimal topZoneThreshold = curBarLower + curBarHeight * (1m - zoneRatio);
                     decimal bottomZoneThreshold = curBarLower + curBarHeight * zoneRatio;
 
@@ -1134,20 +1224,27 @@ namespace Test.ChannelPlayback.WinForms.Engine
                     {
                         if (direction == OrderSignalDirection.Sell)
                         {
-                            // 连涨常规反转做空：观察 100%上轨、75%高度线/顶部极值区、50%中线
-                            if (sb.High >= curBarUpper - tol)
+                            // 连涨常规反转做空：观察 100%上轨、75%高度线/顶部极值区、50%中线及其附近
+                            decimal topTarget = Math.Min(curBar75, topZoneThreshold);
+                            if (sb.High >= curBarUpper - nearTol)
                             {
-                                fallbackLineDesc = sb.High > curBarUpper + tol ? "100%通道上轨(突破超买极值)" : "100%通道上轨";
+                                fallbackLineDesc = sb.High > curBarUpper + tol
+                                    ? "100%通道上轨(突破超买极值)"
+                                    : (sb.High >= curBarUpper - tol ? "100%通道上轨" : "100%通道上轨附近");
                                 fallbackLinePrice = curBarUpper;
                             }
-                            else if (sb.High >= Math.Min(curBar75, topZoneThreshold) - tol)
+                            else if (sb.High >= topTarget - nearTol)
                             {
-                                fallbackLineDesc = "75%通道高度线(顶部极值区)";
+                                fallbackLineDesc = sb.High >= topTarget - tol
+                                    ? "75%通道高度线(顶部极值区)"
+                                    : "75%通道高度线附近";
                                 fallbackLinePrice = curBar75;
                             }
-                            else if (hasHistExtreme && sb.High >= curBarMid - tol)
+                            else if (hasHistExtreme && sb.High >= curBarMid - nearTol)
                             {
-                                fallbackLineDesc = "50%通道中线";
+                                fallbackLineDesc = sb.High >= curBarMid - tol
+                                    ? "50%通道中线"
+                                    : "50%通道中线附近";
                                 fallbackLinePrice = curBarMid;
                             }
                             else
@@ -1157,20 +1254,27 @@ namespace Test.ChannelPlayback.WinForms.Engine
                         }
                         else if (direction == OrderSignalDirection.Buy)
                         {
-                            // 连跌常规反转做多：观察 0%下轨、25%高度线/底部极值区、50%中线
-                            if (sb.Low <= curBarLower + tol)
+                            // 连跌常规反转做多：观察 0%下轨、25%高度线/底部极值区、50%中线及其附近
+                            decimal bottomTarget = Math.Max(curBar25, bottomZoneThreshold);
+                            if (sb.Low <= curBarLower + nearTol)
                             {
-                                fallbackLineDesc = sb.Low < curBarLower - tol ? "0%通道下轨(跌破超卖极值)" : "0%通道下轨";
+                                fallbackLineDesc = sb.Low < curBarLower - tol
+                                    ? "0%通道下轨(跌破超卖极值)"
+                                    : (sb.Low <= curBarLower + tol ? "0%通道下轨" : "0%通道下轨附近");
                                 fallbackLinePrice = curBarLower;
                             }
-                            else if (sb.Low <= Math.Max(curBar25, bottomZoneThreshold) + tol)
+                            else if (sb.Low <= bottomTarget + nearTol)
                             {
-                                fallbackLineDesc = "25%通道高度线(底部极值区)";
+                                fallbackLineDesc = sb.Low <= bottomTarget + tol
+                                    ? "25%通道高度线(底部极值区)"
+                                    : "25%通道高度线附近";
                                 fallbackLinePrice = curBar25;
                             }
-                            else if (hasHistExtreme && sb.Low <= curBarMid + tol)
+                            else if (hasHistExtreme && sb.Low <= curBarMid + nearTol)
                             {
-                                fallbackLineDesc = "50%通道中线";
+                                fallbackLineDesc = sb.Low <= curBarMid + tol
+                                    ? "50%通道中线"
+                                    : "50%通道中线附近";
                                 fallbackLinePrice = curBarMid;
                             }
                             else
@@ -1185,12 +1289,16 @@ namespace Test.ChannelPlayback.WinForms.Engine
                         cycleObj.IsSignalTriggered = true;
                         _processedCycleKeys.Add(cycleKey);
 
-                        decimal entryPrice = direction == OrderSignalDirection.Sell ? sb.High : sb.Low;
+                        decimal entryPrice = sb.Close; // 真实的形态确认时刻收盘开仓价 (零未来函数)
+                        decimal peakTrough = direction == OrderSignalDirection.Sell ? sb.High : sb.Low; // 观察期波峰/波谷极值
                         long triggerTime = sb.CloseTime;
                         decimal stopLoss = direction == OrderSignalDirection.Sell
-                            ? Math.Round(entryPrice * 1.0015m, 2)
-                            : Math.Round(entryPrice * 0.9985m, 2);
+                            ? Math.Round(sb.High * 1.0015m, 2)
+                            : Math.Round(sb.Low * 0.9985m, 2);
                         decimal takeProfit = trend.StartPrice;
+                        decimal pullback = direction == OrderSignalDirection.Sell
+                            ? (sb.High > 0m ? (sb.High - sb.Close) / sb.High * 100m : 0m)
+                            : (sb.Low > 0m ? (sb.Close - sb.Low) / sb.Low * 100m : 0m);
 
                         var signal = new ReversalOrderSignal
                         {
@@ -1203,8 +1311,8 @@ namespace Test.ChannelPlayback.WinForms.Engine
                             TakeProfitPrice = takeProfit,
                             HighPointPrice = sb.High,
                             LowPointPrice = sb.Low,
-                            PeakTroughPrice = direction == OrderSignalDirection.Sell ? sb.High : sb.Low,
-                            PullbackPct = 0m,
+                            PeakTroughPrice = peakTrough,
+                            PullbackPct = pullback,
                             IsTickStreamTriggered = false,
                             IsBreakoutTrendFollowing = false,
                             Direction = direction,
@@ -1227,7 +1335,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
                         string histNote = hasHistExtreme ? " (历史曾达极值，放宽至中线)" : "";
                         string notify = $"[做单信号] ⚡ 第 {cycleIndex} 个 {ObservationMinutes}分钟观察期 1m回退在【{fallbackLineDesc}】(价格:{fallbackLinePrice:F2}) 触发 {dirText}！{histNote}\n" +
                                         $"  └ 📊 观察期K线明细: 时间:{barStart:HH:mm:ss}~{barEnd:HH:mm:ss} | 开:{sb.Open:F2} 高:{sb.High:F2} 低:{sb.Low:F2} 收:{sb.Close:F2} | 量:{sb.Volume:F2} | 形态:[#{pattern.PatternId}]{pattern.PatternName}\n" +
-                                        $"  └ 🎯 做单风控信息: 入场价:{signal.Price:F2} USDT | 防守止损:{stopLoss:F2}, 目标止盈:{takeProfit:F2} | 已标记短黄线";
+                                        $"  └ 🎯 做单风控信息: 入场价:{signal.Price:F2} USDT (收盘确认) | 极值防守:{peakTrough:F2} | 防守止损:{stopLoss:F2}, 目标止盈:{takeProfit:F2} | 已标记短黄线";
 
                         OnReversalOrderSignal?.Invoke(signal, notify);
                         break;

@@ -31,7 +31,12 @@ namespace Test.ChannelPlayback.WinForms.Models
         /// <summary>
         /// 最高最低价拟合 (宽通道，包含全部极值外包络)
         /// </summary>
-        HighLow = 1
+        HighLow = 1,
+
+        /// <summary>
+        /// 开盘价与收盘价实体拟合 (实体通道，以 (Open+Close)/2 为回归中心，以 Max(Open,Close) 和 Min(Open,Close) 为实体边界)
+        /// </summary>
+        OpenClose = 2
     }
 
     /// <summary>

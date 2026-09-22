@@ -304,17 +304,23 @@ namespace Test.ChannelPlayback.WinForms.Engine
                             if (currentStreakDir == 1) // Bullish
                             {
                                 decimal curUpper = activeSlope * k + activeUpper;
-                                checkPrice = priceMode == ConsecutiveChannelPriceMode.Close
-                                    ? klines[k].Close
-                                    : Math.Max(klines[k].High, klines[k].Close);
+                                checkPrice = priceMode switch
+                                {
+                                    ConsecutiveChannelPriceMode.Close => klines[k].Close,
+                                    ConsecutiveChannelPriceMode.OpenClose => Math.Max(klines[k].Open, klines[k].Close),
+                                    _ => Math.Max(klines[k].High, klines[k].Close)
+                                };
                                 exceeded = checkPrice > curUpper;
                             }
                             else // Bearish
                             {
                                 decimal curLower = activeSlope * k + activeLower;
-                                checkPrice = priceMode == ConsecutiveChannelPriceMode.Close
-                                    ? klines[k].Close
-                                    : Math.Min(klines[k].Low, klines[k].Close);
+                                checkPrice = priceMode switch
+                                {
+                                    ConsecutiveChannelPriceMode.Close => klines[k].Close,
+                                    ConsecutiveChannelPriceMode.OpenClose => Math.Min(klines[k].Open, klines[k].Close),
+                                    _ => Math.Min(klines[k].Low, klines[k].Close)
+                                };
                                 exceeded = checkPrice < curLower;
                             }
 
@@ -389,6 +395,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
         /// 针对指定连续 K 线区间拟合严格平行的通道
         /// 1. Close 模式：以 Close 进行一元线性回归斜率拟合，并以 Close 在回归线上的最大正残差和最大负残差作为上轨与下轨（紧贴实体窄通道）
         /// 2. HighLow 模式：以 (High+Low)/2 进行回归，以 High 最大残差与 Low 最小残差作为外包络（宽通道）
+        /// 3. OpenClose 模式：以 (Open+Close)/2 为回归中心，以 Max(Open,Close) 最大残差与 Min(Open,Close) 最小残差作为实体边界（实体通道）
         /// </summary>
         public static void FitParallelChannel(
             IReadOnlyList<RawKline> klines,
@@ -416,6 +423,19 @@ namespace Test.ChannelPlayback.WinForms.Engine
                     decimal span = Math.Max(0.01m, c * 0.0005m);
                     upperB = c + span;
                     lowerB = c - span;
+                }
+                else if (priceMode == ConsecutiveChannelPriceMode.OpenClose)
+                {
+                    decimal top = Math.Max(klines[startIndex].Open, klines[startIndex].Close);
+                    decimal btm = Math.Min(klines[startIndex].Open, klines[startIndex].Close);
+                    if (top <= btm)
+                    {
+                        decimal span = Math.Max(0.01m, top * 0.0005m);
+                        top += span;
+                        btm -= span;
+                    }
+                    upperB = top;
+                    lowerB = btm;
                 }
                 else
                 {
@@ -464,6 +484,54 @@ namespace Test.ChannelPlayback.WinForms.Engine
                 lowerB = minDiffC;
 
                 // 若所有 Close 恰好共线 (上轨 == 下轨)，赋予极小的微通道厚度保证通道存在
+                if (upperB <= lowerB)
+                {
+                    decimal minHeight = Math.Max(0.01m, meanY * 0.0005m);
+                    upperB += minHeight / 2m;
+                    lowerB -= minHeight / 2m;
+                }
+            }
+            else if (priceMode == ConsecutiveChannelPriceMode.OpenClose)
+            {
+                // 2. 开收实体通道拟合：以 (Open + Close) / 2 为回归中心，以 Max(Open, Close) 和 Min(Open, Close) 为实体包络
+                decimal sumX = 0m;
+                decimal sumY = 0m;
+                for (int idx = startIndex; idx <= endIndex; idx++)
+                {
+                    sumX += idx;
+                    sumY += (klines[idx].Open + klines[idx].Close) / 2m;
+                }
+                decimal meanX = sumX / n;
+                decimal meanY = sumY / n;
+
+                decimal num = 0m;
+                decimal den = 0m;
+                for (int idx = startIndex; idx <= endIndex; idx++)
+                {
+                    decimal dx = idx - meanX;
+                    decimal dy = ((klines[idx].Open + klines[idx].Close) / 2m) - meanY;
+                    num += dx * dy;
+                    den += dx * dx;
+                }
+
+                slopeK = den != 0m ? num / den : 0m;
+
+                decimal maxDiffBody = decimal.MinValue;
+                decimal minDiffBody = decimal.MaxValue;
+                for (int idx = startIndex; idx <= endIndex; idx++)
+                {
+                    decimal bodyTop = Math.Max(klines[idx].Open, klines[idx].Close);
+                    decimal bodyBottom = Math.Min(klines[idx].Open, klines[idx].Close);
+                    decimal diffTop = bodyTop - slopeK * idx;
+                    decimal diffBottom = bodyBottom - slopeK * idx;
+                    if (diffTop > maxDiffBody) maxDiffBody = diffTop;
+                    if (diffBottom < minDiffBody) minDiffBody = diffBottom;
+                }
+
+                upperB = maxDiffBody;
+                lowerB = minDiffBody;
+
+                // 若所有实体极值恰好共线，赋予极小的微通道厚度
                 if (upperB <= lowerB)
                 {
                     decimal minHeight = Math.Max(0.01m, meanY * 0.0005m);

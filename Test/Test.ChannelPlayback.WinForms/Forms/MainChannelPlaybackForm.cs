@@ -842,7 +842,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
             // Tab 1: 通道参数设置
             {
                 var lblL = CreateLabel("左侧分析长度:", 15, 18);
-                numLeftLen = new NumericUpDown { Location = new Point(125, 15), Width = 190, Minimum = 10, Maximum = 1000, Value = 100 };
+                numLeftLen = new NumericUpDown { Location = new Point(125, 15), Width = 190, Minimum = 0, Maximum = 1000, Value = 100 };
                 numLeftLen.ValueChanged += (s, e) =>
                 {
                     _engine.LeftLength = (int)numLeftLen.Value;
@@ -1181,7 +1181,8 @@ namespace Test.ChannelPlayback.WinForms.Forms
                 cboConsecPriceMode.Items.AddRange(new object[]
                 {
                     "Close 收盘价 (窄通道)",
-                    "High/Low 极值 (宽通道)"
+                    "High/Low 极值 (宽通道)",
+                    "Open/Close 开收实体 (实体通道)"
                 });
                 cboConsecPriceMode.SelectedIndex = 0;
                 cboConsecPriceMode.SelectedIndexChanged += (s, e) =>
@@ -1769,7 +1770,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
                 numConsecutiveBars.Value = Math.Clamp(s.ConsecutiveTrendMinBars, numConsecutiveBars.Minimum, numConsecutiveBars.Maximum);
                 decimal consecPct = s.ConsecutiveTrendMinPct == 2.5m ? 0.0m : s.ConsecutiveTrendMinPct;
                 numConsecutivePct.Value = Math.Clamp(consecPct, numConsecutivePct.Minimum, numConsecutivePct.Maximum);
-                cboConsecPriceMode.SelectedIndex = Math.Clamp(s.ConsecutiveChannelPriceMode, 0, 1);
+                cboConsecPriceMode.SelectedIndex = Math.Clamp(s.ConsecutiveChannelPriceMode, 0, 2);
                 chkShowConsecutiveChannel.Checked = s.ShowConsecutiveChannel;
                 chkEnableChannelAutoUpdate.Checked = s.EnableChannelAutoUpdate;
                 cboChannelUpdateMode.SelectedIndex = Math.Clamp(s.ChannelUpdateMode, 0, 1);
@@ -1825,6 +1826,8 @@ namespace Test.ChannelPlayback.WinForms.Forms
                 _engine.ReversalChannelZonePct = numReversalChannelZone.Value;
                 _engine.ShowReversalYellowLines = chkShowReversalYellowLines.Checked;
                 _engine.ShowObservationCycles = chkShowObservationCycles.Checked;
+                _engine.ReversalNearLineTolerancePct = s.ReversalNearLineTolerancePct <= 0 ? 8.0m : s.ReversalNearLineTolerancePct;
+                _engine.ReversalMinTicksAfterNearLine = s.ReversalMinTicksAfterNearLine <= 0 ? 2 : s.ReversalMinTicksAfterNearLine;
 
                 // 恢复 Tick 查看周期设置
                 _tickPeriodMode = Math.Clamp(s.TickPeriodMode, 0, 4);
@@ -1900,6 +1903,8 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     ReversalChannelZonePct = numReversalChannelZone.Value,
                     ShowReversalYellowLines = chkShowReversalYellowLines.Checked,
                     ShowObservationCycles = chkShowObservationCycles.Checked,
+                    ReversalNearLineTolerancePct = _engine.ReversalNearLineTolerancePct,
+                    ReversalMinTicksAfterNearLine = _engine.ReversalMinTicksAfterNearLine,
                     TickPeriodMode = _tickPeriodMode,
                     CustomTickMinutes = (int)numCustomTickPeriod.Value
                 };
@@ -3424,7 +3429,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
                         ? (sig.Direction == OrderSignalDirection.Sell ? "顺势高空" : "顺势低多")
                         : (sig.Direction == OrderSignalDirection.Sell ? "高点做空" : "低点做多");
                     string lineTag = !string.IsNullOrEmpty(sig.ChannelLineReaction) ? $"[{sig.ChannelLineReaction}] " : "";
-                    string modeTag = sig.IsTickStreamTriggered ? $" (极值:{sig.PeakTroughPrice:F2})" : "";
+                    string modeTag = sig.PeakTroughPrice > 0 ? $" (极值:{sig.PeakTroughPrice:F2})" : "";
                     string labelText = $"⚡{lineTag}{dirStr} @ {sig.Price:F2}{modeTag} [#{sig.Pattern.PatternId} C{sig.ObservationCycleIndex}]";
                     double barSpan = (double)(allKlines[sig.BigBarIndex].High - allKlines[sig.BigBarIndex].Low);
                     if (barSpan <= 0) barSpan = 10.0;
@@ -3435,6 +3440,15 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     sigTxt.LabelFontSize = 9.5f;
                     sigTxt.LabelBold = true;
                     sigTxt.Alignment = sig.Direction == OrderSignalDirection.Sell ? Alignment.LowerCenter : Alignment.UpperCenter;
+
+                    // 若实际开仓价与波峰/波谷极值不同，在极值点额外绘制一个微型三角标记作为防守基准点
+                    if (sig.PeakTroughPrice > 0 && Math.Abs(sig.Price - sig.PeakTroughPrice) > 0.01m)
+                    {
+                        var ptMarker = plot.Add.Marker(x, (double)sig.PeakTroughPrice);
+                        ptMarker.Shape = sig.Direction == OrderSignalDirection.Sell ? MarkerShape.FilledTriangleUp : MarkerShape.FilledTriangleDown;
+                        ptMarker.Size = 7;
+                        ptMarker.Color = ScottPlot.Color.FromHex("#94a3b8"); // Slate 400
+                    }
                 }
             }
 
@@ -4075,7 +4089,12 @@ namespace Test.ChannelPlayback.WinForms.Forms
             {
                 double yUpEnd = consecSlope * (endIndex + 0.5) + consecUpB;
                 double yLowEnd = consecSlope * (endIndex + 0.5) + consecLowB;
-                string modeDesc = consecCh.PriceMode == ConsecutiveChannelPriceMode.Close ? "Close窄通道" : "HighLow宽通道";
+                string modeDesc = consecCh.PriceMode switch
+                {
+                    ConsecutiveChannelPriceMode.Close => "Close窄通道",
+                    ConsecutiveChannelPriceMode.OpenClose => "Open/Close实体通道",
+                    _ => "HighLow宽通道"
+                };
                 chSummary += $" | 🟩绿色通道({modeDesc}): 上轨{yUpEnd:F2} 下轨{yLowEnd:F2} (高度:{consecCh.ChannelHeight:F2})";
                 if (countAboveUpper > 0) chSummary += $" (破上轨:{countAboveUpper}笔)";
                 if (countBelowLower > 0) chSummary += $" (破下轨:{countBelowLower}笔)";
@@ -4787,7 +4806,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
                         : (sig.Direction == OrderSignalDirection.Sell ? "高点做空" : "低点做多");
                     string tickDetail = sig.IsTickStreamTriggered 
                         ? $" (极值:{sig.PeakTroughPrice:F2}, 回落:{sig.PullbackPct:F2}%, 止损:{sig.StopLossPrice:F2})" 
-                        : $" (止损:{sig.StopLossPrice:F2})";
+                        : (sig.PeakTroughPrice > 0 ? $" (极值:{sig.PeakTroughPrice:F2}, 止损:{sig.StopLossPrice:F2})" : $" (止损:{sig.StopLossPrice:F2})");
                     string labelText = $"⚡{sigDirStr} @ {sig.Price:F2}{tickDetail} [#{sig.Pattern.PatternId} C{sig.ObservationCycleIndex}]";
                     double spanEst = (double)(overallHigh - overallLow);
                     if (spanEst <= 0) spanEst = 10.0;
@@ -5178,11 +5197,19 @@ namespace Test.ChannelPlayback.WinForms.Forms
                                 string revDirStr = sig.IsBreakoutTrendFollowing
                                     ? (sig.Direction == OrderSignalDirection.Sell ? "顺势高空" : "顺势低多")
                                     : (sig.Direction == OrderSignalDirection.Sell ? "做空" : "做多");
-                                var txt = formsPlotTick.Plot.Add.Text($"⚡{revDirStr} [#{sig.Pattern.PatternId} C{sig.ObservationCycleIndex}]", kIdx, y);
+                                var txt = formsPlotTick.Plot.Add.Text($"⚡{revDirStr} @ {sig.Price:F2} [#{sig.Pattern.PatternId} C{sig.ObservationCycleIndex}]", kIdx, y);
                                 txt.LabelFontColor = yellowCol;
                                 txt.LabelFontSize = 9.0f;
                                 txt.LabelBold = true;
                                 txt.Alignment = sig.Direction == OrderSignalDirection.Sell ? Alignment.LowerCenter : Alignment.UpperCenter;
+
+                                if (sig.PeakTroughPrice > 0 && Math.Abs(sig.Price - sig.PeakTroughPrice) > 0.01m)
+                                {
+                                    var ptM = formsPlotTick.Plot.Add.Marker(kIdx, (double)sig.PeakTroughPrice);
+                                    ptM.Shape = sig.Direction == OrderSignalDirection.Sell ? MarkerShape.FilledTriangleUp : MarkerShape.FilledTriangleDown;
+                                    ptM.Size = 7;
+                                    ptM.Color = ScottPlot.Color.FromHex("#94a3b8");
+                                }
                             }
                         }
                     }

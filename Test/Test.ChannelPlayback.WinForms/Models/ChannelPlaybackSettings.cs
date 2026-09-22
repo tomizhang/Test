@@ -55,7 +55,7 @@ namespace Test.ChannelPlayback.WinForms.Models
         public int ConsecutiveTrendMinBars { get; set; } = 5;
         public decimal ConsecutiveTrendMinPct { get; set; } = 0.0m;
         public bool ShowConsecutiveChannel { get; set; } = true; // 连续走势绿色 0.8f 平行通道
-        public int ConsecutiveChannelPriceMode { get; set; } = 0; // 0: Close (收盘价窄通道), 1: HighLow (最高最低宽通道)
+        public int ConsecutiveChannelPriceMode { get; set; } = 0; // 0: Close (收盘价窄通道), 1: HighLow (最高最低宽通道), 2: OpenClose (开收实体通道)
         public bool EnableChannelAutoUpdate { get; set; } = true; // 超出通道且无交易信号时自动更新绘制新通道
         public int ChannelUpdateMode { get; set; } = 0; // 0: Rolling (滚动最新N根), 1: Expanding (扩展全波段)
         public bool ShowHistoricalChannels { get; set; } = true; // 显示更新前历史旧通道 (淡灰细虚线)
@@ -72,6 +72,8 @@ namespace Test.ChannelPlayback.WinForms.Models
         public decimal ReversalPShort { get; set; } = 0.35m;
         public decimal ReversalTickPullbackPct { get; set; } = 0.06m; // Tick 流冲高滞涨回落 / 探底企稳回升触发阈值 (%)
         public decimal ReversalChannelZonePct { get; set; } = 25.0m; // 绿色通道顶部/底部观察阶段进入区间阈值(%), 默认 25% (即上涨需到达通道上部 25% 或突破上轨，下跌需到达通道下部 25% 或突破下轨)
+        public decimal ReversalNearLineTolerancePct { get; set; } = 8.0m; // 到达百分比观察线附近的容差比例(占通道高度%, 默认 8%)
+        public int ReversalMinTicksAfterNearLine { get; set; } = 2; // 到线附近后确认相对高低点所需最小后续Tick笔数 (默认 2 笔)
         public bool ShowReversalYellowLines { get; set; } = true;
         public bool ShowObservationCycles { get; set; } = true;
 
