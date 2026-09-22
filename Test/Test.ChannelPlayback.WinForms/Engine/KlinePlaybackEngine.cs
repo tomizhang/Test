@@ -75,6 +75,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
         public decimal ReversalChannelZonePct { get; set; } = 25.0m;
         public decimal ReversalNearLineTolerancePct { get; set; } = 8.0m;
         public int ReversalMinTicksAfterNearLine { get; set; } = 2;
+        public int ReversalLookbackTicks { get; set; } = 1000;
         public bool ShowReversalYellowLines { get; set; } = true;
         public bool ShowObservationCycles { get; set; } = true;
         public ReversalOrderEngine ReversalOrderEngine => _reversalOrderEngine;
@@ -690,6 +691,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
             _reversalOrderEngine.ChannelZonePct = ReversalChannelZonePct;
             _reversalOrderEngine.NearLineTolerancePct = ReversalNearLineTolerancePct;
             _reversalOrderEngine.MinTicksAfterNearLine = ReversalMinTicksAfterNearLine;
+            _reversalOrderEngine.LookbackTickCount = ReversalLookbackTicks;
 
             // 驱动反转做单策略：在连续同向第 5 根收盘时刻激活并实时推演观察期
             if (EnableReversalOrder && _consecutiveTrendDetector.DetectedTrends.Count > 0)

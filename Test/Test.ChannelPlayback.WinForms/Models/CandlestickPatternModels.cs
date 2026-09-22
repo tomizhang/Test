@@ -203,6 +203,16 @@ namespace Test.ChannelPlayback.WinForms.Models
         /// </summary>
         public decimal ChannelLinePrice { get; set; } = 0m;
 
+        /// <summary>
+        /// 观察期开始时向前回溯提取的 Tick 总数
+        /// </summary>
+        public int LookbackTicksCount { get; set; } = 0;
+
+        /// <summary>
+        /// 本次反转做单的波峰/波谷极值是否形成于观察期开始前的向前回溯 Tick 中
+        /// </summary>
+        public bool IsPeakFromLookback { get; set; } = false;
+
         public override string ToString()
         {
             string tickInfo = "";
