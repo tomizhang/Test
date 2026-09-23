@@ -147,14 +147,17 @@ namespace Test.PeriodTickPlayback.WinForms.Engine
         }
 
         /// <summary>
-        /// 将 Tick 序列按时钟对齐的周期时间跨度切分为连续的周期桶
+        /// 将 Tick 序列按时钟对齐的周期时间跨度切分为连续的周期桶 (支持任意秒级与分钟级 TimeSpan)
         /// </summary>
         public static List<PeriodBucket> SliceTicksIntoBuckets(List<RawTick> ticks, TimeSpan periodSpan, int startingBucketIndex = 0)
         {
             var buckets = new List<PeriodBucket>();
             if (ticks == null || ticks.Count == 0) return buckets;
 
-            int periodMinutes = (int)Math.Max(1, Math.Round(periodSpan.TotalMinutes));
+            if (periodSpan < TimeSpan.FromSeconds(1))
+            {
+                periodSpan = TimeSpan.FromSeconds(1);
+            }
 
             PeriodBucket? currentBucket = null;
             DateTime currentBucketStart = DateTime.MinValue;
@@ -168,8 +171,8 @@ namespace Test.PeriodTickPlayback.WinForms.Engine
                 DateTime tickTime = DateTimeOffset.FromUnixTimeMilliseconds(tick.Time).UtcDateTime;
 
                 // 计算该 Tick 所属的自然时钟对齐区间起点与终点
-                DateTime expectedBucketStart = AlignTimeToPeriod(tickTime, periodMinutes);
-                DateTime expectedBucketEnd = expectedBucketStart.AddMinutes(periodMinutes);
+                DateTime expectedBucketStart = AlignTimeToPeriod(tickTime, periodSpan);
+                DateTime expectedBucketEnd = expectedBucketStart.Add(periodSpan);
 
                 // 若跨入新周期桶
                 if (currentBucket == null || tickTime >= currentBucketEnd || expectedBucketStart != currentBucketStart)
@@ -206,18 +209,29 @@ namespace Test.PeriodTickPlayback.WinForms.Engine
         }
 
         /// <summary>
-        /// 时钟对齐算法：将时间向下对齐到最近的 periodMinutes 整数倍
+        /// 自然时钟对齐算法：将时间向下对齐到最近的 periodSpan (支持任意秒级、分钟级或日线)
         /// </summary>
-        public static DateTime AlignTimeToPeriod(DateTime dt, int periodMinutes)
+        public static DateTime AlignTimeToPeriod(DateTime dt, TimeSpan periodSpan)
         {
-            if (periodMinutes >= 1440) // 日线
+            if (periodSpan.TotalDays >= 1) // 日线及以上
             {
                 return dt.Date;
             }
 
-            long totalMinutes = (long)(dt - dt.Date).TotalMinutes;
-            long alignedMinutes = (totalMinutes / periodMinutes) * periodMinutes;
-            return dt.Date.AddMinutes(alignedMinutes);
+            long spanTicks = periodSpan.Ticks;
+            if (spanTicks <= 0) spanTicks = TimeSpan.FromSeconds(1).Ticks;
+
+            long ticksSinceMidnight = (dt - dt.Date).Ticks;
+            long alignedTicks = (ticksSinceMidnight / spanTicks) * spanTicks;
+            return dt.Date.AddTicks(alignedTicks);
+        }
+
+        /// <summary>
+        /// 兼容重载：时钟对齐算法：将时间向下对齐到最近的 periodMinutes 整数倍
+        /// </summary>
+        public static DateTime AlignTimeToPeriod(DateTime dt, int periodMinutes)
+        {
+            return AlignTimeToPeriod(dt, TimeSpan.FromMinutes(periodMinutes));
         }
 
         /// <summary>

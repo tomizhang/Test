@@ -16,7 +16,7 @@ namespace Test.PeriodTickPlayback.WinForms.Models
         public int PeriodIndex { get; set; } = 0; // 对应 cboPeriod.SelectedIndex
         public int CustomMinutes { get; set; } = 30; // 对应 numCustomMinutes.Value
         public int SpeedIndex { get; set; } = 2; // 默认 10x
-        public bool AutoFollow { get; set; } = true;
+        public bool AutoFollow { get; set; } = false; // 默认不勾选自动跟随
         public bool ShowVolume { get; set; } = true;
         public int ChartTypeIndex { get; set; } = 0; // 0: 蜡烛图, 1: 折线图
         public bool AutoAppendNextBatch { get; set; } = true; // 自动连续追加后续分批
@@ -36,9 +36,12 @@ namespace Test.PeriodTickPlayback.WinForms.Models
         public int ChannelExtensionBars { get; set; } = 15; // 主图平行通道前向延长根数 (默认 15 根)
 
         // 微观 Tick 窗口独立时间周期与自定义时间周期配置
-        public int TickPeriodIndex { get; set; } = 0; // 0: 全部(当前大周期), 1: 1m, 2: 3m, 3: 5m, 4: 15m, 5: 30m, 6: 1h, 7: 自定义
+        public int TickPeriodIndex { get; set; } = 0; // 0: 全部, 1: 1s, 2: 5s, 3: 15s, 4: 30s, 5: 1m, 6: 3m, 7: 5m, 8: 15m, 9: 30m, 10: 1h, 11: 自定秒, 12: 自定分
+        public int TickCustomSeconds { get; set; } = 5; // 自定义秒数 (默认 5 秒)
         public int TickCustomMinutes { get; set; } = 5; // 自定义分钟数 (默认 5 分钟)
         public int TickChartTypeIndex { get; set; } = 0; // 微观图表类型: 0: 蜡烛图(K线), 1: 折线图
+        public bool ShowTickConsecutiveTrend { get; set; } = true; // 微观 Tick 窗口小周期连续涨跌通道开关 (默认开启)
+        public bool VerboseLog { get; set; } = false; // 详细定型日志开关 (默认关闭，避免高频刷屏)
 
         /// <summary>
         /// 获取 AppData 主配置文件路径 (永久存储，防止 dotnet clean / rebuild 清空 bin 目录导致配置丢失)

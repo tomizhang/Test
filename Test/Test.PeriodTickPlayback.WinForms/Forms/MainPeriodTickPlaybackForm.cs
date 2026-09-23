@@ -37,6 +37,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
         private System.Windows.Forms.Timer _uiRefreshTimer = null!;
         private volatile bool _macroPlotNeedsRefresh = false;
         private volatile bool _tickPlotNeedsRefresh = false;
+        private readonly ToolTip _toolTip = new();
 
         // 内部缓存供图表极速渲染
         private readonly List<RawTick> _currentBucketTicks = new(50000);
@@ -62,7 +63,6 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
         private Button btnLoad = null!;
         private Button btnNextBatch = null!;
         private Button btnPlay = null!;
-        private Button btnPause = null!;
         private Button btnStop = null!;
         private Button btnNextBucket = null!;
         private Button btnStepTick = null!;
@@ -98,12 +98,17 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
         private Button btnResumeLiveFollow = null!;
         private Button btnRatioProximity = null!;
 
-        // 微观 Tick 窗口独立时间周期与图表类型切换控制器
+        // 微观 Tick 窗口独立时间周期一排按钮与自定义秒/分聚合控制器
         private Label lblTickPeriod = null!;
-        private ComboBox cboTickPeriod = null!;
+        private readonly List<Button> _tickPeriodButtons = new();
+        private int _selectedTickPeriodIndex = 0;
+        private Button _btnCustomSeconds = null!;
+        private Button _btnCustomMinutes = null!;
+        private NumericUpDown numTickCustomSeconds = null!;
         private NumericUpDown numTickCustomMinutes = null!;
         private Button btnToggleTickChartType = null!;
         private CheckBox chkShowTickRatio = null!;
+        private CheckBox chkTickConsecutiveTrend = null!;
 
         // K线点击与Shift多选状态
         private int? _selectedBarAnchor = null;
@@ -135,6 +140,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
         private DataGridView dgvRecentTicks = null!;
         private RichTextBox txtLogs = null!;
         private Button btnClearLogs = null!;
+        private CheckBox chkVerboseLog = null!;
 
         #endregion
 
@@ -151,10 +157,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             ApplySettingsToUi();
             _isApplyingSettings = false;
 
-            AppendLog("[系统就绪] 大周期与逐笔 Tick 嵌套流式回放系统已启动！", Color.FromArgb(74, 222, 128));
-            AppendLog("[核心规则] 播放 30 分钟 (或指定大周期) 时，将先播放完毕该 30 分钟内所有的逐笔 Tick，然后再向大图定型输出对应的 30 分钟 K 线。", Color.FromArgb(56, 189, 248));
-            AppendLog("[大图指标] 遵循用户指定规范：大图除了成交量副图，不添加任何 MA 均线或其它干扰指标，纯净展现金融蜡烛体。", Color.FromArgb(250, 204, 21));
-            AppendLog("[显示类型] 支持在【蜡烛图】与【收盘折线图】间随时自由切换，满足多样化盯盘看盘需求。", Color.FromArgb(56, 189, 248));
+            AppendLog("[系统就绪] 大周期与逐笔 Tick 嵌套流式回放系统已就绪，支持自由切片聚合与历史巡检。", Color.FromArgb(74, 222, 128));
         }
 
         #region 初始化界面与布局
@@ -254,18 +257,18 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             numCustomMinutes.ValueChanged += (s, e) => SaveSettingsFromUi();
 
             // 分批载入按钮：首批数据
-            btnLoad = CreateButton("载入首批", 676, 5, 80, 26, Color.FromArgb(2, 132, 199));
+            btnLoad = CreateButton("载入首批", 674, 5, 78, 26, Color.FromArgb(2, 132, 199));
             btnLoad.Click += async (s, e) => await LoadFirstBatchAsync();
 
             // 载入下一批按钮
-            btnNextBatch = CreateButton("载入下批", 762, 5, 84, 26, Color.FromArgb(14, 165, 233));
+            btnNextBatch = CreateButton("载入下批", 756, 5, 80, 26, Color.FromArgb(14, 165, 233));
             btnNextBatch.Enabled = false;
             btnNextBatch.Click += async (s, e) => await LoadNextBatchAsync(isBackgroundPreload: false);
 
             chkAutoAppend = new CheckBox
             {
                 Text = "自动追加下批",
-                Location = new Point(854, 8),
+                Location = new Point(842, 8),
                 AutoSize = true,
                 Checked = true,
                 ForeColor = Color.FromArgb(74, 222, 128),
@@ -273,7 +276,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             };
             chkAutoAppend.CheckedChanged += (s, e) => SaveSettingsFromUi();
 
-            lblBatchBadge = CreateLabel("批次: 准备就绪", 965, 9);
+            lblBatchBadge = CreateLabel("批次: 准备就绪", 955, 9);
             lblBatchBadge.ForeColor = Color.FromArgb(56, 189, 248);
             lblBatchBadge.Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold);
 
@@ -281,30 +284,29 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             btnPlay = CreateButton("播放", 10, 35, 64, 26, Color.FromArgb(16, 185, 129));
             btnPlay.Click += (s, e) =>
             {
-                if (!chkAutoFollow.Checked)
+                if (_engine.State == PlaybackState.Playing)
                 {
-                    chkAutoFollow.Checked = true;
+                    _engine.Pause();
                 }
-                ClearBarSelection();
-                _engine.Play();
+                else
+                {
+                    _engine.Play();
+                }
             };
 
-            btnPause = CreateButton("暂停", 80, 35, 64, 26, Color.FromArgb(217, 119, 6));
-            btnPause.Click += (s, e) => _engine.Pause();
-
-            btnStop = CreateButton("停止", 150, 35, 64, 26, Color.FromArgb(225, 29, 72));
+            btnStop = CreateButton("停止", 80, 35, 64, 26, Color.FromArgb(225, 29, 72));
             btnStop.Click += (s, e) => _engine.Stop();
 
-            btnNextBucket = CreateButton("完成当前周期", 220, 35, 102, 26, Color.FromArgb(124, 58, 237));
+            btnNextBucket = CreateButton("完成当前周期", 150, 35, 102, 26, Color.FromArgb(124, 58, 237));
             btnNextBucket.Click += (s, e) => _engine.FastForwardCurrentBucket();
 
-            btnStepTick = CreateButton("单步Tick", 328, 35, 74, 26, Color.FromArgb(71, 85, 105));
+            btnStepTick = CreateButton("单步Tick", 258, 35, 74, 26, Color.FromArgb(71, 85, 105));
             btnStepTick.Click += (s, e) => _engine.StepTick(1);
 
-            var lblSpeed = CreateLabel("倍速:", 410, 38);
+            var lblSpeed = CreateLabel("倍速:", 340, 38);
             cboSpeed = new ComboBox
             {
-                Location = new Point(448, 35),
+                Location = new Point(378, 35),
                 Width = 78,
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 Font = new Font("Microsoft YaHei", 8.5F)
@@ -320,9 +322,9 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             chkAutoFollow = new CheckBox
             {
                 Text = "自动跟随",
-                Location = new Point(534, 38),
+                Location = new Point(464, 38),
                 AutoSize = true,
-                Checked = true,
+                Checked = false, // 默认不勾选自动跟随
                 ForeColor = Color.FromArgb(226, 232, 240),
                 Font = new Font("Microsoft YaHei", 8.5F)
             };
@@ -340,7 +342,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             chkShowVolume = new CheckBox
             {
                 Text = "成交量",
-                Location = new Point(616, 38),
+                Location = new Point(546, 38),
                 AutoSize = true,
                 Checked = true,
                 ForeColor = Color.FromArgb(226, 232, 240),
@@ -352,10 +354,10 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 SaveSettingsFromUi();
             };
 
-            var lblChartType = CreateLabel("显示类型:", 684, 38);
+            var lblChartType = CreateLabel("显示类型:", 614, 38);
             cboChartType = new ComboBox
             {
-                Location = new Point(748, 35),
+                Location = new Point(678, 35),
                 Width = 125,
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold)
@@ -445,7 +447,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 lblPeriod, cboPeriod, numCustomMinutes,
                 btnLoad, btnNextBatch,
                 chkAutoAppend, lblBatchBadge,
-                btnPlay, btnPause, btnStop, btnNextBucket, btnStepTick,
+                btnPlay, btnStop, btnNextBucket, btnStepTick,
                 lblSpeed, cboSpeed,
                 chkAutoFollow, chkShowVolume,
                 lblChartType, cboChartType,
@@ -486,7 +488,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 Text = "[等待载入数据...]",
                 Font = new Font("Microsoft YaHei", 8.5F),
                 ForeColor = Color.FromArgb(148, 163, 184),
-                Location = new Point(380, 7),
+                Location = new Point(410, 7),
                 AutoSize = true
             };
 
@@ -509,7 +511,9 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 cboChartType.SelectedIndex = cboChartType.SelectedIndex == 0 ? 1 : 0;
             };
 
-            lblMacroTitle.SizeChanged += (s, e) => lblMacroBadge.Left = lblMacroTitle.Right + 15;
+            lblMacroTitle.SizeChanged += (s, e) => lblMacroBadge.Left = lblMacroTitle.Right + 12;
+            lblMacroTitle.TextChanged += (s, e) => lblMacroBadge.Left = lblMacroTitle.Right + 12;
+            lblMacroBadge.Left = lblMacroTitle.Right + 12;
             pnlMacroHeader.Resize += (s, e) => btnToggleChartType.Location = new Point(Math.Max(300, pnlMacroHeader.ClientSize.Width - btnToggleChartType.Width - 10), 4);
 
             pnlMacroHeader.Controls.AddRange(new Control[] { lblMacroTitle, lblMacroBadge, btnToggleChartType });
@@ -539,9 +543,9 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             pnlTickHeader = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 34,
+                Height = 62,
                 BackColor = Color.FromArgb(30, 41, 59),
-                Padding = new Padding(8, 5, 8, 4)
+                Padding = new Padding(8, 4, 8, 4)
             };
             lblTickTitle = new Label
             {
@@ -560,50 +564,88 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 AutoSize = true
             };
 
-            cboTickPeriod = new ComboBox
+            _tickPeriodButtons.Clear();
+            _tickPeriodButtons.Add(CreateTickPeriodButton("全部", 0));
+            _tickPeriodButtons.Add(CreateTickPeriodButton("1s", 1));
+            _tickPeriodButtons.Add(CreateTickPeriodButton("5s", 2));
+            _tickPeriodButtons.Add(CreateTickPeriodButton("15s", 3));
+            _tickPeriodButtons.Add(CreateTickPeriodButton("30s", 4));
+            _tickPeriodButtons.Add(CreateTickPeriodButton("1m", 5));
+            _tickPeriodButtons.Add(CreateTickPeriodButton("3m", 6));
+            _tickPeriodButtons.Add(CreateTickPeriodButton("5m", 7));
+            _tickPeriodButtons.Add(CreateTickPeriodButton("15m", 8));
+            _tickPeriodButtons.Add(CreateTickPeriodButton("30m", 9));
+            _tickPeriodButtons.Add(CreateTickPeriodButton("1h", 10));
+
+            _btnCustomSeconds = CreateTickPeriodButton("自定秒(5s)", 11);
+            _tickPeriodButtons.Add(_btnCustomSeconds);
+
+            numTickCustomSeconds = new NumericUpDown
             {
-                DropDownStyle = ComboBoxStyle.DropDownList,
+                Minimum = 1,
+                Maximum = 3600,
+                Value = 5,
+                Width = 46,
                 Font = new Font("Microsoft YaHei", 8.0F, FontStyle.Bold),
-                Width = 115,
                 BackColor = Color.FromArgb(15, 23, 42),
-                ForeColor = Color.FromArgb(226, 232, 240)
+                ForeColor = Color.FromArgb(56, 189, 248),
+                Visible = false
             };
-            cboTickPeriod.Items.AddRange(new object[]
+            numTickCustomSeconds.ValueChanged += (s, e) =>
             {
-                "全部 (当前大周期)",
-                "1分钟 (1m)",
-                "3分钟 (3m)",
-                "5分钟 (5m)",
-                "15分钟 (15m)",
-                "30分钟 (30m)",
-                "1小时 (1h)",
-                "自定义分钟"
-            });
-            cboTickPeriod.SelectedIndex = 0;
-            cboTickPeriod.SelectedIndexChanged += (s, e) =>
-            {
-                numTickCustomMinutes.Visible = cboTickPeriod.SelectedIndex == 7;
-                RepositionTickHeaderControls();
+                if (_btnCustomSeconds != null)
+                {
+                    _btnCustomSeconds.Text = $"自定秒({numTickCustomSeconds.Value}s)";
+                }
                 SaveSettingsFromUi();
-                RefreshTickPlotDirectly();
+                if (_selectedTickPeriodIndex == 11)
+                {
+                    RefreshTickPlotDirectly();
+                }
             };
+            numTickCustomSeconds.Enter += (s, e) =>
+            {
+                if (_selectedTickPeriodIndex != 11)
+                {
+                    SelectTickPeriodButton(11);
+                }
+            };
+
+            _btnCustomMinutes = CreateTickPeriodButton("自定分(5m)", 12);
+            _tickPeriodButtons.Add(_btnCustomMinutes);
 
             numTickCustomMinutes = new NumericUpDown
             {
                 Minimum = 1,
                 Maximum = 1440,
                 Value = 5,
-                Width = 48,
-                Font = new Font("Microsoft YaHei", 8.0F),
+                Width = 46,
+                Font = new Font("Microsoft YaHei", 8.0F, FontStyle.Bold),
                 BackColor = Color.FromArgb(15, 23, 42),
-                ForeColor = Color.FromArgb(226, 232, 240),
+                ForeColor = Color.FromArgb(56, 189, 248),
                 Visible = false
             };
             numTickCustomMinutes.ValueChanged += (s, e) =>
             {
+                if (_btnCustomMinutes != null)
+                {
+                    _btnCustomMinutes.Text = $"自定分({numTickCustomMinutes.Value}m)";
+                }
                 SaveSettingsFromUi();
-                RefreshTickPlotDirectly();
+                if (_selectedTickPeriodIndex == 12)
+                {
+                    RefreshTickPlotDirectly();
+                }
             };
+            numTickCustomMinutes.Enter += (s, e) =>
+            {
+                if (_selectedTickPeriodIndex != 12)
+                {
+                    SelectTickPeriodButton(12);
+                }
+            };
+
+            UpdateTickPeriodButtonsUi();
 
             btnToggleTickChartType = new Button
             {
@@ -681,17 +723,45 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
 
             btnResumeLiveFollow = new Button
             {
-                Text = "恢复实时",
+                Text = "🟢 实时播放中",
                 Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold),
-                ForeColor = Color.FromArgb(241, 245, 249),
-                BackColor = Color.FromArgb(37, 99, 235),
+                ForeColor = Color.FromArgb(52, 211, 153),
+                BackColor = Color.FromArgb(15, 23, 42),
                 FlatStyle = FlatStyle.Flat,
-                Size = new Size(85, 24),
-                Cursor = Cursors.Hand,
-                Visible = false
+                Size = new Size(100, 24),
+                Cursor = Cursors.Default,
+                Visible = true
             };
-            btnResumeLiveFollow.FlatAppearance.BorderSize = 0;
-            btnResumeLiveFollow.Click += (s, e) => ClearBarSelection();
+            btnResumeLiveFollow.FlatAppearance.BorderColor = Color.FromArgb(30, 41, 59);
+            btnResumeLiveFollow.FlatAppearance.BorderSize = 1;
+            btnResumeLiveFollow.Click += (s, e) =>
+            {
+                if (_selectedBarStartIndex.HasValue || _selectedBarEndIndex.HasValue || _selectedConsecutiveTrend != null)
+                {
+                    ClearBarSelection();
+                }
+                else
+                {
+                    RefreshTickPlotDirectly();
+                }
+            };
+
+            chkTickConsecutiveTrend = new CheckBox
+            {
+                Text = "涨跌通道",
+                Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(245, 158, 11), // 琥珀金
+                AutoSize = true,
+                Checked = _settings.ShowTickConsecutiveTrend,
+                Cursor = Cursors.Hand
+            };
+            chkTickConsecutiveTrend.CheckedChanged += (s, e) =>
+            {
+                _settings.ShowTickConsecutiveTrend = chkTickConsecutiveTrend.Checked;
+                SaveSettingsFromUi();
+                RefreshTickPlotDirectly();
+                RepositionTickHeaderControls();
+            };
 
             chkShowTickRatio = new CheckBox
             {
@@ -715,30 +785,42 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
 
             lblTickTitle.SizeChanged += (s, e) => RepositionTickHeaderControls();
             lblTickBadge.SizeChanged += (s, e) => RepositionTickHeaderControls();
+            chkTickConsecutiveTrend.SizeChanged += (s, e) => RepositionTickHeaderControls();
             chkShowTickRatio.SizeChanged += (s, e) => RepositionTickHeaderControls();
             lblTickRatioBadge.SizeChanged += (s, e) => RepositionTickHeaderControls();
             lblVolRatioBadge.SizeChanged += (s, e) => RepositionTickHeaderControls();
             btnResumeLiveFollow.VisibleChanged += (s, e) => RepositionTickHeaderControls();
             pnlTickHeader.Resize += (s, e) => RepositionTickHeaderControls();
 
-            pnlTickHeader.Controls.AddRange(new Control[]
+            var tickControls = new List<Control>
             {
                 lblTickTitle,
-                lblTickPeriod,
-                cboTickPeriod,
-                numTickCustomMinutes,
-                btnToggleTickChartType,
-                chkShowTickRatio,
-                lblTickBadge,
-                lblTickRatioBadge,
-                lblVolRatioBadge,
-                btnRatioProximity,
-                btnResumeLiveFollow
-            });
+                lblTickPeriod
+            };
+            tickControls.AddRange(_tickPeriodButtons);
+            tickControls.Add(numTickCustomSeconds);
+            tickControls.Add(numTickCustomMinutes);
+            tickControls.Add(btnToggleTickChartType);
+            tickControls.Add(chkTickConsecutiveTrend);
+            tickControls.Add(chkShowTickRatio);
+            tickControls.Add(lblTickBadge);
+            tickControls.Add(lblTickRatioBadge);
+            tickControls.Add(lblVolRatioBadge);
+            tickControls.Add(btnRatioProximity);
+            tickControls.Add(btnResumeLiveFollow);
+
+            pnlTickHeader.Controls.AddRange(tickControls.ToArray());
 
             formsPlotTick = new FormsPlot { Dock = DockStyle.Fill, BackColor = Color.FromArgb(15, 23, 42) };
             formsPlotTick.MouseMove += OnFormsPlotTickMouseMove;
             formsPlotTick.MouseLeave += OnFormsPlotTickMouseLeave;
+            formsPlotTick.MouseDoubleClick += (s, e) =>
+            {
+                if (_selectedBarStartIndex.HasValue || _selectedBarEndIndex.HasValue || _selectedConsecutiveTrend != null)
+                {
+                    ClearBarSelection();
+                }
+            };
             pnlBottomLeft.Controls.Add(formsPlotTick);
             pnlBottomLeft.Controls.Add(pnlTickHeader);
             splitBottom.Panel1.Controls.Add(pnlBottomLeft);
@@ -792,10 +874,11 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             var pnlCards = new FlowLayoutPanel
             {
                 Dock = DockStyle.Top,
-                Height = 110,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 BackColor = Color.FromArgb(30, 41, 59),
                 Padding = new Padding(6),
-                AutoScroll = true
+                AutoScroll = false
             };
 
             lblCardPeriod = CreateStatCard(pnlCards, "当前大周期跨度", "未开始", Color.FromArgb(250, 204, 21));
@@ -861,6 +944,24 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 Location = new Point(10, 7),
                 AutoSize = true
             };
+            chkVerboseLog = new CheckBox
+            {
+                Text = "详细定型日志",
+                ForeColor = Color.FromArgb(148, 163, 184),
+                Font = new Font("Microsoft YaHei", 8.5F),
+                Location = new Point(pnlLogHeader.Width - 190, 5),
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                AutoSize = true,
+                Checked = _settings.VerboseLog,
+                Cursor = Cursors.Hand
+            };
+            chkVerboseLog.CheckedChanged += (s, e) =>
+            {
+                _engine.VerboseLog = chkVerboseLog.Checked;
+                _settings.VerboseLog = chkVerboseLog.Checked;
+                SaveSettingsFromUi();
+            };
+
             btnClearLogs = new Button
             {
                 Text = "清空日志",
@@ -873,7 +974,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             };
             btnClearLogs.FlatAppearance.BorderSize = 0;
             btnClearLogs.Click += (s, e) => txtLogs.Clear();
-            pnlLogHeader.Controls.AddRange(new Control[] { lblLTitle, btnClearLogs });
+            pnlLogHeader.Controls.AddRange(new Control[] { lblLTitle, chkVerboseLog, btnClearLogs });
 
             txtLogs = new RichTextBox
             {
@@ -893,17 +994,17 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
         {
             var pnl = new Panel
             {
-                Size = new Size(135, 46),
+                Size = new Size(125, 42),
                 BackColor = Color.FromArgb(15, 23, 42),
-                Margin = new Padding(3),
-                Padding = new Padding(5, 3, 5, 3)
+                Margin = new Padding(2),
+                Padding = new Padding(4, 2, 4, 2)
             };
             var lblTitle = new Label
             {
                 Text = title,
                 ForeColor = Color.FromArgb(148, 163, 184),
                 Font = new Font("Microsoft YaHei", 7.5F),
-                Location = new Point(4, 3),
+                Location = new Point(4, 2),
                 AutoSize = true
             };
             var lblValue = new Label
@@ -911,7 +1012,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 Text = initialValue,
                 ForeColor = accentColor,
                 Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold),
-                Location = new Point(4, 21),
+                Location = new Point(4, 18),
                 AutoSize = true
             };
             pnl.Controls.AddRange(new Control[] { lblTitle, lblValue });
@@ -1202,34 +1303,114 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             };
         }
 
+        private Button CreateTickPeriodButton(string text, int index)
+        {
+            var btn = new Button
+            {
+                Text = text,
+                Font = new Font("Microsoft YaHei", 8.0F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(148, 163, 184),
+                BackColor = Color.FromArgb(15, 23, 42),
+                FlatStyle = FlatStyle.Flat,
+                Cursor = Cursors.Hand,
+                Height = 24,
+                AutoSize = true,
+                Padding = new Padding(3, 0, 3, 0),
+                Margin = new Padding(1, 0, 1, 0)
+            };
+            btn.FlatAppearance.BorderSize = 1;
+            btn.FlatAppearance.BorderColor = Color.FromArgb(51, 65, 85);
+            btn.Click += (s, e) => SelectTickPeriodButton(index);
+            return btn;
+        }
+
+        private void SelectTickPeriodButton(int index)
+        {
+            if (index < 0 || index >= _tickPeriodButtons.Count) index = 0;
+            _selectedTickPeriodIndex = index;
+            UpdateTickPeriodButtonsUi();
+            RepositionTickHeaderControls();
+            SaveSettingsFromUi();
+            RefreshTickPlotDirectly();
+        }
+
+        private void UpdateTickPeriodButtonsUi()
+        {
+            for (int i = 0; i < _tickPeriodButtons.Count; i++)
+            {
+                var btn = _tickPeriodButtons[i];
+                bool isSelected = (i == _selectedTickPeriodIndex);
+                if (isSelected)
+                {
+                    btn.BackColor = Color.FromArgb(2, 132, 199);
+                    btn.ForeColor = Color.White;
+                    btn.FlatAppearance.BorderColor = Color.FromArgb(56, 189, 248);
+                }
+                else
+                {
+                    btn.BackColor = Color.FromArgb(15, 23, 42);
+                    btn.ForeColor = Color.FromArgb(148, 163, 184);
+                    btn.FlatAppearance.BorderColor = Color.FromArgb(51, 65, 85);
+                }
+            }
+
+            if (numTickCustomSeconds != null)
+            {
+                numTickCustomSeconds.Visible = (_selectedTickPeriodIndex == 11);
+            }
+            if (numTickCustomMinutes != null)
+            {
+                numTickCustomMinutes.Visible = (_selectedTickPeriodIndex == 12);
+            }
+
+            if (_btnCustomSeconds != null && numTickCustomSeconds != null)
+            {
+                _btnCustomSeconds.Text = $"自定秒({numTickCustomSeconds.Value}s)";
+            }
+            if (_btnCustomMinutes != null && numTickCustomMinutes != null)
+            {
+                _btnCustomMinutes.Text = $"自定分({numTickCustomMinutes.Value}m)";
+            }
+        }
+
         private TimeSpan? GetSelectedTickPeriodSpan()
         {
-            return cboTickPeriod.SelectedIndex switch
+            return _selectedTickPeriodIndex switch
             {
                 0 => null, // 全部 (当前大周期)
-                1 => TimeSpan.FromMinutes(1),
-                2 => TimeSpan.FromMinutes(3),
-                3 => TimeSpan.FromMinutes(5),
-                4 => TimeSpan.FromMinutes(15),
-                5 => TimeSpan.FromMinutes(30),
-                6 => TimeSpan.FromHours(1),
-                7 => TimeSpan.FromMinutes((double)numTickCustomMinutes.Value),
+                1 => TimeSpan.FromSeconds(1),
+                2 => TimeSpan.FromSeconds(5),
+                3 => TimeSpan.FromSeconds(15),
+                4 => TimeSpan.FromSeconds(30),
+                5 => TimeSpan.FromMinutes(1),
+                6 => TimeSpan.FromMinutes(3),
+                7 => TimeSpan.FromMinutes(5),
+                8 => TimeSpan.FromMinutes(15),
+                9 => TimeSpan.FromMinutes(30),
+                10 => TimeSpan.FromHours(1),
+                11 => TimeSpan.FromSeconds(Math.Max(1, (double)numTickCustomSeconds.Value)),
+                12 => TimeSpan.FromMinutes(Math.Max(1, (double)numTickCustomMinutes.Value)),
                 _ => null
             };
         }
 
         private string GetSelectedTickPeriodTitle()
         {
-            return cboTickPeriod.SelectedIndex switch
+            return _selectedTickPeriodIndex switch
             {
                 0 => "全部",
-                1 => "1分钟",
-                2 => "3分钟",
-                3 => "5分钟",
-                4 => "15分钟",
-                5 => "30分钟",
-                6 => "1小时",
-                7 => $"{numTickCustomMinutes.Value}分钟",
+                1 => "1秒",
+                2 => "5秒",
+                3 => "15秒",
+                4 => "30秒",
+                5 => "1分钟",
+                6 => "3分钟",
+                7 => "5分钟",
+                8 => "15分钟",
+                9 => "30分钟",
+                10 => "1小时",
+                11 => $"{numTickCustomSeconds.Value}秒",
+                12 => $"{numTickCustomMinutes.Value}分钟",
                 _ => "全部"
             };
         }
@@ -1253,52 +1434,84 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
         {
             if (lblTickTitle == null || pnlTickHeader == null) return;
 
-            lblTickTitle.Location = new Point(10, 7);
-            lblTickPeriod.Location = new Point(lblTickTitle.Right + 10, 8);
-            cboTickPeriod.Location = new Point(lblTickPeriod.Right + 4, 5);
+            // ==================== Row 1: 功能操作与状态栏 (y = 5) ====================
+            lblTickTitle.Location = new Point(10, 8);
 
-            int flowX = cboTickPeriod.Right + 4;
-            if (numTickCustomMinutes.Visible)
-            {
-                numTickCustomMinutes.Location = new Point(flowX, 6);
-                flowX = numTickCustomMinutes.Right + 6;
-            }
-
+            int row1LeftX = lblTickTitle.Right + 8;
             if (btnToggleTickChartType != null)
             {
-                btnToggleTickChartType.Location = new Point(flowX, 4);
-                flowX = btnToggleTickChartType.Right + 6;
+                btnToggleTickChartType.Location = new Point(row1LeftX, 5);
+                row1LeftX = btnToggleTickChartType.Right + 8;
+            }
+
+            if (chkTickConsecutiveTrend != null)
+            {
+                chkTickConsecutiveTrend.Location = new Point(row1LeftX, 7);
+                row1LeftX = chkTickConsecutiveTrend.Right + 8;
             }
 
             if (chkShowTickRatio != null)
             {
-                chkShowTickRatio.Location = new Point(flowX, 7);
-                flowX = chkShowTickRatio.Right + 8;
+                chkShowTickRatio.Location = new Point(row1LeftX, 7);
+                row1LeftX = chkShowTickRatio.Right + 8;
             }
 
-            lblTickBadge.Location = new Point(flowX, 7);
-
-            int rightEdge = pnlTickHeader.ClientSize.Width - 10;
-            if (btnResumeLiveFollow.Visible)
+            if (btnRatioProximity != null && btnRatioProximity.Visible)
             {
-                btnResumeLiveFollow.Location = new Point(Math.Max(flowX + 10, rightEdge - btnResumeLiveFollow.Width), 4);
-                rightEdge -= (btnResumeLiveFollow.Width + 8);
-            }
-            if (btnRatioProximity.Visible)
-            {
-                btnRatioProximity.Location = new Point(Math.Max(flowX + 10, rightEdge - btnRatioProximity.Width), 4);
-                rightEdge -= (btnRatioProximity.Width + 8);
+                btnRatioProximity.Location = new Point(row1LeftX, 5);
+                row1LeftX = btnRatioProximity.Right + 8;
             }
 
-            if (lblVolRatioBadge.Visible)
+            if (btnResumeLiveFollow != null && btnResumeLiveFollow.Visible)
             {
-                lblVolRatioBadge.Location = new Point(Math.Max(flowX + 10, rightEdge - lblVolRatioBadge.Width), 5);
-                rightEdge -= (lblVolRatioBadge.Width + 8);
+                btnResumeLiveFollow.Location = new Point(row1LeftX, 5);
+                row1LeftX = btnResumeLiveFollow.Right + 8;
             }
-            if (lblTickRatioBadge.Visible)
+
+            // Row 1 右侧徽章从右向左对齐
+            int row1RightEdge = pnlTickHeader.ClientSize.Width - 10;
+            if (lblVolRatioBadge != null && lblVolRatioBadge.Visible)
             {
-                lblTickRatioBadge.Location = new Point(Math.Max(flowX + 10, rightEdge - lblTickRatioBadge.Width), 5);
-                rightEdge -= (lblTickRatioBadge.Width + 8);
+                lblVolRatioBadge.Location = new Point(row1RightEdge - lblVolRatioBadge.Width, 5);
+                row1RightEdge = lblVolRatioBadge.Left - 6;
+            }
+            if (lblTickRatioBadge != null && lblTickRatioBadge.Visible)
+            {
+                lblTickRatioBadge.Location = new Point(row1RightEdge - lblTickRatioBadge.Width, 5);
+                row1RightEdge = lblTickRatioBadge.Left - 8;
+            }
+
+            // 周期进度徽章放在 Row 1 中间剩余空间，绝不遮挡左右按钮与比值徽章
+            if (lblTickBadge != null)
+            {
+                int badgeLeft = row1LeftX + 6;
+                int maxBadgeWidth = Math.Max(50, row1RightEdge - badgeLeft);
+                lblTickBadge.Location = new Point(badgeLeft, 7);
+                lblTickBadge.MaximumSize = new Size(maxBadgeWidth, 22);
+                lblTickBadge.AutoEllipsis = true;
+                lblTickBadge.Visible = row1RightEdge > badgeLeft + 30;
+            }
+
+            // ==================== Row 2: 周期一排全展示 (y = 33) ====================
+            lblTickPeriod.Location = new Point(10, 36);
+
+            int flowX2 = lblTickPeriod.Right + 6;
+            for (int i = 0; i < _tickPeriodButtons.Count; i++)
+            {
+                var btn = _tickPeriodButtons[i];
+                btn.Location = new Point(flowX2, 33);
+                flowX2 = btn.Right + 2;
+
+                if (i == 11 && numTickCustomSeconds != null && numTickCustomSeconds.Visible)
+                {
+                    numTickCustomSeconds.Location = new Point(flowX2, 34);
+                    flowX2 = numTickCustomSeconds.Right + 3;
+                }
+                else if (i == 12 && numTickCustomMinutes != null && numTickCustomMinutes.Visible)
+                {
+                    numTickCustomMinutes.Location = new Point(flowX2, 34);
+                    flowX2 = numTickCustomMinutes.Right + 3;
+                }
             }
         }
 
@@ -1313,13 +1526,12 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             var displayType = (MacroChartDisplayType)Math.Clamp(_settings.TickChartTypeIndex, 0, 1);
 
             string customTickTitle = span.HasValue
-                ? $"微观周期走势 [{periodLabel}] (大周期: {GetSelectedPeriodTitle()})"
-                : $"当前大周期微观逐笔 Tick 走势 ({GetSelectedPeriodTitle()})";
+                ? $"微观周期 [{periodLabel}]"
+                : "微观逐笔走势";
 
             lblTickTitle.Text = customTickTitle;
-            lblTickBadge.Text = $"周期 #{_engine.CurrentBucketIndex + 1}/{_engine.TotalBuckets} | {curBucket.StartTime:HH:mm}~{curBucket.EndTime:HH:mm} (当前 {cursor:N0}/{curBucket.Ticks.Count:N0} Ticks)";
+            lblTickBadge.Text = $"周期 #{_engine.CurrentBucketIndex + 1}/{_engine.TotalBuckets} | {curBucket.StartTime:HH:mm}~{curBucket.EndTime:HH:mm} ({cursor:N0}/{curBucket.Ticks.Count:N0} T)";
             lblTickBadge.ForeColor = Color.FromArgb(148, 163, 184);
-            lblTickBadge.Left = (btnToggleTickChartType != null ? btnToggleTickChartType.Right : (numTickCustomMinutes.Visible ? numTickCustomMinutes.Right : cboTickPeriod.Right)) + 10;
 
             var stats = TickLongShortStats.Calculate(curBucket.Ticks, cursor);
             string tR = stats.TickRatio >= 999.0 ? "∞" : stats.TickRatio.ToString("F2");
@@ -1327,22 +1539,23 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
 
             if (cursor == 0)
             {
-                lblTickRatioBadge.Text = "🎯 Tick多空比: --";
+                lblTickRatioBadge.Text = "🎯 Tick比: --";
                 lblTickRatioBadge.ForeColor = Color.FromArgb(148, 163, 184);
-                lblVolRatioBadge.Text = "📊 成交量比: --";
+                lblVolRatioBadge.Text = "📊 量比: --";
                 lblVolRatioBadge.ForeColor = Color.FromArgb(148, 163, 184);
             }
             else
             {
-                lblTickRatioBadge.Text = $"🎯 Tick多空比: {tR} (多{stats.BuyTickPct:F1}% : 空{stats.SellTickPct:F1}%)";
+                lblTickRatioBadge.Text = $"🎯 Tick比: {tR} ({stats.BuyTickPct:F0}%:{stats.SellTickPct:F0}%)";
                 lblTickRatioBadge.ForeColor = stats.TickRatio >= 1.0 ? Color.FromArgb(74, 222, 128) : Color.FromArgb(248, 113, 113);
-                lblVolRatioBadge.Text = $"📊 成交量比: {vR} (多{stats.BuyVolumePct:F1}% : 空{stats.SellVolumePct:F1}%)";
+                lblVolRatioBadge.Text = $"📊 量比: {vR} ({stats.BuyVolumePct:F0}%:{stats.SellVolumePct:F0}%)";
                 lblVolRatioBadge.ForeColor = stats.VolumeRatio >= 1.0 ? Color.FromArgb(74, 222, 128) : Color.FromArgb(248, 113, 113);
             }
             lblTickRatioBadge.Visible = _settings.ShowTickRatio;
             lblVolRatioBadge.Visible = _settings.ShowTickRatio;
             _lastDefaultTickBadgeText = lblTickBadge.Text;
             _lastDefaultTickBadgeColor = lblTickBadge.ForeColor;
+            RepositionTickHeaderControls();
 
             TickPlotHelper.BuildTickPlot(
                 formsPlotTick.Plot,
@@ -1357,7 +1570,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 ratioProximity: _settings.RatioProximity,
                 subPeriodSpan: span,
                 displayType: displayType,
-                showConsecutiveTrend: _settings.ShowConsecutiveTrend,
+                showConsecutiveTrend: _settings.ShowTickConsecutiveTrend,
                 consecutiveMinBars: _settings.ConsecutiveMinBars,
                 consecutiveMinPct: _settings.ConsecutiveMinPct,
                 showRatio: _settings.ShowTickRatio,
@@ -1454,8 +1667,19 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
 
         private void UpdateControlButtonsState(PlaybackState state)
         {
-            btnPlay.Enabled = state != PlaybackState.Playing && _engine.TotalBuckets > 0;
-            btnPause.Enabled = state == PlaybackState.Playing;
+            if (state == PlaybackState.Playing)
+            {
+                btnPlay.Text = "暂停";
+                btnPlay.BackColor = Color.FromArgb(217, 119, 6); // 琥珀橙
+                btnPlay.Enabled = true;
+            }
+            else
+            {
+                btnPlay.Text = "播放";
+                btnPlay.BackColor = Color.FromArgb(16, 185, 129); // 翡翠绿
+                btnPlay.Enabled = _engine.TotalBuckets > 0;
+            }
+
             btnStop.Enabled = state == PlaybackState.Playing || state == PlaybackState.Paused;
             btnNextBucket.Enabled = state == PlaybackState.Playing || state == PlaybackState.Paused;
             btnStepTick.Enabled = state != PlaybackState.Playing && _engine.TotalBuckets > 0;
@@ -1517,7 +1741,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                             GetSelectedPeriodTitle(),
                             displayType: (MacroChartDisplayType)cboChartType.SelectedIndex,
                             showVolume: chkShowVolume.Checked,
-                            autoFollow: chkAutoFollow.Checked && !_selectedBarStartIndex.HasValue,
+                            autoFollow: chkAutoFollow.Checked,
                             showConsecutiveTrend: chkConsecutiveTrend.Checked,
                             consecutiveMinBars: (int)numConsecutiveBars.Value,
                             consecutiveMinPct: numConsecutivePct.Value,
@@ -1557,31 +1781,34 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
 
         private void UpdateDashboardCards()
         {
-            if (_selectedBarStartIndex.HasValue) return; // 选中态由 DisplaySelectedBarsTicks 接管
-
-            var curBucket = _engine.CurrentBucket;
-            if (curBucket != null)
+            // 1. 本周期/选中周期卡片 (若无历史选中，跟随当前实时周期桶)
+            if (!_selectedBarStartIndex.HasValue)
             {
-                lblCardPeriod.Text = $"{curBucket.StartTime:HH:mm} ~ {curBucket.EndTime:HH:mm}";
-                double bPct = curBucket.TickCount > 0 ? ((double)_engine.CurrentTickIndex / curBucket.TickCount) * 100.0 : 0;
-                lblCardTickProgress.Text = $"{_engine.CurrentTickIndex:N0} / {curBucket.TickCount:N0} ({bPct:F1}%)";
-                prgBucket.Value = Math.Clamp((int)bPct, 0, 100);
-
-                if (curBucket.Ticks.Count > 0 && _engine.CurrentTickIndex > 0)
+                var curBucket = _engine.CurrentBucket;
+                if (curBucket != null)
                 {
-                    int cursor = Math.Min(curBucket.Ticks.Count, _engine.CurrentTickIndex);
-                    var liveStats = TickLongShortStats.Calculate(curBucket.Ticks, cursor);
-                    string tR = liveStats.TickRatio >= 999.0 ? "∞" : liveStats.TickRatio.ToString("F2");
-                    string vR = liveStats.VolumeRatio >= 999.0 ? "∞" : liveStats.VolumeRatio.ToString("F2");
+                    lblCardPeriod.Text = $"{curBucket.StartTime:HH:mm} ~ {curBucket.EndTime:HH:mm}";
+                    double bPct = curBucket.TickCount > 0 ? ((double)_engine.CurrentTickIndex / curBucket.TickCount) * 100.0 : 0;
+                    lblCardTickProgress.Text = $"{_engine.CurrentTickIndex:N0} / {curBucket.TickCount:N0} ({bPct:F1}%)";
+                    prgBucket.Value = Math.Clamp((int)bPct, 0, 100);
 
-                    lblCardTickRatio.Text = $"{tR} ({liveStats.BuyTickPct:F1}%:{liveStats.SellTickPct:F1}%)";
-                    lblCardTickRatio.ForeColor = liveStats.TickRatio >= 1.0 ? Color.FromArgb(74, 222, 128) : Color.FromArgb(248, 113, 113);
+                    if (curBucket.Ticks.Count > 0 && _engine.CurrentTickIndex > 0)
+                    {
+                        int cursor = Math.Min(curBucket.Ticks.Count, _engine.CurrentTickIndex);
+                        var liveStats = TickLongShortStats.Calculate(curBucket.Ticks, cursor);
+                        string tR = liveStats.TickRatio >= 999.0 ? "∞" : liveStats.TickRatio.ToString("F2");
+                        string vR = liveStats.VolumeRatio >= 999.0 ? "∞" : liveStats.VolumeRatio.ToString("F2");
 
-                    lblCardVolRatio.Text = $"{vR} ({liveStats.BuyVolumePct:F1}%:{liveStats.SellVolumePct:F1}%)";
-                    lblCardVolRatio.ForeColor = liveStats.VolumeRatio >= 1.0 ? Color.FromArgb(74, 222, 128) : Color.FromArgb(248, 113, 113);
+                        lblCardTickRatio.Text = $"{tR} ({liveStats.BuyTickPct:F1}%:{liveStats.SellTickPct:F1}%)";
+                        lblCardTickRatio.ForeColor = liveStats.TickRatio >= 1.0 ? Color.FromArgb(74, 222, 128) : Color.FromArgb(248, 113, 113);
+
+                        lblCardVolRatio.Text = $"{vR} ({liveStats.BuyVolumePct:F1}%:{liveStats.SellVolumePct:F1}%)";
+                        lblCardVolRatio.ForeColor = liveStats.VolumeRatio >= 1.0 ? Color.FromArgb(74, 222, 128) : Color.FromArgb(248, 113, 113);
+                    }
                 }
             }
 
+            // 2. 全局回放状态卡片 —— 无论是否选中历史K线，只要引擎在跑，这些卡片必须持续实时更新！
             lblCardMacroCount.Text = $"{_engine.CompletedMacroBars.Count:N0} 根";
 
             var forming = _engine.CurrentFormingBar;
@@ -1671,7 +1898,6 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 if (chkAutoFollow.Checked)
                 {
                     chkAutoFollow.Checked = false;
-                    AppendLog("[视角平移] 检测到手动拖拽图表视角，已自动临时解除「自动跟随」。若需恢复跟随最新K线，请勾选「自动跟随」或点击「播放」。", Color.FromArgb(250, 204, 21));
                 }
                 return;
             }
@@ -1714,7 +1940,6 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                         _selectedBarEndIndex = hitChannel.EndIndex;
 
                         DisplaySelectedBarsTicks();
-                        tabControlRight.SelectedTab = tabLogs;
                         _macroPlotNeedsRefresh = true;
                         return;
                     }
@@ -1726,6 +1951,13 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
 
                 if (targetIndex >= 0 && targetIndex < totalDisplayCount)
                 {
+                    // 若点击的是当前正在实时凝聚生成的最新 K 线，直接无缝切入实时跟随播放
+                    if (targetIndex == completedCount)
+                    {
+                        ClearBarSelection();
+                        return;
+                    }
+
                     bool isShift = (ModifierKeys & Keys.Shift) == Keys.Shift;
 
                     if (isShift && _selectedBarAnchor.HasValue)
@@ -1880,9 +2112,9 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 }
 
                 // 若选中的是当前正在播放的大周期桶，且未播放完毕，则只取已播放的 Tick
-                if (b == _engine.CurrentBucketIndex && _engine.State != PlaybackState.Idle && _engine.CurrentTickIndex < bucket.Ticks.Count)
+                if (b == _engine.CurrentBucketIndex && _engine.State != PlaybackState.Idle)
                 {
-                    int takeCount = Math.Max(1, _engine.CurrentTickIndex + 1);
+                    int takeCount = Math.Clamp(_engine.CurrentTickIndex, 0, bucket.Ticks.Count);
                     for (int i = 0; i < takeCount; i++)
                     {
                         aggregatedTicks.Add(bucket.Ticks[i]);
@@ -1966,45 +2198,30 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             }
 
             lblTickTitle.Text = isExactChannel
-                ? (span.HasValue
-                    ? $"⭐ [已选中{dirText}平行通道] Bar #{sIdx}~#{eIdx} [{periodLabel}]"
-                    : $"⭐ [已选中{dirText}平行通道] Bar #{sIdx} ~ #{eIdx} (共 {barCount} 根K线) 内部微观 Tick 走势")
+                ? $"⭐通道 #{sIdx}~#{eIdx}"
                 : (hasChannel
-                    ? (span.HasValue
-                        ? (barCount == 1
-                            ? $"⭐ [通道内 Bar #{sIdx}] {dirText}通道 #{primaryTrend!.StartIndex}~#{primaryTrend!.EndIndex} [{periodLabel}]"
-                            : $"⭐ [已选中 Bar #{sIdx}~#{eIdx} (含通道)] [{periodLabel}]")
-                        : (barCount == 1
-                            ? $"⭐ [通道内 Bar #{sIdx}] 大周期{dirText}通道 #{primaryTrend!.StartIndex}~#{primaryTrend!.EndIndex} 内部微观 Tick 走势"
-                            : $"⭐ [已选中 Bar #{sIdx} ~ #{eIdx}] 包含大周期{dirText}通道 #{primaryTrend!.StartIndex}~#{primaryTrend!.EndIndex} 聚合微观 Tick 走势"))
-                    : (span.HasValue
-                        ? (barCount == 1
-                            ? $"已选中 Bar #{sIdx} [{periodLabel}]"
-                            : $"已选中 Bar #{sIdx}~#{eIdx} [{periodLabel}]")
-                        : (barCount == 1
-                            ? $"已选中 Bar #{sIdx} 内部微观 Tick 走势"
-                            : $"已选中 Bar #{sIdx} ~ #{eIdx} (共 {barCount} 根K线) 聚合微观 Tick 走势")));
+                    ? (barCount == 1 ? $"⭐通道内 #{sIdx}" : $"⭐含通道 #{sIdx}~#{eIdx}")
+                    : (barCount == 1 ? $"Bar #{sIdx}" : $"Bar #{sIdx}~#{eIdx}"));
 
             if (isExactChannel)
             {
                 var tr = primaryTrend!;
-                lblTickBadge.Text = $"⭐通道: {dirText} {tr.BarCount}根 ({tr.PriceChangePct:+0.00;-0.00;0.00}%) | 斜率 k={tr.SlopeK:+0.0000;-0.0000} | 高度 {tr.ChannelHeight:F2} USDT | {rangeStart:MM-dd HH:mm}~{rangeEnd:HH:mm} ({aggregatedTicks.Count:N0} Ticks)";
+                lblTickBadge.Text = $"⭐通道: {dirText} {tr.BarCount}根 ({tr.PriceChangePct:+0.00;-0.00;0.00}%) | k={tr.SlopeK:+0.0000;-0.0000} | 高度 {tr.ChannelHeight:F2} | {rangeStart:MM-dd HH:mm}~{rangeEnd:HH:mm} ({aggregatedTicks.Count:N0} T)";
                 lblTickBadge.ForeColor = Color.FromArgb(251, 191, 36);
             }
             else if (hasChannel)
             {
                 var tr = primaryTrend!;
                 string barPart = barCount == 1 ? $"Bar #{sIdx}" : $"Bar #{sIdx}~#{eIdx}";
-                lblTickBadge.Text = $"⭐通道内({barPart}): {dirText} #{tr.StartIndex}~#{tr.EndIndex} ({tr.BarCount}根, {tr.PriceChangePct:+0.00;-0.00;0.00}%) | 斜率 k={tr.SlopeK:+0.0000;-0.0000} | 高度 {tr.ChannelHeight:F2} USDT | {rangeStart:MM-dd HH:mm}~{rangeEnd:HH:mm} ({aggregatedTicks.Count:N0} Ticks)";
+                lblTickBadge.Text = $"⭐通道内({barPart}): {dirText} #{tr.StartIndex}~#{tr.EndIndex} ({tr.PriceChangePct:+0.00;-0.00;0.00}%) | {rangeStart:MM-dd HH:mm}~{rangeEnd:HH:mm} ({aggregatedTicks.Count:N0} T)";
                 lblTickBadge.ForeColor = Color.FromArgb(251, 191, 36);
             }
             else
             {
-                lblTickBadge.Text = $"时间范围: {rangeStart:MM-dd HH:mm} ~ {rangeEnd:HH:mm} | 共 {aggregatedTicks.Count:N0} 笔 Tick";
-                lblTickBadge.ForeColor = Color.FromArgb(148, 163, 184);
+                lblTickBadge.Text = $"🕒[历史查看 Bar #{sIdx}{(barCount > 1 ? $"~#{eIdx}" : "")}]: {rangeStart:MM-dd HH:mm} ~ {rangeEnd:HH:mm} ({aggregatedTicks.Count:N0} Ticks)";
+                lblTickBadge.ForeColor = Color.FromArgb(251, 191, 36);
             }
-            lblTickBadge.Left = (btnToggleTickChartType != null ? btnToggleTickChartType.Right : (numTickCustomMinutes.Visible ? numTickCustomMinutes.Right : cboTickPeriod.Right)) + 10;
-            btnResumeLiveFollow.Visible = true;
+            UpdateLiveFollowButtonState(isLive: false);
 
             // 统计所选区间的 Tick 多空笔数比与成交量多空比
             var stats = TickLongShortStats.Calculate(aggregatedTicks);
@@ -2014,20 +2231,21 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
 
             if (aggregatedTicks.Count == 0)
             {
-                lblTickRatioBadge.Text = "🎯 Tick多空比: --";
+                lblTickRatioBadge.Text = "🎯 Tick比: --";
                 lblTickRatioBadge.ForeColor = Color.FromArgb(148, 163, 184);
-                lblVolRatioBadge.Text = "📊 成交量比: --";
+                lblVolRatioBadge.Text = "📊 量比: --";
                 lblVolRatioBadge.ForeColor = Color.FromArgb(148, 163, 184);
             }
             else
             {
-                lblTickRatioBadge.Text = $"🎯 Tick多空比: {tickRatioStr} (多{stats.BuyTickPct:F1}% : 空{stats.SellTickPct:F1}%)";
+                lblTickRatioBadge.Text = $"🎯 Tick比: {tickRatioStr} ({stats.BuyTickPct:F0}%:{stats.SellTickPct:F0}%)";
                 lblTickRatioBadge.ForeColor = stats.TickRatio >= 1.0 ? Color.FromArgb(74, 222, 128) : Color.FromArgb(248, 113, 113);
-                lblVolRatioBadge.Text = $"📊 成交量比: {volRatioStr} (多{stats.BuyVolumePct:F1}% : 空{stats.SellVolumePct:F1}%)";
+                lblVolRatioBadge.Text = $"📊 量比: {volRatioStr} ({stats.BuyVolumePct:F0}%:{stats.SellVolumePct:F0}%)";
                 lblVolRatioBadge.ForeColor = stats.VolumeRatio >= 1.0 ? Color.FromArgb(74, 222, 128) : Color.FromArgb(248, 113, 113);
             }
             lblTickRatioBadge.Visible = _settings.ShowTickRatio;
             lblVolRatioBadge.Visible = _settings.ShowTickRatio;
+            RepositionTickHeaderControls();
 
             // 更新右侧监控卡片
             lblCardPeriod.Text = isExactChannel
@@ -2059,12 +2277,12 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 ratioProximity: _settings.RatioProximity,
                 subPeriodSpan: span,
                 displayType: displayType,
-                showConsecutiveTrend: _settings.ShowConsecutiveTrend,
+                showConsecutiveTrend: _settings.ShowTickConsecutiveTrend,
                 consecutiveMinBars: _settings.ConsecutiveMinBars,
                 consecutiveMinPct: _settings.ConsecutiveMinPct,
                 showRatio: _settings.ShowTickRatio,
-                selectedTrend: primaryTrend,
-                activeChannels: relevantChannels,
+                selectedTrend: _settings.ShowTickConsecutiveTrend ? primaryTrend : null,
+                activeChannels: _settings.ShowTickConsecutiveTrend ? relevantChannels : null,
                 selectedBarStartIndex: sIdx,
                 selectedBarEndIndex: eIdx,
                 macroBarTimes: _engine.Buckets.Select(b => (b.StartTime, b.EndTime)).ToList(),
@@ -2137,23 +2355,11 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             decimal channelH = tr.ChannelHeight;
             decimal channelHPct = tr.StartPrice > 0 ? (channelH / tr.StartPrice * 100m) : 0m;
 
-            AppendLog($"==================== 🌟 [平行通道详细报告] ====================", Color.FromArgb(250, 204, 21));
-            AppendLog($"【通道方向】: {dirName}", themeColor);
-            AppendLog($"【K线跨度】: Bar #{tr.StartIndex} ~ #{tr.EndIndex} (共 {tr.BarCount} 根大周期 K 线)", Color.FromArgb(56, 189, 248));
-            AppendLog($"【时间跨度】: {timeRangeStr}", Color.FromArgb(226, 232, 240));
-            AppendLog($"【价格走势】: {tr.StartPrice:F2} -> {tr.EndPrice:F2} (价差: {priceDiff:+0.00;-0.00;0.00} USDT, 累计变动: {tr.PriceChangePct:+0.00;-0.00;0.00}%)", themeColor);
-            AppendLog($"【极值范围】: 最高 {tr.MaxHigh:F2} | 最低 {tr.MinLow:F2} | 振幅空间 {priceRange:F2} USDT", Color.FromArgb(226, 232, 240));
-            AppendLog($"【确立节点】: Bar #{tr.ConfirmedBarIndex} (在此根 K 线收盘正式确立满足连续门槛)", Color.FromArgb(250, 204, 21));
+            AppendLog($"🌟 [通道 #{tr.StartIndex}~#{tr.EndIndex}] {dirName} | {tr.BarCount} 根K线 ({timeRangeStr}) | 价格走势: {tr.StartPrice:F2} -> {tr.EndPrice:F2} ({tr.PriceChangePct:+0.00;-0.00;0.00}%)", themeColor);
 
             if (tr.HasChannel)
             {
-                AppendLog($"【通道拟合】: 拟合基准 {tr.ChannelBaseBars} 根 K 线 | 回归斜率 k = {tr.SlopeK:+0.000000;-0.000000;0.000000} USDT/Bar", Color.FromArgb(168, 85, 247));
-                AppendLog($"【轨道截距】: 上轨截距 b_up = {tr.UpperIntercept:F2} | 下轨截距 b_low = {tr.LowerIntercept:F2} | 中轨截距 = {((tr.UpperIntercept + tr.LowerIntercept) / 2m):F2}", Color.FromArgb(168, 85, 247));
-                AppendLog($"【通道高度】: {channelH:F2} USDT (约占基准价 {channelHPct:F2}%) | 含右侧延伸 {_settings.ChannelExtensionBars} 根参考虚线", Color.FromArgb(168, 85, 247));
-            }
-            else
-            {
-                AppendLog($"【通道拟合】: 极值包络矩形通道", Color.FromArgb(168, 85, 247));
+                AppendLog($"   📏 拟合: 基准{tr.ChannelBaseBars}根 | 斜率 k={tr.SlopeK:+0.000000;-0.000000;0.000000} | 通道高 {channelH:F2} USDT (约 {channelHPct:F2}%)", Color.FromArgb(168, 85, 247));
             }
 
             if (tickStats.HasValue)
@@ -2162,20 +2368,15 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 string tR = ts.TickRatio >= 999.0 ? "∞" : ts.TickRatio.ToString("F2");
                 string vR = ts.VolumeRatio >= 999.0 ? "∞" : ts.VolumeRatio.ToString("F2");
                 Color tickColor = ts.TickRatio >= 1.0 ? Color.FromArgb(74, 222, 128) : Color.FromArgb(248, 113, 113);
-
-                AppendLog($"【微观流水】: 通道内累计 {tickCount:N0} 笔 Tick", Color.FromArgb(56, 189, 248));
-                AppendLog($"【多空笔数】: 🎯 多空比 {tR} (多头 {ts.BuyTicks:N0} 笔/{ts.BuyTickPct:F1}% : 空头 {ts.SellTicks:N0} 笔/{ts.SellTickPct:F1}%)", tickColor);
-                AppendLog($"【成交量比】: 📊 量多空比 {vR} (买量 {TickLongShortStats.FormatVolume(ts.BuyVolume)}/{ts.BuyVolumePct:F1}% : 卖量 {TickLongShortStats.FormatVolume(ts.SellVolume)}/{ts.SellVolumePct:F1}%, 净主动买量: {TickLongShortStats.FormatVolume(ts.NetVolume)})", tickColor);
+                AppendLog($"   🎯 统计: {tickCount:N0} Ticks | 多空比 {tR} (买{ts.BuyTickPct:F0}%:卖{ts.SellTickPct:F0}%) | 量比 {vR} (净买量 {TickLongShortStats.FormatVolume(ts.NetVolume)})", tickColor);
             }
-
-            AppendLog($"=============================================================", Color.FromArgb(250, 204, 21));
         }
 
         private void ClearBarSelection()
         {
             if (!_selectedBarStartIndex.HasValue && !_selectedBarEndIndex.HasValue && _selectedConsecutiveTrend == null)
             {
-                btnResumeLiveFollow.Visible = false;
+                UpdateLiveFollowButtonState(isLive: true);
                 RefreshTickPlotDirectly();
                 return;
             }
@@ -2184,29 +2385,58 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             _selectedBarStartIndex = null;
             _selectedBarEndIndex = null;
             _selectedConsecutiveTrend = null;
-            btnResumeLiveFollow.Visible = false;
+            UpdateLiveFollowButtonState(isLive: true);
             lblTickRatioBadge.Visible = false;
             lblVolRatioBadge.Visible = false;
 
-            lblTickTitle.Text = "当前大周期内部微观逐笔 Tick 走势";
+            lblTickTitle.Text = "微观逐笔走势";
             var curBucket = _engine.CurrentBucket;
             if (curBucket != null)
             {
-                lblTickBadge.Text = $"周期 #{_engine.CurrentBucketIndex + 1}/{_engine.TotalBuckets}: {curBucket.StartTime:HH:mm} ~ {curBucket.EndTime:HH:mm} (共 {curBucket.TickCount:N0} Ticks)";
+                int cursor = Math.Min(curBucket.Ticks.Count, _engine.CurrentTickIndex);
+                lblTickBadge.Text = $"[实时回放] 周期 #{_engine.CurrentBucketIndex + 1}/{_engine.TotalBuckets}: {curBucket.StartTime:HH:mm} ~ {curBucket.EndTime:HH:mm} ({cursor:N0}/{curBucket.Ticks.Count:N0} T)";
             }
             else
             {
                 lblTickBadge.Text = "当前无活动周期";
             }
-            lblTickBadge.ForeColor = Color.FromArgb(148, 163, 184);
+            lblTickBadge.ForeColor = Color.FromArgb(52, 211, 153);
             _lastDefaultTickBadgeText = lblTickBadge.Text;
-            _lastDefaultTickBadgeColor = lblTickBadge.ForeColor;
-            lblTickBadge.Left = (btnToggleTickChartType != null ? btnToggleTickChartType.Right : (numTickCustomMinutes.Visible ? numTickCustomMinutes.Right : cboTickPeriod.Right)) + 10;
+            RepositionTickHeaderControls();
 
             _macroPlotNeedsRefresh = true;
             _tickPlotNeedsRefresh = true;
 
-            AppendLog("[恢复实时] 已退出选择模式，恢复跟随实时回放 Tick 走势。", Color.FromArgb(74, 222, 128));
+            RenderLiveTickPlot();
+        }
+
+        private void UpdateLiveFollowButtonState(bool isLive)
+        {
+            if (btnResumeLiveFollow == null) return;
+            if (isLive)
+            {
+                btnResumeLiveFollow.Text = "🟢 实时播放中";
+                btnResumeLiveFollow.Size = new Size(100, 24);
+                btnResumeLiveFollow.BackColor = Color.FromArgb(15, 23, 42);
+                btnResumeLiveFollow.ForeColor = Color.FromArgb(52, 211, 153);
+                btnResumeLiveFollow.FlatAppearance.BorderColor = Color.FromArgb(30, 41, 59);
+                btnResumeLiveFollow.FlatAppearance.BorderSize = 1;
+                btnResumeLiveFollow.Cursor = Cursors.Default;
+                _toolTip.SetToolTip(btnResumeLiveFollow, "微观视窗当前正在跟随最新实时播放的 Tick 数据。点击上方 K 线可随时切出巡检历史周期的微观 Tick。");
+            }
+            else
+            {
+                btnResumeLiveFollow.Text = "▶ 切换到实时播放";
+                btnResumeLiveFollow.Size = new Size(125, 24);
+                btnResumeLiveFollow.BackColor = Color.FromArgb(16, 185, 129);
+                btnResumeLiveFollow.ForeColor = Color.White;
+                btnResumeLiveFollow.FlatAppearance.BorderColor = Color.FromArgb(52, 211, 153);
+                btnResumeLiveFollow.FlatAppearance.BorderSize = 1;
+                btnResumeLiveFollow.Cursor = Cursors.Hand;
+                _toolTip.SetToolTip(btnResumeLiveFollow, "微观视窗当前正在查看历史 K 线的 Tick (上方宏观回放持续运行)。点击此处或双击图表可立即切回跟随最新实时播放。");
+            }
+            btnResumeLiveFollow.Visible = true;
+            RepositionTickHeaderControls();
         }
 
         #endregion
@@ -2221,7 +2451,17 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
         private void AppendLogInternal(string message, Color color)
         {
             if (txtLogs.IsDisposed) return;
-            string timeStr = DateTime.Now.ToString("HH:mm:ss.fff");
+
+            // 限制最大行数 (保留最新 500 行)，防止长时间运行导致内存与控件排版卡顿
+            if (txtLogs.Lines.Length > 800)
+            {
+                string[] lines = txtLogs.Lines;
+                string[] trimmed = new string[400];
+                Array.Copy(lines, lines.Length - 400, trimmed, 0, 400);
+                txtLogs.Lines = trimmed;
+            }
+
+            string timeStr = DateTime.Now.ToString("HH:mm:ss");
             txtLogs.SelectionStart = txtLogs.TextLength;
             txtLogs.SelectionLength = 0;
             txtLogs.SelectionColor = Color.FromArgb(148, 163, 184);
@@ -2302,13 +2542,10 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 // 8. 价格与比值曲线凑近对齐状态
                 UpdateProximityButtonState();
 
-                // 9. 微观 Tick 周期与自定义分钟
-                if (_settings.TickPeriodIndex >= 0 && _settings.TickPeriodIndex < cboTickPeriod.Items.Count)
-                {
-                    cboTickPeriod.SelectedIndex = _settings.TickPeriodIndex;
-                }
+                // 9. 微观 Tick 周期与自定义秒/分
+                numTickCustomSeconds.Value = Math.Clamp(_settings.TickCustomSeconds, 1, 3600);
                 numTickCustomMinutes.Value = Math.Clamp(_settings.TickCustomMinutes, 1, 1440);
-                numTickCustomMinutes.Visible = cboTickPeriod.SelectedIndex == 7;
+                SelectTickPeriodButton(_settings.TickPeriodIndex);
 
                 // 10. 微观 Tick 图表类型 (0: 蜡烛图, 1: 折线图)
                 UpdateTickChartTypeButtonState();
@@ -2321,6 +2558,19 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                     lblTickRatioBadge.Visible = _settings.ShowTickRatio;
                     lblVolRatioBadge.Visible = _settings.ShowTickRatio;
                 }
+
+                // 12. 微观 Tick 是否显示小周期连续涨跌通道
+                if (chkTickConsecutiveTrend != null)
+                {
+                    chkTickConsecutiveTrend.Checked = _settings.ShowTickConsecutiveTrend;
+                }
+
+                // 13. 详细定型日志开关
+                if (chkVerboseLog != null)
+                {
+                    chkVerboseLog.Checked = _settings.VerboseLog;
+                }
+                _engine.VerboseLog = _settings.VerboseLog;
 
                 AppendLog($"[配置恢复] 已成功恢复上次界面配置: {cboCoin.Text} | {GetSelectedPeriodTitle()} | 微观周期: {GetSelectedTickPeriodTitle()} | 倍速: {cboSpeed.Text} | 自动跟随: {(chkAutoFollow.Checked ? "开启" : "关闭")}", Color.FromArgb(74, 222, 128));
             }
@@ -2387,8 +2637,9 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             // 价格与比值凑近配置
             _settings.RatioProximity = btnRatioProximity != null && btnRatioProximity.Text.Contains("开");
 
-            // 微观 Tick 周期与自定义分钟
-            _settings.TickPeriodIndex = cboTickPeriod.SelectedIndex;
+            // 微观 Tick 周期与自定义秒/分
+            _settings.TickPeriodIndex = _selectedTickPeriodIndex;
+            _settings.TickCustomSeconds = (int)numTickCustomSeconds.Value;
             _settings.TickCustomMinutes = (int)numTickCustomMinutes.Value;
 
             // 微观 Tick 图表类型 (0: 蜡烛图, 1: 折线图)
@@ -2398,6 +2649,18 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             if (chkShowTickRatio != null)
             {
                 _settings.ShowTickRatio = chkShowTickRatio.Checked;
+            }
+
+            // 微观 Tick 窗口小周期连续涨跌通道开关
+            if (chkTickConsecutiveTrend != null)
+            {
+                _settings.ShowTickConsecutiveTrend = chkTickConsecutiveTrend.Checked;
+            }
+
+            // 详细定型日志开关
+            if (chkVerboseLog != null)
+            {
+                _settings.VerboseLog = chkVerboseLog.Checked;
             }
 
             try

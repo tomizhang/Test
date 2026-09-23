@@ -87,6 +87,7 @@ namespace Test.PeriodTickPlayback.WinForms.Engine
         public double SpeedMultiplier => _speedMultiplier;
         public double CurrentTps => _currentTps;
         public long TotalTicksPlayed => _totalTicksPlayed;
+        public bool VerboseLog { get; set; } = false;
 
         public PeriodBucket? CurrentBucket =>
             (_currentBucketIndex >= 0 && _currentBucketIndex < _buckets.Count) ? _buckets[_currentBucketIndex] : null;
@@ -368,7 +369,7 @@ namespace Test.PeriodTickPlayback.WinForms.Engine
 
                         _state = PlaybackState.Completed;
                         OnStateChanged?.Invoke(_state);
-                        OnLogMessage?.Invoke("[回放完毕] 所有已加载大周期与 Tick 数据已全量回放完成！", System.Drawing.Color.FromArgb(74, 222, 128));
+                        OnLogMessage?.Invoke($"[回放完毕] 所有已加载大周期与 Tick 数据已全量回放完成！累计定型输出 {_completedMacroBars.Count:N0} 根 K 线，累计派发 {_totalTicksPlayed:N0} 笔 Tick。", System.Drawing.Color.FromArgb(74, 222, 128));
                         break;
                     }
 
@@ -454,9 +455,12 @@ namespace Test.PeriodTickPlayback.WinForms.Engine
             // 2. 触发大周期 K 线输出事件
             OnMacroBarCompleted?.Invoke(finalKline, _currentBucketIndex, _buckets.Count);
 
-            OnLogMessage?.Invoke(
-                $"[周期完成] 跨度 {bucket.StartTime:HH:mm} ~ {bucket.EndTime:HH:mm} (共 {bucket.Ticks.Count:N0} Ticks) 播放完毕 -> 正式输出 Bar #{_currentBucketIndex}: O:{finalKline.Open:F2} H:{finalKline.High:F2} L:{finalKline.Low:F2} C:{finalKline.Close:F2} V:{finalKline.Volume:F2} ({finalKline.ChangePct:+0.00;-0.00;0.00}%)",
-                finalKline.IsBullish ? System.Drawing.Color.FromArgb(74, 222, 128) : System.Drawing.Color.FromArgb(248, 113, 113));
+            if (VerboseLog || _currentBucketIndex == 0 || (_currentBucketIndex + 1) % 50 == 0)
+            {
+                OnLogMessage?.Invoke(
+                    $"[周期完成] 跨度 {bucket.StartTime:HH:mm} ~ {bucket.EndTime:HH:mm} (共 {bucket.Ticks.Count:N0} Ticks) 播放完毕 -> 正式输出 Bar #{_currentBucketIndex}: O:{finalKline.Open:F2} H:{finalKline.High:F2} L:{finalKline.Low:F2} C:{finalKline.Close:F2} V:{finalKline.Volume:F2} ({finalKline.ChangePct:+0.00;-0.00;0.00}%)",
+                    finalKline.IsBullish ? System.Drawing.Color.FromArgb(74, 222, 128) : System.Drawing.Color.FromArgb(248, 113, 113));
+            }
 
             // 3. 推进到下一个周期桶
             _currentBucketIndex++;

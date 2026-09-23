@@ -1115,15 +1115,16 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             var xPos = new List<double>();
             var xLabels = new List<string>();
             int step = Math.Max(1, M / 8);
+            string timeFormat = subSpan.TotalSeconds < 60 ? "HH:mm:ss" : "HH:mm";
             for (int i = 0; i < M; i += step)
             {
                 xPos.Add(i);
-                xLabels.Add(subBuckets[i].StartTime.ToString("HH:mm"));
+                xLabels.Add(subBuckets[i].StartTime.ToString(timeFormat));
             }
             if (xPos.Count > 0 && xPos[^1] != M - 1)
             {
                 xPos.Add(M - 1);
-                xLabels.Add(subBuckets[^1].StartTime.ToString("HH:mm"));
+                xLabels.Add(subBuckets[^1].StartTime.ToString(timeFormat));
             }
             plot.Axes.Bottom.TickGenerator = new ScottPlot.TickGenerators.NumericManual(xPos.ToArray(), xLabels.ToArray());
 
@@ -1472,7 +1473,8 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 badgeColor = isBarUp
                     ? System.Drawing.Color.FromArgb(74, 222, 128)
                     : System.Drawing.Color.FromArgb(248, 113, 113);
-                headerBadgeText = $"[Bar #{barIdx + 1}/{ActiveSubBuckets.Count}] {b.StartTime:HH:mm}~{b.EndTime:HH:mm} | 开:{o:F2} 高:{h:F2} 低:{l:F2} 收:{c:F2} ({barChgStr} {dirStr}) | 量:{v:N2} | {tCount:N0} Ticks";
+                string subTimeFmt = (ActiveSubBuckets.Count > 0 && (ActiveSubBuckets[0].EndTime - ActiveSubBuckets[0].StartTime).TotalSeconds < 60) ? "HH:mm:ss" : "HH:mm";
+                headerBadgeText = $"[Bar #{barIdx + 1}/{ActiveSubBuckets.Count}] {b.StartTime.ToString(subTimeFmt)}~{b.EndTime.ToString(subTimeFmt)} | 开:{o:F2} 高:{h:F2} 低:{l:F2} 收:{c:F2} ({barChgStr} {dirStr}) | 量:{v:N2} | {tCount:N0} Ticks";
 
                 string cardText =
                     $"⭐【微观 K 线巡检】 Bar #{barIdx + 1}/{ActiveSubBuckets.Count} ({PeriodTitle})\n" +
