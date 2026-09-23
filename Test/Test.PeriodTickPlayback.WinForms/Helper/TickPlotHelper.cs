@@ -267,17 +267,20 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             int eBarIdx = selectedBarEndIndex ?? (selectedTrend?.EndIndex ?? sBarIdx);
 
             var effectiveChannels = new List<MacroConsecutiveTrendItem>();
-            if (activeChannels != null && activeChannels.Count > 0)
+            if (showConsecutiveTrend)
             {
-                foreach (var c in activeChannels)
+                if (activeChannels != null && activeChannels.Count > 0)
                 {
-                    if (c.HasChannel && Math.Max(sBarIdx, c.StartIndex) <= Math.Min(eBarIdx, c.EndIndex) && !effectiveChannels.Any(x => x.Id == c.Id && x.StartIndex == c.StartIndex && x.EndIndex == c.EndIndex))
-                        effectiveChannels.Add(c);
+                    foreach (var c in activeChannels)
+                    {
+                        if (c.HasChannel && Math.Max(sBarIdx, c.StartIndex) <= Math.Min(eBarIdx, c.EndIndex) && !effectiveChannels.Any(x => x.Id == c.Id && x.StartIndex == c.StartIndex && x.EndIndex == c.EndIndex))
+                            effectiveChannels.Add(c);
+                    }
                 }
-            }
-            else if (selectedTrend != null && selectedTrend.HasChannel && Math.Max(sBarIdx, selectedTrend.StartIndex) <= Math.Min(eBarIdx, selectedTrend.EndIndex))
-            {
-                effectiveChannels.Add(selectedTrend);
+                else if (selectedTrend != null && selectedTrend.HasChannel && Math.Max(sBarIdx, selectedTrend.StartIndex) <= Math.Min(eBarIdx, selectedTrend.EndIndex))
+                {
+                    effectiveChannels.Add(selectedTrend);
+                }
             }
 
             double effMinVal = (double)minVal;
@@ -746,17 +749,20 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             int eBarIdx = selectedBarEndIndex ?? (selectedTrend?.EndIndex ?? sBarIdx);
 
             var effectiveChannels = new List<MacroConsecutiveTrendItem>();
-            if (activeChannels != null && activeChannels.Count > 0)
+            if (showConsecutiveTrend)
             {
-                foreach (var c in activeChannels)
+                if (activeChannels != null && activeChannels.Count > 0)
                 {
-                    if (c.HasChannel && Math.Max(sBarIdx, c.StartIndex) <= Math.Min(eBarIdx, c.EndIndex) && !effectiveChannels.Any(x => x.Id == c.Id && x.StartIndex == c.StartIndex && x.EndIndex == c.EndIndex))
-                        effectiveChannels.Add(c);
+                    foreach (var c in activeChannels)
+                    {
+                        if (c.HasChannel && Math.Max(sBarIdx, c.StartIndex) <= Math.Min(eBarIdx, c.EndIndex) && !effectiveChannels.Any(x => x.Id == c.Id && x.StartIndex == c.StartIndex && x.EndIndex == c.EndIndex))
+                            effectiveChannels.Add(c);
+                    }
                 }
-            }
-            else if (selectedTrend != null && selectedTrend.HasChannel && Math.Max(sBarIdx, selectedTrend.StartIndex) <= Math.Min(eBarIdx, selectedTrend.EndIndex))
-            {
-                effectiveChannels.Add(selectedTrend);
+                else if (selectedTrend != null && selectedTrend.HasChannel && Math.Max(sBarIdx, selectedTrend.StartIndex) <= Math.Min(eBarIdx, selectedTrend.EndIndex))
+                {
+                    effectiveChannels.Add(selectedTrend);
+                }
             }
 
             var channelProjections = new List<(MacroConsecutiveTrendItem tr, double xS, double xE, double yUpS, double yUpE, double yLowS, double yLowE)>();
@@ -966,151 +972,9 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             tLow.LabelFontColor = Color.FromHex("#86efac");
             tLow.LabelAlignment = Alignment.UpperCenter;
 
-            // 绘制微观子周期连续上涨 / 连续下跌平行通道 (基于最低要求K线数 - 1 拟合)
-            if (showConsecutiveTrend && M >= consecutiveMinBars)
-            {
-                var barSnapshots = new List<MacroConsecutiveTrendDetector.BarSnapshot>(M);
-                for (int i = 0; i < M; i++)
-                {
-                    var b = subBuckets[i];
-                    decimal o = b.Ticks[0].Price;
-                    decimal c = b.Ticks[^1].Price;
-                    decimal h = decimal.MinValue;
-                    decimal l = decimal.MaxValue;
-                    for (int k = 0; k < b.Ticks.Count; k++)
-                    {
-                        var t = b.Ticks[k];
-                        if (t.Price > h) h = t.Price;
-                        if (t.Price < l) l = t.Price;
-                    }
-                    barSnapshots.Add(new MacroConsecutiveTrendDetector.BarSnapshot(i, o, h, l, c));
-                }
-
-                var tickTrends = MacroConsecutiveTrendDetector.ScanTrends(barSnapshots, consecutiveMinBars, consecutiveMinPct);
-                for (int tIdx = 0; tIdx < tickTrends.Count; tIdx++)
-                {
-                    var tr = tickTrends[tIdx];
-                    int sIdx = tr.StartIndex;
-                    int eIdx = tr.EndIndex;
-                    if (sIdx < 0 || eIdx >= M || sIdx > eIdx) continue;
-
-                    bool isBull = tr.IsBullish;
-                    var themeColor = isBull ? Color.FromHex("#10b981") : Color.FromHex("#ef4444");
-
-                    // ① 确立点三角形标记 (▲ / ▼)
-                    int cIdx = tr.ConfirmedBarIndex;
-                    if (cIdx >= sIdx && cIdx <= eIdx)
-                    {
-                        double confPrice = (double)barSnapshots[cIdx].Close;
-                        var confMarker = plot.Add.Marker(cIdx, confPrice);
-                        confMarker.Shape = isBull ? MarkerShape.FilledTriangleUp : MarkerShape.FilledTriangleDown;
-                        confMarker.Size = 8;
-                        confMarker.Color = themeColor;
-                    }
-
-                    if (tr.HasChannel)
-                    {
-                        decimal slopeK = tr.SlopeK;
-                        decimal upperB = tr.UpperIntercept;
-                        decimal lowerB = tr.LowerIntercept;
-
-                        double yUpStart = (double)(slopeK * sIdx + upperB);
-                        double yUpEnd = (double)(slopeK * eIdx + upperB);
-                        double yLowStart = (double)(slopeK * sIdx + lowerB);
-                        double yLowEnd = (double)(slopeK * eIdx + lowerB);
-                        double yMidStart = (double)(slopeK * sIdx + (upperB + lowerB) / 2m);
-                        double yMidEnd = (double)(slopeK * eIdx + (upperB + lowerB) / 2m);
-
-                        // ② 平行通道内部半透明微光填充
-                        var channelCoords = new Coordinates[]
-                        {
-                            new Coordinates(sIdx, yUpStart),
-                            new Coordinates(eIdx, yUpEnd),
-                            new Coordinates(eIdx, yLowEnd),
-                            new Coordinates(sIdx, yLowStart)
-                        };
-                        var channelPoly = plot.Add.Polygon(channelCoords);
-                        channelPoly.FillColor = themeColor.WithAlpha(28);
-                        channelPoly.LineWidth = 0;
-
-                        // ③ 平行通道上轨与下轨实线 (线宽 1.2f)
-                        var lineUp = plot.Add.Line(sIdx, yUpStart, eIdx, yUpEnd);
-                        lineUp.Color = themeColor;
-                        lineUp.LineWidth = 1.2f;
-                        lineUp.LinePattern = LinePattern.Solid;
-
-                        var lineLow = plot.Add.Line(sIdx, yLowStart, eIdx, yLowEnd);
-                        lineLow.Color = themeColor;
-                        lineLow.LineWidth = 1.2f;
-                        lineLow.LinePattern = LinePattern.Solid;
-
-                        // ④ 平行通道中轨虚线
-                        var lineMid = plot.Add.Line(sIdx, yMidStart, eIdx, yMidEnd);
-                        lineMid.Color = themeColor.WithAlpha(170);
-                        lineMid.LineWidth = 0.8f;
-                        lineMid.LinePattern = LinePattern.Dashed;
-
-                        // ⑤ 延伸虚线 (上轨、下轨、中轨与微光填充)
-                        bool isLatest = (tIdx == tickTrends.Count - 1);
-                        int extEnd = isLatest ? Math.Max(M - 1, eIdx) + 6 : eIdx + 6;
-                        if (extEnd > eIdx)
-                        {
-                            double yUpExt = (double)(slopeK * extEnd + upperB);
-                            double yLowExt = (double)(slopeK * extEnd + lowerB);
-                            double yMidExt = (double)(slopeK * extEnd + (upperB + lowerB) / 2m);
-
-                            var extUp = plot.Add.Line(eIdx, yUpEnd, extEnd, yUpExt);
-                            extUp.Color = themeColor.WithAlpha(140);
-                            extUp.LineWidth = 1.0f;
-                            extUp.LinePattern = LinePattern.Dashed;
-
-                            var extLow = plot.Add.Line(eIdx, yLowEnd, extEnd, yLowExt);
-                            extLow.Color = themeColor.WithAlpha(140);
-                            extLow.LineWidth = 1.0f;
-                            extLow.LinePattern = LinePattern.Dashed;
-
-                            var extMid = plot.Add.Line(eIdx, yMidEnd, extEnd, yMidExt);
-                            extMid.Color = themeColor.WithAlpha(100);
-                            extMid.LineWidth = 0.8f;
-                            extMid.LinePattern = LinePattern.Dotted;
-
-                            var extCoords = new Coordinates[]
-                            {
-                                new Coordinates(eIdx, yUpEnd),
-                                new Coordinates(extEnd, yUpExt),
-                                new Coordinates(extEnd, yLowExt),
-                                new Coordinates(eIdx, yLowEnd)
-                            };
-                            var extPoly = plot.Add.Polygon(extCoords);
-                            extPoly.FillColor = themeColor.WithAlpha(14);
-                            extPoly.LineWidth = 0;
-                        }
-
-                        // ⑥ 悬浮信息气泡标签
-                        string baseTag = $" [平行通道(基准{tr.ChannelBaseBars}根)]";
-                        string tag = isBull
-                            ? $"▲ 连涨 {tr.BarCount}根 (+{tr.PriceChangePct:F2}%){baseTag}"
-                            : $"▼ 连跌 {tr.BarCount}根 ({tr.PriceChangePct:F2}%){baseTag}";
-
-                        double tagX = (sIdx + eIdx) / 2.0;
-                        double tagY = isBull ? Math.Max(yUpStart, yUpEnd) : Math.Min(yLowStart, yLowEnd);
-
-                        var txtTag = plot.Add.Text(tag, tagX, tagY);
-                        txtTag.LabelFontName = chineseFont;
-                        txtTag.LabelFontSize = 8.0f;
-                        txtTag.LabelBold = true;
-                        txtTag.LabelFontColor = isBull ? Color.FromHex("#34d399") : Color.FromHex("#fca5a5");
-                        txtTag.LabelAlignment = isBull ? Alignment.LowerCenter : Alignment.UpperCenter;
-                        txtTag.LabelBackgroundColor = Color.FromHex("#0f172a").WithAlpha(0.88);
-                        txtTag.LabelBorderColor = themeColor;
-                        txtTag.LabelBorderWidth = 1f;
-                    }
-                }
-            }
-
-            // X 轴时间刻度标签与坐标范围
+            // X 轴时间刻度标签与坐标范围 (若存在大通道投影，右侧预留适当空间供标签呼吸)
             plot.Axes.SetLimitsY((double)yMinPrice, (double)yMaxPrice);
-            plot.Axes.SetLimitsX(-0.8, M + (showConsecutiveTrend ? 4.5 : -0.2));
+            plot.Axes.SetLimitsX(-0.8, M + (channelProjections.Count > 0 ? 3.5 : -0.2));
 
             var xPos = new List<double>();
             var xLabels = new List<string>();

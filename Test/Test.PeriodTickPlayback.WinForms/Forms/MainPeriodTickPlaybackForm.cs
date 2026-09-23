@@ -748,13 +748,14 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
 
             chkTickConsecutiveTrend = new CheckBox
             {
-                Text = "涨跌通道",
+                Text = "大通道",
                 Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold),
                 ForeColor = Color.FromArgb(245, 158, 11), // 琥珀金
                 AutoSize = true,
                 Checked = _settings.ShowTickConsecutiveTrend,
                 Cursor = Cursors.Hand
             };
+            _toolTip.SetToolTip(chkTickConsecutiveTrend, "在微观视窗内投影大周期平行通道 (内部微观小通道已移除)");
             chkTickConsecutiveTrend.CheckedChanged += (s, e) =>
             {
                 _settings.ShowTickConsecutiveTrend = chkTickConsecutiveTrend.Checked;
@@ -1557,6 +1558,27 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             _lastDefaultTickBadgeColor = lblTickBadge.ForeColor;
             RepositionTickHeaderControls();
 
+            MacroConsecutiveTrendItem? liveMacroTrend = null;
+            List<MacroConsecutiveTrendItem>? liveMacroChannels = null;
+            if (_settings.ShowTickConsecutiveTrend && _settings.ShowConsecutiveTrend)
+            {
+                var completedBars = _engine.GetCompletedMacroBarsSnapshot();
+                var formingBar = _engine.CurrentFormingBar;
+                var trends = MacroConsecutiveTrendDetector.ScanTrends(
+                    completedBars,
+                    formingBar,
+                    _settings.ConsecutiveMinBars,
+                    _settings.ConsecutiveMinPct);
+
+                int curIdx = _engine.CurrentBucketIndex;
+                var matched = trends.Where(tr => tr.HasChannel && curIdx >= tr.StartIndex && curIdx <= tr.EndIndex).ToList();
+                if (matched.Count > 0)
+                {
+                    liveMacroChannels = matched;
+                    liveMacroTrend = matched.FirstOrDefault();
+                }
+            }
+
             TickPlotHelper.BuildTickPlot(
                 formsPlotTick.Plot,
                 curBucket.Ticks,
@@ -1574,6 +1596,11 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 consecutiveMinBars: _settings.ConsecutiveMinBars,
                 consecutiveMinPct: _settings.ConsecutiveMinPct,
                 showRatio: _settings.ShowTickRatio,
+                selectedTrend: liveMacroTrend,
+                activeChannels: liveMacroChannels,
+                selectedBarStartIndex: _engine.CurrentBucketIndex,
+                selectedBarEndIndex: _engine.CurrentBucketIndex,
+                macroBarTimes: _engine.Buckets?.Select(b => (b.StartTime, b.EndTime)).ToList(),
                 hoverIndicator: _tickHoverIndicator);
 
             formsPlotTick.Refresh();

@@ -40,7 +40,7 @@ namespace Test.PeriodTickPlayback.WinForms.Models
         public int TickCustomSeconds { get; set; } = 5; // 自定义秒数 (默认 5 秒)
         public int TickCustomMinutes { get; set; } = 5; // 自定义分钟数 (默认 5 分钟)
         public int TickChartTypeIndex { get; set; } = 0; // 微观图表类型: 0: 蜡烛图(K线), 1: 折线图
-        public bool ShowTickConsecutiveTrend { get; set; } = true; // 微观 Tick 窗口小周期连续涨跌通道开关 (默认开启)
+        public bool ShowTickConsecutiveTrend { get; set; } = true; // 微观 Tick 窗口大通道投影开关 (默认开启，微观小通道已移除)
         public bool VerboseLog { get; set; } = false; // 详细定型日志开关 (默认关闭，避免高频刷屏)
 
         /// <summary>
