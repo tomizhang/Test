@@ -194,6 +194,16 @@ namespace Test.ChannelPlayback.WinForms.Models
         public long PeakTroughTime { get; set; }
 
         /// <summary>
+        /// 实时推演确认反转并发出信号的 Tick 时间戳 (毫秒)
+        /// </summary>
+        public long ConfirmTime { get; set; }
+
+        /// <summary>
+        /// 实时推演确认反转并发出信号的 Tick 原始数据
+        /// </summary>
+        public RawTick? ConfirmTick { get; set; }
+
+        /// <summary>
         /// 反应的通道高度线条描述 (例如 "50% 通道中线", "75% 通道高度线", "100% 通道上轨", "25% 通道高度线", "0% 通道下轨")
         /// </summary>
         public string ChannelLineReaction { get; set; } = "";
@@ -213,6 +223,36 @@ namespace Test.ChannelPlayback.WinForms.Models
         /// </summary>
         public bool IsPeakFromLookback { get; set; } = false;
 
+        /// <summary>
+        /// 高低点计算模式描述 (例如 "Tick高低点", "分钟级前60根K线高低点")
+        /// </summary>
+        public string HighLowCalculationMode { get; set; } = "Tick高低点";
+
+        /// <summary>
+        /// 是否采用分钟级别高低点计算 (如处于上涨通道中间低点时取前 60 根 K 线计算)
+        /// </summary>
+        public bool IsMinuteLevelCalculation { get; set; } = false;
+
+        /// <summary>
+        /// 分钟级别计算时向前回溯的 K 线根数 (默认取前 60 根)
+        /// </summary>
+        public int LookbackBarsCount { get; set; } = 0;
+
+        /// <summary>
+        /// 分钟级别回溯计算得到的前 60 根 K 线最高点价格 (零未来函数)
+        /// </summary>
+        public decimal Minute60High { get; set; } = 0m;
+
+        /// <summary>
+        /// 分钟级别回溯计算得到的前 60 根 K 线最低点价格 (零未来函数)
+        /// </summary>
+        public decimal Minute60Low { get; set; } = 0m;
+
+        /// <summary>
+        /// 分钟级别计算时通道中线所依据的分钟前高点价格 (用于上涨到达通道中线时检验价格是否达前高附近或之上)
+        /// </summary>
+        public decimal MinutePrevHigh { get; set; } = 0m;
+
         public override string ToString()
         {
             string tickInfo = "";
@@ -226,7 +266,10 @@ namespace Test.ChannelPlayback.WinForms.Models
             {
                 tickInfo = $" [Tick流 极值:{PeakTroughPrice:F2} 回落/反弹:{PullbackPct:F2}%]";
             }
-            return $"[信号 #{ObservationCycleIndex}] {DirectionText} @ {Price:F2}{tickInfo} (止损:{StopLossPrice:F2}, 止盈:{TakeProfitPrice:F2}) | 形态: [{Pattern.PatternId}] {Pattern.PatternName} ({TriggerDateTime:HH:mm:ss})";
+            string calcInfo = IsMinuteLevelCalculation 
+                ? $" [高低点: 分钟级前{LookbackBarsCount}根K线 (高:{HighPointPrice:F2}, 低:{LowPointPrice:F2})]" 
+                : $" [高低点: Tick级 (高:{HighPointPrice:F2}, 低:{LowPointPrice:F2})]";
+            return $"[信号 #{ObservationCycleIndex}] {DirectionText} @ {Price:F2}{tickInfo}{calcInfo} (止损:{StopLossPrice:F2}, 止盈:{TakeProfitPrice:F2}) | 形态: [{Pattern.PatternId}] {Pattern.PatternName} ({TriggerDateTime:HH:mm:ss})";
         }
     }
 

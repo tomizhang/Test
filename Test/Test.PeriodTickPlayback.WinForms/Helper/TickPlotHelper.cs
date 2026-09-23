@@ -1503,7 +1503,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 int tickIdx = Math.Clamp((int)Math.Round(mouseX), 0, ActiveRenderCount - 1);
                 var tick = ActiveTicks[tickIdx];
 
-                DateTime dt = DateTimeOffset.FromUnixTimeMilliseconds(tick.Time).LocalDateTime;
+                DateTime dt = DateTimeOffset.FromUnixTimeMilliseconds(tick.Time).UtcDateTime;
                 string timeStr = dt.ToString("yyyy-MM-dd HH:mm:ss.fff");
                 string shortTime = dt.ToString("HH:mm:ss.fff");
                 decimal price = tick.Price;

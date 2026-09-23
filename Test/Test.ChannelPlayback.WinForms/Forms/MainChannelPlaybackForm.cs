@@ -811,9 +811,10 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     Value = 0,
                     TickStyle = TickStyle.None
                 };
-                tbProgress.Scroll += (s, e) =>
+                tbProgress.Scroll += async (s, e) =>
                 {
                     _engine.SeekTo(tbProgress.Value);
+                    await EvaluateVisibleTrendsSignalsAsync();
                 };
 
                 grpPlayback.Controls.AddRange(new Control[] {
@@ -1967,6 +1968,64 @@ namespace Test.ChannelPlayback.WinForms.Forms
 
         #region 数据加载与引擎事件绑定
 
+        private bool _isEvaluatingTrendsSignals = false;
+
+        /// <summary>
+        /// 自动推演当前已确立且处于回放可见范围内的所有连续形态的反转做单信号并上图
+        /// </summary>
+        private async System.Threading.Tasks.Task EvaluateVisibleTrendsSignalsAsync()
+        {
+            if (!_engine.EnableReversalOrder || _isEvaluatingTrendsSignals) return;
+            if (_engine.AllKlines == null || _engine.AllKlines.Count == 0) return;
+
+            string coin = cboCoin.SelectedItem?.ToString() ?? "BTCUSDT";
+            var allKlines = _engine.AllKlines;
+            int curBar = _currentBarIndex >= 0 ? _currentBarIndex : _engine.CurrentIndex;
+            if (curBar < 0 || curBar >= allKlines.Count) return;
+
+            var trends = _engine.ConsecutiveTrendDetector.DetectedTrends
+                .Where(t => t.ConfirmedBarIndex <= curBar)
+                .ToList();
+
+            if (trends.Count == 0) return;
+
+            _isEvaluatingTrendsSignals = true;
+            bool anyNewSignals = false;
+
+            try
+            {
+                for (int i = 0; i < trends.Count; i++)
+                {
+                    var tr = trends[i];
+                    if (_engine.ReversalOrderEngine.AllSignals.Any(s => s.TrendId == tr.Id))
+                    {
+                        continue;
+                    }
+
+                    var sigs = await _engine.ReversalOrderEngine.ProcessTrendTicksAsync(
+                        coin, tr, allKlines, curBar, _engine.Raw1mKlines).ConfigureAwait(true);
+
+                    if (sigs != null && sigs.Count > 0)
+                    {
+                        anyNewSignals = true;
+                    }
+                }
+
+                if (anyNewSignals && !this.IsDisposed)
+                {
+                    RenderPlot();
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[EvaluateVisibleTrendsSignalsAsync] 异常: {ex.Message}");
+            }
+            finally
+            {
+                _isEvaluatingTrendsSignals = false;
+            }
+        }
+
         private async System.Threading.Tasks.Task LoadSelectedDataAsync()
         {
             btnLoadData.Enabled = false;
@@ -1988,6 +2047,12 @@ namespace Test.ChannelPlayback.WinForms.Forms
             else if (intervalStr.StartsWith("1d")) interval = KlineInterval.OneDay;
 
             await _engine.LoadDataAsync(coin, startDate, endDate, interval);
+
+            // 仅对当前初始回放帧内已确立可见的形态按需评估信号
+            if (_engine.EnableReversalOrder && _engine.AllKlines.Count > 0)
+            {
+                await EvaluateVisibleTrendsSignalsAsync();
+            }
 
             btnLoadData.Enabled = true;
             btnLoadData.Text = "📂 加载真实 K 线数据";
@@ -2162,6 +2227,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
             tbProgress.Maximum = Math.Max(1, total - 1);
             tbProgress.Value = Math.Clamp(_engine.CurrentIndex, 0, tbProgress.Maximum);
             lblProgressVal.Text = $"回放进度: {_engine.CurrentIndex + 1} / {total} 根";
+            _currentBarIndex = _engine.CurrentIndex;
 
             _selectedBarIndex = null;
             _selectedBarStartIndex = null;
@@ -2518,7 +2584,8 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     string tickExtra = latestSig.IsTickStreamTriggered && latestSig.TriggerTick.HasValue
                         ? $" [Tick #{latestSig.TriggerTickIndex + 1}/{latestSig.CycleTotalTicks} {(latestSig.TriggerTick.Value.IsBuyerMaker ? "卖" : "买")} 量:{latestSig.TriggerTick.Value.Qty:F2}]"
                         : "";
-                    lblMetricLatestReversalSignal.Text = $"最新反转: [{modeStr}] {lineReactionInfo}{dirStr} @ {latestSig.Price:F2}{tickExtra} ({peakInfo} 止损:{latestSig.StopLossPrice:F2}, 止盈:{latestSig.TakeProfitPrice:F2}) [#{latestSig.Pattern.PatternId} C{latestSig.ObservationCycleIndex}] (Bar #{latestSig.BigBarIndex})";
+                    string calcTag = !string.IsNullOrEmpty(latestSig.HighLowCalculationMode) ? $" [{latestSig.HighLowCalculationMode}]" : "";
+                    lblMetricLatestReversalSignal.Text = $"最新反转: [{modeStr}]{calcTag} {lineReactionInfo}{dirStr} @ {latestSig.Price:F2}{tickExtra} ({peakInfo} 止损:{latestSig.StopLossPrice:F2}, 止盈:{latestSig.TakeProfitPrice:F2}) [#{latestSig.Pattern.PatternId} C{latestSig.ObservationCycleIndex}] (Bar #{latestSig.BigBarIndex})";
                     lblMetricLatestReversalSignal.ForeColor = Color.FromArgb(250, 204, 21);
                 }
                 else
@@ -4174,6 +4241,10 @@ namespace Test.ChannelPlayback.WinForms.Forms
 
                             if (selEndT >= trStartT && selStartT <= obsReachT)
                             {
+                                if (fullTicks != null && fullTicks.Length > 0)
+                                {
+                                    _engine.ReversalOrderEngine.CacheTrendTicks(tr.Id, fullTicks);
+                                }
                                 var sigs = _engine.ReversalOrderEngine.EvaluateObservationCycles(tr, allKlines, fullTicks, Math.Min(_currentBarIndex, endIndex));
                                 if (sigs.Count > 0) hasNewSignals = true;
                             }
@@ -4786,26 +4857,59 @@ namespace Test.ChannelPlayback.WinForms.Forms
 
                     if (!isInScope) continue;
 
-                    // 定位离触发时间最近的 Tick 点索引 (X 轴)
+                    // 方案 3：优先在当前观察期窗口 [sig.ObservationStartTime, sig.ObservationEndTime] 内定位开仓极值 Tick (X 轴)
                     int targetTickIdx = -1;
                     long minDiff = long.MaxValue;
+
                     for (int ti = 0; ti < totalTicks; ti++)
                     {
-                        long diff = Math.Abs(ticks[ti].Time - sig.TriggerTime);
-                        if (diff < minDiff)
+                        var t = ticks[ti];
+                        if (t.Time >= sig.ObservationStartTime && t.Time <= sig.ObservationEndTime)
                         {
-                            minDiff = diff;
-                            targetTickIdx = ti;
+                            long diff = Math.Abs(t.Time - sig.TriggerTime);
+                            if (diff < minDiff)
+                            {
+                                minDiff = diff;
+                                targetTickIdx = ti;
+                            }
                         }
                     }
 
-                    // 若在该周期内存在与开仓极值价格严格相等的 Tick，优先精确定位到该极值 Tick
-                    for (int ti = 0; ti < totalTicks; ti++)
+                    // 若在该观察期周期内存在与开仓极值价格严格相等的 Tick，优先精确定位到该观察期内的极值 Tick
+                    if (targetTickIdx >= 0)
                     {
-                        if (ticks[ti].Price == sig.Price)
+                        long bestPeakDiff = long.MaxValue;
+                        int bestPeakIdx = -1;
+                        for (int ti = 0; ti < totalTicks; ti++)
                         {
-                            targetTickIdx = ti;
-                            break;
+                            var t = ticks[ti];
+                            if (t.Time >= sig.ObservationStartTime && t.Time <= sig.ObservationEndTime && t.Price == sig.Price)
+                            {
+                                long diff = Math.Abs(t.Time - sig.TriggerTime);
+                                if (diff < bestPeakDiff)
+                                {
+                                    bestPeakDiff = diff;
+                                    bestPeakIdx = ti;
+                                }
+                            }
+                        }
+                        if (bestPeakIdx >= 0)
+                        {
+                            targetTickIdx = bestPeakIdx;
+                        }
+                    }
+
+                    // 兜底回退 (若 ticks 集合中未完全覆盖观察期时间段)
+                    if (targetTickIdx < 0)
+                    {
+                        for (int ti = 0; ti < totalTicks; ti++)
+                        {
+                            long diff = Math.Abs(ticks[ti].Time - sig.TriggerTime);
+                            if (diff < minDiff)
+                            {
+                                minDiff = diff;
+                                targetTickIdx = ti;
+                            }
                         }
                     }
 
