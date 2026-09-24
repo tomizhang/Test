@@ -120,12 +120,19 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
         private NumericUpDown numTickConsecutivePct = null!;
         private CheckBox chkTickAngleLines = null!;
 
-        // K线点击与Shift多选状态
+        // K线点击与Shift多选状态 (大周期)
         private int? _selectedBarAnchor = null;
         private int? _selectedBarStartIndex = null;
         private int? _selectedBarEndIndex = null;
         private MacroConsecutiveTrendItem? _selectedConsecutiveTrend = null;
         private Point _macroMouseDownPoint;
+
+        // 微观 Tick 窗口 K线点击与Shift多选状态
+        private Point _tickMouseDownPoint;
+        private int? _selectedMicroBarAnchor = null;
+        private int? _selectedMicroBarStartIndex = null;
+        private int? _selectedMicroBarEndIndex = null;
+        private IReadOnlyList<PeriodBucket>? _currentMicroBuckets = null;
 
         // 微观 Tick 鼠标悬停交互指示器 (十字准星 + 吸附标记 + 悬浮看板)
         private readonly TickHoverIndicator _tickHoverIndicator = new();
@@ -735,6 +742,10 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             btnToggleTickChartType.Click += (s, e) =>
             {
                 _settings.TickChartTypeIndex = _settings.TickChartTypeIndex == 0 ? 1 : 0;
+                _selectedMicroBarAnchor = null;
+                _selectedMicroBarStartIndex = null;
+                _selectedMicroBarEndIndex = null;
+                if (tabDashboard != null) tabDashboard.Text = "实时仪表盘 & 逐笔流水";
                 UpdateTickChartTypeButtonState();
                 SaveSettingsFromUi();
                 RefreshTickPlotDirectly();
@@ -810,6 +821,11 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             btnResumeLiveFollow.FlatAppearance.BorderSize = 1;
             btnResumeLiveFollow.Click += (s, e) =>
             {
+                if (_selectedMicroBarStartIndex.HasValue || _selectedMicroBarEndIndex.HasValue)
+                {
+                    ClearMicroBarSelection();
+                    return;
+                }
                 if (_selectedBarStartIndex.HasValue || _selectedBarEndIndex.HasValue || _selectedConsecutiveTrend != null)
                 {
                     ClearBarSelection();
@@ -1005,10 +1021,17 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             pnlTickHeader.Controls.AddRange(tickControls.ToArray());
 
             formsPlotTick = new FormsPlot { Dock = DockStyle.Fill, BackColor = Color.FromArgb(15, 23, 42) };
+            formsPlotTick.MouseDown += OnFormsPlotTickMouseDown;
+            formsPlotTick.MouseUp += OnFormsPlotTickMouseUp;
             formsPlotTick.MouseMove += OnFormsPlotTickMouseMove;
             formsPlotTick.MouseLeave += OnFormsPlotTickMouseLeave;
             formsPlotTick.MouseDoubleClick += (s, e) =>
             {
+                if (_selectedMicroBarStartIndex.HasValue || _selectedMicroBarEndIndex.HasValue)
+                {
+                    ClearMicroBarSelection();
+                    return;
+                }
                 if (_selectedBarStartIndex.HasValue || _selectedBarEndIndex.HasValue || _selectedConsecutiveTrend != null)
                 {
                     ClearBarSelection();
@@ -1539,6 +1562,10 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
         {
             if (index < 0 || index >= _tickPeriodButtons.Count) index = 0;
             _selectedTickPeriodIndex = index;
+            _selectedMicroBarAnchor = null;
+            _selectedMicroBarStartIndex = null;
+            _selectedMicroBarEndIndex = null;
+            if (tabDashboard != null) tabDashboard.Text = "实时仪表盘 & 逐笔流水";
             UpdateTickPeriodButtonsUi();
             RepositionTickHeaderControls();
             SaveSettingsFromUi();
@@ -1862,12 +1889,18 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 selectedBarStartIndex: _engine.CurrentBucketIndex,
                 selectedBarEndIndex: _engine.CurrentBucketIndex,
                 macroBarTimes: _engine.Buckets?.Select(b => (b.StartTime, b.EndTime)).ToList(),
-                hoverIndicator: _tickHoverIndicator);
+                hoverIndicator: _tickHoverIndicator,
+                selectedMicroBarStartIndex: _selectedMicroBarStartIndex,
+                selectedMicroBarEndIndex: _selectedMicroBarEndIndex);
 
+            _currentMicroBuckets = TickPlotHelper.LastSubBuckets;
             formsPlotTick.Refresh();
 
-            // 更新右侧最近 Tick 表格 (最新 25 笔)
-            UpdateRecentTicksGrid(curBucket.Ticks, cursor);
+            // 若当前未选定特定微观 K 线，更新右侧最近 Tick 表格 (最新 25 笔)
+            if (!_selectedMicroBarStartIndex.HasValue)
+            {
+                UpdateRecentTicksGrid(curBucket.Ticks, cursor);
+            }
         }
 
         #endregion
@@ -2054,8 +2087,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                     _tickPlotNeedsRefresh = false;
                     try
                     {
-                        // 🌟 若用户当前正在查看选中的历史 K 线或多选区间，则不被正在播放的 live tick 覆盖
-                        if (!_selectedBarStartIndex.HasValue)
+                        // 🌟 若用户当前正在查看选中的历史 K 线或微观多选区间，则不被正在播放的 live tick 覆盖
+                        if (!_selectedBarStartIndex.HasValue && !_selectedMicroBarStartIndex.HasValue)
                         {
                             RenderLiveTickPlot();
                         }
@@ -2073,8 +2106,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
 
         private void UpdateDashboardCards()
         {
-            // 1. 本周期/选中周期卡片 (若无历史选中，跟随当前实时周期桶)
-            if (!_selectedBarStartIndex.HasValue)
+            // 1. 本周期/选中周期卡片 (若无历史或微观选中，跟随当前实时周期桶)
+            if (!_selectedBarStartIndex.HasValue && !_selectedMicroBarStartIndex.HasValue)
             {
                 var curBucket = _engine.CurrentBucket;
                 if (curBucket != null)
@@ -2200,6 +2233,12 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             int totalDisplayCount = completedCount + (hasForming ? 1 : 0);
 
             if (totalDisplayCount == 0) return;
+
+            // 切换宏观大周期 K 线时，自动重置微观内部选中项
+            _selectedMicroBarAnchor = null;
+            _selectedMicroBarStartIndex = null;
+            _selectedMicroBarEndIndex = null;
+            if (tabDashboard != null) tabDashboard.Text = "实时仪表盘 & 逐笔流水";
 
             try
             {
@@ -2342,14 +2381,33 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
         {
             try
             {
+                var subBuckets = _tickHoverIndicator.ActiveSubBuckets ?? _currentMicroBuckets;
+                if (subBuckets != null && subBuckets.Count > 0)
+                {
+                    var mouseCoord = formsPlotTick.Plot.GetCoordinates(new ScottPlot.Pixel(e.X, e.Y));
+                    int targetIndex = (int)Math.Round(mouseCoord.X);
+                    if (targetIndex >= 0 && targetIndex < subBuckets.Count)
+                    {
+                        formsPlotTick.Cursor = Cursors.Hand;
+                    }
+                    else
+                    {
+                        formsPlotTick.Cursor = Cursors.Default;
+                    }
+                }
+                else
+                {
+                    formsPlotTick.Cursor = Cursors.Default;
+                }
+
                 if (!_tickHoverIndicator.IsAttached) return;
 
-                var mouseCoord = formsPlotTick.Plot.GetCoordinates(new ScottPlot.Pixel(e.X, e.Y));
+                var mouseCoordHover = formsPlotTick.Plot.GetCoordinates(new ScottPlot.Pixel(e.X, e.Y));
                 string chineseFont = TickPlotHelper.GetInstalledChineseFont();
 
                 if (_tickHoverIndicator.UpdateHover(
-                    mouseCoord.X,
-                    mouseCoord.Y,
+                    mouseCoordHover.X,
+                    mouseCoordHover.Y,
                     chineseFont,
                     out string headerBadgeText,
                     out Color badgeColor))
@@ -2361,6 +2419,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             }
             catch
             {
+                formsPlotTick.Cursor = Cursors.Default;
             }
         }
 
@@ -2368,6 +2427,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
         {
             try
             {
+                formsPlotTick.Cursor = Cursors.Default;
                 if (!_tickHoverIndicator.IsAttached) return;
 
                 _tickHoverIndicator.Clear();
@@ -2377,6 +2437,187 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             }
             catch
             {
+            }
+        }
+
+        private void OnFormsPlotTickMouseDown(object? sender, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                _tickMouseDownPoint = e.Location;
+            }
+        }
+
+        private void OnFormsPlotTickMouseUp(object? sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left) return;
+
+            int dx = Math.Abs(e.Location.X - _tickMouseDownPoint.X);
+            int dy = Math.Abs(e.Location.Y - _tickMouseDownPoint.Y);
+
+            // 如果鼠标位移大于 4 像素，判定为用户手动平移或缩放图表视角
+            if (dx > 4 || dy > 4) return;
+
+            var subBuckets = _tickHoverIndicator.ActiveSubBuckets ?? _currentMicroBuckets;
+            if (subBuckets == null || subBuckets.Count == 0) return;
+
+            int totalDisplayCount = subBuckets.Count;
+
+            try
+            {
+                var mouseCoord = formsPlotTick.Plot.GetCoordinates(new ScottPlot.Pixel(e.X, e.Y));
+                int targetIndex = (int)Math.Round(mouseCoord.X);
+
+                if (targetIndex >= 0 && targetIndex < totalDisplayCount)
+                {
+                    bool isShift = (ModifierKeys & Keys.Shift) == Keys.Shift;
+
+                    if (isShift && _selectedMicroBarAnchor.HasValue)
+                    {
+                        // 按住 Shift 键连续多选微观 K 线
+                        _selectedMicroBarStartIndex = Math.Min(_selectedMicroBarAnchor.Value, targetIndex);
+                        _selectedMicroBarEndIndex = Math.Max(_selectedMicroBarAnchor.Value, targetIndex);
+                    }
+                    else
+                    {
+                        // 单击单选微观 K 线
+                        _selectedMicroBarAnchor = targetIndex;
+                        _selectedMicroBarStartIndex = targetIndex;
+                        _selectedMicroBarEndIndex = targetIndex;
+                    }
+
+                    DisplaySelectedMicroBarsTicks();
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private void DisplaySelectedMicroBarsTicks()
+        {
+            if (!_selectedMicroBarStartIndex.HasValue || !_selectedMicroBarEndIndex.HasValue) return;
+            var subBuckets = _tickHoverIndicator.ActiveSubBuckets ?? _currentMicroBuckets;
+            if (subBuckets == null || subBuckets.Count == 0) return;
+
+            int sIdx = Math.Clamp(_selectedMicroBarStartIndex.Value, 0, subBuckets.Count - 1);
+            int eIdx = Math.Clamp(_selectedMicroBarEndIndex.Value, 0, subBuckets.Count - 1);
+            if (sIdx > eIdx)
+            {
+                int tmp = sIdx;
+                sIdx = eIdx;
+                eIdx = tmp;
+            }
+
+            int barCount = eIdx - sIdx + 1;
+            DateTime rangeStart = subBuckets[sIdx].StartTime;
+            DateTime rangeEnd = subBuckets[eIdx].EndTime;
+            string rangeDesc = FormatTimeSpanRange(rangeStart, rangeEnd);
+
+            // 聚合所选微观 K 线内的所有 Tick
+            var aggregatedTicks = new List<RawTick>();
+            for (int i = sIdx; i <= eIdx; i++)
+            {
+                var b = subBuckets[i];
+                if (b.Ticks != null && b.Ticks.Count > 0)
+                {
+                    aggregatedTicks.AddRange(b.Ticks);
+                }
+            }
+
+            // 1. 切换右侧 Tab 至 "实时仪表盘 & 逐笔流水" 并更新标题
+            tabControlRight.SelectedTab = tabDashboard;
+            tabDashboard.Text = $"逐笔流水 ({aggregatedTicks.Count:N0}条)";
+
+            // 2. 统计所选区间的 Tick 多空比与成交量多空比
+            var stats = TickLongShortStats.Calculate(aggregatedTicks);
+            string tickRatioStr = stats.TickRatio >= 999.0 ? "∞" : stats.TickRatio.ToString("F2");
+            string volRatioStr = stats.VolumeRatio >= 999.0 ? "∞" : stats.VolumeRatio.ToString("F2");
+
+            // 3. 更新微观顶部 Badge
+            string barTitle = barCount == 1 ? $"Bar #{sIdx + 1}" : $"Bar #{sIdx + 1}~#{eIdx + 1}";
+            lblTickBadge.Text = $"🕒[微观选中 {barTitle}{(barCount > 1 ? $" (共{barCount}根)" : "")}]: {rangeDesc} | {aggregatedTicks.Count:N0} Ticks | 🎯Tick比 {tickRatioStr} | 📊量比 {volRatioStr}";
+            lblTickBadge.ForeColor = Color.FromArgb(56, 189, 248);
+            _lastDefaultTickBadgeText = lblTickBadge.Text;
+            _lastDefaultTickBadgeColor = lblTickBadge.ForeColor;
+
+            // 4. 更新顶部多空比 Badge
+            lblTickRatioBadge.Text = $"🎯 Tick比: {tickRatioStr} ({stats.BuyTickPct:F0}%:{stats.SellTickPct:F0}%)";
+            lblTickRatioBadge.ForeColor = stats.TickRatio >= 1.0 ? Color.FromArgb(74, 222, 128) : Color.FromArgb(248, 113, 113);
+            lblVolRatioBadge.Text = $"📊 量比: {volRatioStr} ({stats.BuyVolumePct:F0}%:{stats.SellVolumePct:F0}%)";
+            lblVolRatioBadge.ForeColor = stats.VolumeRatio >= 1.0 ? Color.FromArgb(74, 222, 128) : Color.FromArgb(248, 113, 113);
+            lblTickRatioBadge.Visible = _settings.ShowTickRatio;
+            lblVolRatioBadge.Visible = _settings.ShowTickRatio;
+            RepositionTickHeaderControls();
+
+            // 5. 更新右侧监控卡片
+            lblCardPeriod.Text = $"微观 {barTitle} (共{barCount}根)";
+            lblCardTickProgress.Text = $"{stats.TotalTicks:N0} Ticks (微观流水)";
+            lblCardTickRatio.Text = $"{tickRatioStr} ({stats.BuyTickPct:F1}%:{stats.SellTickPct:F1}%)";
+            lblCardTickRatio.ForeColor = lblTickRatioBadge.ForeColor;
+            lblCardVolRatio.Text = $"{volRatioStr} ({stats.BuyVolumePct:F1}%:{stats.SellVolumePct:F1}%)";
+            lblCardVolRatio.ForeColor = lblVolRatioBadge.ForeColor;
+
+            if (aggregatedTicks.Count > 0)
+            {
+                decimal openPrice = aggregatedTicks[0].Price;
+                decimal closePrice = aggregatedTicks[^1].Price;
+                decimal chgPct = openPrice > 0 ? ((closePrice - openPrice) / openPrice * 100m) : 0m;
+                lblCardFormingPrice.Text = $"现价:{closePrice:F2} ({chgPct:+0.00;-0.00;0.00}%)";
+                lblCardFormingPrice.ForeColor = chgPct >= 0 ? Color.FromArgb(74, 222, 128) : Color.FromArgb(248, 113, 113);
+            }
+
+            // 6. 填充右侧 DataGridView 逐笔流水明细 (倒序排列，最新成交在最上方，最多展示 1000 笔)
+            int totalCount = aggregatedTicks.Count;
+            int showCount = Math.Min(1000, totalCount);
+            int startIdx = totalCount - showCount;
+
+            dgvRecentTicks.Rows.Clear();
+            dgvRecentTicks.SuspendLayout();
+
+            for (int i = totalCount - 1; i >= startIdx; i--)
+            {
+                var t = aggregatedTicks[i];
+                DateTime time = DateTimeOffset.FromUnixTimeMilliseconds(t.Time).UtcDateTime;
+                bool isBuy = !t.IsBuyerMaker;
+                string side = isBuy ? "买入 (Buy)" : "卖出 (Sell)";
+
+                int rowIdx = dgvRecentTicks.Rows.Add(
+                    i + 1,
+                    time.ToString("HH:mm:ss.fff"),
+                    t.Price.ToString("F2"),
+                    t.Qty.ToString("F4"),
+                    t.QuoteQty.ToString("F2"),
+                    side);
+
+                dgvRecentTicks.Rows[rowIdx].DefaultCellStyle.ForeColor = isBuy
+                    ? Color.FromArgb(74, 222, 128)
+                    : Color.FromArgb(248, 113, 113);
+            }
+
+            dgvRecentTicks.ResumeLayout();
+
+            // 7. 更新实时跟随按钮状态为可一键返回
+            UpdateLiveFollowButtonState(isLive: false);
+
+            // 8. 触发微观图表重绘以渲染选中高亮框
+            RefreshTickPlotDirectly();
+        }
+
+        private void ClearMicroBarSelection()
+        {
+            _selectedMicroBarAnchor = null;
+            _selectedMicroBarStartIndex = null;
+            _selectedMicroBarEndIndex = null;
+            if (tabDashboard != null) tabDashboard.Text = "实时仪表盘 & 逐笔流水";
+
+            if (_selectedBarStartIndex.HasValue && _selectedBarEndIndex.HasValue)
+            {
+                DisplaySelectedBarsTicks();
+            }
+            else
+            {
+                ClearBarSelection();
             }
         }
 
@@ -2501,70 +2742,72 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                         : $"微观 Tick 走势: Bar #{sIdx} ~ #{eIdx} (共 {barCount} 根K线, {rangeDesc}) - 共 {aggregatedTicks.Count:N0} Ticks");
             }
 
-            lblTickTitle.Text = isExactChannel
-                ? $"⭐通道 #{sIdx}~#{eIdx}"
-                : (hasChannel
-                    ? (barCount == 1 ? $"⭐通道内 #{sIdx}" : $"⭐含通道 #{sIdx}~#{eIdx}")
-                    : (barCount == 1 ? $"Bar #{sIdx}" : $"Bar #{sIdx}~#{eIdx}"));
-
-            if (isExactChannel)
-            {
-                var tr = primaryTrend!;
-                lblTickBadge.Text = $"⭐通道: {dirText} {tr.BarCount}根 ({tr.PriceChangePct:+0.00;-0.00;0.00}%) | k={tr.SlopeK:+0.0000;-0.0000} | 高度 {tr.ChannelHeight:F2} | {rangeDesc} ({aggregatedTicks.Count:N0} T)";
-                lblTickBadge.ForeColor = Color.FromArgb(251, 191, 36);
-            }
-            else if (hasChannel)
-            {
-                var tr = primaryTrend!;
-                string barPart = barCount == 1 ? $"Bar #{sIdx}" : $"Bar #{sIdx}~#{eIdx}";
-                lblTickBadge.Text = $"⭐通道内({barPart}): {dirText} #{tr.StartIndex}~#{tr.EndIndex} ({tr.PriceChangePct:+0.00;-0.00;0.00}%) | {rangeDesc} ({aggregatedTicks.Count:N0} T)";
-                lblTickBadge.ForeColor = Color.FromArgb(251, 191, 36);
-            }
-            else
-            {
-                lblTickBadge.Text = $"🕒[历史查看 Bar #{sIdx}{(barCount > 1 ? $"~#{eIdx}" : "")}]: {rangeDesc} ({aggregatedTicks.Count:N0} Ticks)";
-                lblTickBadge.ForeColor = Color.FromArgb(251, 191, 36);
-            }
-            UpdateLiveFollowButtonState(isLive: false);
-
             // 统计所选区间的 Tick 多空笔数比与成交量多空比
             var stats = TickLongShortStats.Calculate(aggregatedTicks);
-
             string tickRatioStr = stats.TickRatio >= 999.0 ? "∞" : stats.TickRatio.ToString("F2");
             string volRatioStr = stats.VolumeRatio >= 999.0 ? "∞" : stats.VolumeRatio.ToString("F2");
 
-            if (aggregatedTicks.Count == 0)
+            if (!_selectedMicroBarStartIndex.HasValue)
             {
-                lblTickRatioBadge.Text = "🎯 Tick比: --";
-                lblTickRatioBadge.ForeColor = Color.FromArgb(148, 163, 184);
-                lblVolRatioBadge.Text = "📊 量比: --";
-                lblVolRatioBadge.ForeColor = Color.FromArgb(148, 163, 184);
-            }
-            else
-            {
-                lblTickRatioBadge.Text = $"🎯 Tick比: {tickRatioStr} ({stats.BuyTickPct:F0}%:{stats.SellTickPct:F0}%)";
-                lblTickRatioBadge.ForeColor = stats.TickRatio >= 1.0 ? Color.FromArgb(74, 222, 128) : Color.FromArgb(248, 113, 113);
-                lblVolRatioBadge.Text = $"📊 量比: {volRatioStr} ({stats.BuyVolumePct:F0}%:{stats.SellVolumePct:F0}%)";
-                lblVolRatioBadge.ForeColor = stats.VolumeRatio >= 1.0 ? Color.FromArgb(74, 222, 128) : Color.FromArgb(248, 113, 113);
-            }
-            lblTickRatioBadge.Visible = _settings.ShowTickRatio;
-            lblVolRatioBadge.Visible = _settings.ShowTickRatio;
-            RepositionTickHeaderControls();
+                lblTickTitle.Text = isExactChannel
+                    ? $"⭐通道 #{sIdx}~#{eIdx}"
+                    : (hasChannel
+                        ? (barCount == 1 ? $"⭐通道内 #{sIdx}" : $"⭐含通道 #{sIdx}~#{eIdx}")
+                        : (barCount == 1 ? $"Bar #{sIdx}" : $"Bar #{sIdx}~#{eIdx}"));
 
-            // 更新右侧监控卡片
-            lblCardPeriod.Text = isExactChannel
-                ? $"⭐通道 #{sIdx}~#{eIdx}"
-                : (hasChannel
-                    ? (barCount == 1 ? $"⭐通道内 #{sIdx}" : $"⭐含通道 #{sIdx}~#{eIdx}")
-                    : (barCount == 1 ? $"Bar #{sIdx}" : $"Bar #{sIdx}~#{eIdx}"));
-            lblCardTickProgress.Text = $"{stats.TotalTicks:N0} Ticks (选中)";
-            lblCardTickRatio.Text = $"{tickRatioStr} ({stats.BuyTickPct:F1}%:{stats.SellTickPct:F1}%)";
-            lblCardTickRatio.ForeColor = lblTickRatioBadge.ForeColor;
-            lblCardVolRatio.Text = $"{volRatioStr} ({stats.BuyVolumePct:F1}%:{stats.SellVolumePct:F1}%)";
-            lblCardVolRatio.ForeColor = lblVolRatioBadge.ForeColor;
+                if (isExactChannel)
+                {
+                    var tr = primaryTrend!;
+                    lblTickBadge.Text = $"⭐通道: {dirText} {tr.BarCount}根 ({tr.PriceChangePct:+0.00;-0.00;0.00}%) | k={tr.SlopeK:+0.0000;-0.0000} | 高度 {tr.ChannelHeight:F2} | {rangeDesc} ({aggregatedTicks.Count:N0} T)";
+                    lblTickBadge.ForeColor = Color.FromArgb(251, 191, 36);
+                }
+                else if (hasChannel)
+                {
+                    var tr = primaryTrend!;
+                    string barPart = barCount == 1 ? $"Bar #{sIdx}" : $"Bar #{sIdx}~#{eIdx}";
+                    lblTickBadge.Text = $"⭐通道内({barPart}): {dirText} #{tr.StartIndex}~#{tr.EndIndex} ({tr.PriceChangePct:+0.00;-0.00;0.00}%) | {rangeDesc} ({aggregatedTicks.Count:N0} T)";
+                    lblTickBadge.ForeColor = Color.FromArgb(251, 191, 36);
+                }
+                else
+                {
+                    lblTickBadge.Text = $"🕒[历史查看 Bar #{sIdx}{(barCount > 1 ? $"~#{eIdx}" : "")}]: {rangeDesc} ({aggregatedTicks.Count:N0} Ticks)";
+                    lblTickBadge.ForeColor = Color.FromArgb(251, 191, 36);
+                }
+                UpdateLiveFollowButtonState(isLive: false);
 
-            _lastDefaultTickBadgeText = lblTickBadge.Text;
-            _lastDefaultTickBadgeColor = lblTickBadge.ForeColor;
+                if (aggregatedTicks.Count == 0)
+                {
+                    lblTickRatioBadge.Text = "🎯 Tick比: --";
+                    lblTickRatioBadge.ForeColor = Color.FromArgb(148, 163, 184);
+                    lblVolRatioBadge.Text = "📊 量比: --";
+                    lblVolRatioBadge.ForeColor = Color.FromArgb(148, 163, 184);
+                }
+                else
+                {
+                    lblTickRatioBadge.Text = $"🎯 Tick比: {tickRatioStr} ({stats.BuyTickPct:F0}%:{stats.SellTickPct:F0}%)";
+                    lblTickRatioBadge.ForeColor = stats.TickRatio >= 1.0 ? Color.FromArgb(74, 222, 128) : Color.FromArgb(248, 113, 113);
+                    lblVolRatioBadge.Text = $"📊 量比: {volRatioStr} ({stats.BuyVolumePct:F0}%:{stats.SellVolumePct:F0}%)";
+                    lblVolRatioBadge.ForeColor = stats.VolumeRatio >= 1.0 ? Color.FromArgb(74, 222, 128) : Color.FromArgb(248, 113, 113);
+                }
+                lblTickRatioBadge.Visible = _settings.ShowTickRatio;
+                lblVolRatioBadge.Visible = _settings.ShowTickRatio;
+                RepositionTickHeaderControls();
+
+                // 更新右侧监控卡片
+                lblCardPeriod.Text = isExactChannel
+                    ? $"⭐通道 #{sIdx}~#{eIdx}"
+                    : (hasChannel
+                        ? (barCount == 1 ? $"⭐通道内 #{sIdx}" : $"⭐含通道 #{sIdx}~#{eIdx}")
+                        : (barCount == 1 ? $"Bar #{sIdx}" : $"Bar #{sIdx}~#{eIdx}"));
+                lblCardTickProgress.Text = $"{stats.TotalTicks:N0} Ticks (选中)";
+                lblCardTickRatio.Text = $"{tickRatioStr} ({stats.BuyTickPct:F1}%:{stats.SellTickPct:F1}%)";
+                lblCardTickRatio.ForeColor = lblTickRatioBadge.ForeColor;
+                lblCardVolRatio.Text = $"{volRatioStr} ({stats.BuyVolumePct:F1}%:{stats.SellVolumePct:F1}%)";
+                lblCardVolRatio.ForeColor = lblVolRatioBadge.ForeColor;
+
+                _lastDefaultTickBadgeText = lblTickBadge.Text;
+                _lastDefaultTickBadgeColor = lblTickBadge.ForeColor;
+            }
 
             // 绘制微观走势 (蜡烛图或折线图，含副图与 HUD)
             TickPlotHelper.BuildTickPlot(
@@ -2595,49 +2838,55 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 selectedBarStartIndex: sIdx,
                 selectedBarEndIndex: eIdx,
                 macroBarTimes: _engine.Buckets.Select(b => (b.StartTime, b.EndTime)).ToList(),
-                hoverIndicator: _tickHoverIndicator);
+                hoverIndicator: _tickHoverIndicator,
+                selectedMicroBarStartIndex: _selectedMicroBarStartIndex,
+                selectedMicroBarEndIndex: _selectedMicroBarEndIndex);
 
+            _currentMicroBuckets = TickPlotHelper.LastSubBuckets;
             formsPlotTick.Refresh();
 
-            // 填充右侧最近 Tick 表格 (展示选中集合的最近 100 笔流水)
-            int showCount = Math.Min(100, aggregatedTicks.Count);
-            int startIdx = aggregatedTicks.Count - showCount;
-
-            dgvRecentTicks.Rows.Clear();
-            dgvRecentTicks.SuspendLayout();
-
-            for (int i = aggregatedTicks.Count - 1; i >= startIdx; i--)
+            if (!_selectedMicroBarStartIndex.HasValue)
             {
-                var t = aggregatedTicks[i];
-                DateTime time = DateTimeOffset.FromUnixTimeMilliseconds(t.Time).UtcDateTime;
-                bool isBuy = !t.IsBuyerMaker;
-                string side = isBuy ? "买入 (Buy)" : "卖出 (Sell)";
+                // 填充右侧最近 Tick 表格 (展示选中集合的最近 100 笔流水)
+                int showCount = Math.Min(100, aggregatedTicks.Count);
+                int startIdx = aggregatedTicks.Count - showCount;
 
-                int rowIdx = dgvRecentTicks.Rows.Add(
-                    i + 1,
-                    time.ToString("HH:mm:ss.fff"),
-                    t.Price.ToString("F2"),
-                    t.Qty.ToString("F4"),
-                    t.QuoteQty.ToString("F2"),
-                    side);
+                dgvRecentTicks.Rows.Clear();
+                dgvRecentTicks.SuspendLayout();
 
-                dgvRecentTicks.Rows[rowIdx].DefaultCellStyle.ForeColor = isBuy
-                    ? Color.FromArgb(74, 222, 128)
-                    : Color.FromArgb(248, 113, 113);
-            }
-
-            dgvRecentTicks.ResumeLayout();
-
-            if (hasChannel)
-            {
-                foreach (var tr in relevantChannels)
+                for (int i = aggregatedTicks.Count - 1; i >= startIdx; i--)
                 {
-                    OutputConsecutiveTrendDetails(tr, stats, aggregatedTicks.Count, rangeStart, rangeEnd);
+                    var t = aggregatedTicks[i];
+                    DateTime time = DateTimeOffset.FromUnixTimeMilliseconds(t.Time).UtcDateTime;
+                    bool isBuy = !t.IsBuyerMaker;
+                    string side = isBuy ? "买入 (Buy)" : "卖出 (Sell)";
+
+                    int rowIdx = dgvRecentTicks.Rows.Add(
+                        i + 1,
+                        time.ToString("HH:mm:ss.fff"),
+                        t.Price.ToString("F2"),
+                        t.Qty.ToString("F4"),
+                        t.QuoteQty.ToString("F2"),
+                        side);
+
+                    dgvRecentTicks.Rows[rowIdx].DefaultCellStyle.ForeColor = isBuy
+                        ? Color.FromArgb(74, 222, 128)
+                        : Color.FromArgb(248, 113, 113);
                 }
-            }
-            else
-            {
-                AppendLog($"[K线选中] 已切换微观视窗至 Bar #{sIdx}{(barCount > 1 ? $" ~ #{eIdx} (共 {barCount} 根)" : "")} [{periodLabel}]，共 {aggregatedTicks.Count:N0} 笔 Tick | 🎯Tick多空比: {tickRatioStr} (买{stats.BuyTickPct:F1}%:卖{stats.SellTickPct:F1}%) | 📊成交量比: {volRatioStr} (买{stats.BuyVolumePct:F1}%:卖{stats.SellVolumePct:F1}%, 净买量{TickLongShortStats.FormatVolume(stats.NetVolume)})", Color.FromArgb(56, 189, 248));
+
+                dgvRecentTicks.ResumeLayout();
+
+                if (hasChannel)
+                {
+                    foreach (var tr in relevantChannels)
+                    {
+                        OutputConsecutiveTrendDetails(tr, stats, aggregatedTicks.Count, rangeStart, rangeEnd);
+                    }
+                }
+                else
+                {
+                    AppendLog($"[K线选中] 已切换微观视窗至 Bar #{sIdx}{(barCount > 1 ? $" ~ #{eIdx} (共 {barCount} 根)" : "")} [{periodLabel}]，共 {aggregatedTicks.Count:N0} 笔 Tick | 🎯Tick多空比: {tickRatioStr} (买{stats.BuyTickPct:F1}%:卖{stats.SellTickPct:F1}%) | 📊成交量比: {volRatioStr} (买{stats.BuyVolumePct:F1}%:卖{stats.SellVolumePct:F1}%, 净买量{TickLongShortStats.FormatVolume(stats.NetVolume)})", Color.FromArgb(56, 189, 248));
+                }
             }
         }
 
@@ -2700,6 +2949,10 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             _selectedBarStartIndex = null;
             _selectedBarEndIndex = null;
             _selectedConsecutiveTrend = null;
+            _selectedMicroBarAnchor = null;
+            _selectedMicroBarStartIndex = null;
+            _selectedMicroBarEndIndex = null;
+            if (tabDashboard != null) tabDashboard.Text = "实时仪表盘 & 逐笔流水";
             UpdateLiveFollowButtonState(isLive: true);
             lblTickRatioBadge.Visible = false;
             lblVolRatioBadge.Visible = false;

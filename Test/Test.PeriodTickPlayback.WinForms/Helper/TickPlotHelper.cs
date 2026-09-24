@@ -18,6 +18,11 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
     {
         private static readonly string[] PreferredChineseFonts = { "Microsoft YaHei", "PingFang SC", "SimHei", "Noto Sans CJK SC", "WenQuanYi Micro Hei" };
 
+        /// <summary>
+        /// 最近一次在微观视窗成功分桶并渲染的子周期 K 线桶列表 (供外部点击与 Shift 选中交互)
+        /// </summary>
+        public static IReadOnlyList<PeriodBucket>? LastSubBuckets { get; internal set; }
+
         public static string GetInstalledChineseFont()
         {
             try
@@ -74,7 +79,9 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             TickHoverIndicator? hoverIndicator = null,
             bool showTickChannel = true,
             int tickConsecutiveMinBars = 5,
-            decimal tickConsecutiveMinPct = 0.8m)
+            decimal tickConsecutiveMinPct = 0.8m,
+            int? selectedMicroBarStartIndex = null,
+            int? selectedMicroBarEndIndex = null)
         {
             if (plot == null) return;
 
@@ -118,10 +125,13 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                     hoverIndicator: hoverIndicator,
                     showTickChannel: showTickChannel,
                     tickConsecutiveMinBars: tickConsecutiveMinBars,
-                    tickConsecutiveMinPct: tickConsecutiveMinPct);
+                    tickConsecutiveMinPct: tickConsecutiveMinPct,
+                    selectedMicroBarStartIndex: selectedMicroBarStartIndex,
+                    selectedMicroBarEndIndex: selectedMicroBarEndIndex);
                 return;
             }
 
+            LastSubBuckets = null;
             plot.Clear();
 
             // 彻底清除历史残留的非标准坐标轴，确保仅保留 Left, Right, Bottom, Top 四个内建轴，杜绝多窗口/多坐标轴堆叠！
@@ -767,10 +777,13 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             TickHoverIndicator? hoverIndicator = null,
             bool showTickChannel = true,
             int tickConsecutiveMinBars = 5,
-            decimal tickConsecutiveMinPct = 0.8m)
+            decimal tickConsecutiveMinPct = 0.8m,
+            int? selectedMicroBarStartIndex = null,
+            int? selectedMicroBarEndIndex = null)
         {
             if (plot == null) return;
 
+            LastSubBuckets = null;
             plot.Clear();
 
             // 彻底清除历史残留的非标准坐标轴
@@ -795,6 +808,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
 
             if (renderCount == 0)
             {
+                LastSubBuckets = null;
                 var emptyTxt = plot.Add.Text("当前周期暂无 Tick 或等待播放...", 0, 0);
                 emptyTxt.LabelFontName = chineseFont;
                 emptyTxt.LabelFontSize = 13;
@@ -813,6 +827,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             var subBuckets = PeriodBucketLoader.SliceTicksIntoBuckets(availableTicks, subSpan);
             if (subBuckets == null || subBuckets.Count == 0)
             {
+                LastSubBuckets = null;
                 var emptyTxt = plot.Add.Text("未生成有效子周期 K 线", 0, 0);
                 emptyTxt.LabelFontName = chineseFont;
                 emptyTxt.LabelFontSize = 13;
@@ -821,6 +836,8 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 plot.Axes.SetLimits(-10, 10, -10, 10);
                 return;
             }
+
+            LastSubBuckets = subBuckets;
 
             int M = subBuckets.Count;
             var ohlcList = new List<OHLC>(M);
@@ -1216,6 +1233,67 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             tLow.LabelFontSize = 8.0f;
             tLow.LabelFontColor = Color.FromHex("#86efac");
             tLow.LabelAlignment = Alignment.UpperCenter;
+
+            // 绘制用户在微观视窗点击或 Shift 连续多选的微观 K 线高亮选中区域
+            if (selectedMicroBarStartIndex.HasValue && selectedMicroBarEndIndex.HasValue && M > 0)
+            {
+                int smIdx = Math.Clamp(Math.Min(selectedMicroBarStartIndex.Value, selectedMicroBarEndIndex.Value), 0, M - 1);
+                int emIdx = Math.Clamp(Math.Max(selectedMicroBarStartIndex.Value, selectedMicroBarEndIndex.Value), 0, M - 1);
+
+                double selHigh = double.MinValue;
+                double selLow = double.MaxValue;
+                for (int i = smIdx; i <= emIdx; i++)
+                {
+                    if (ohlcList[i].High > selHigh) selHigh = ohlcList[i].High;
+                    if (ohlcList[i].Low < selLow) selLow = ohlcList[i].Low;
+                }
+
+                if (selHigh >= selLow && selHigh > 0)
+                {
+                    double selLeft = smIdx - 0.45;
+                    double selRight = emIdx + 0.45;
+
+                    // ① 选中区域半透明高亮填充多边形 (天蓝微光)
+                    var selCoords = new Coordinates[]
+                    {
+                        new Coordinates(selLeft, selHigh),
+                        new Coordinates(selRight, selHigh),
+                        new Coordinates(selRight, selLow),
+                        new Coordinates(selLeft, selLow)
+                    };
+                    var selPoly = plot.Add.Polygon(selCoords);
+                    selPoly.FillColor = Color.FromHex("#38bdf8").WithAlpha(40);
+                    selPoly.LineColor = Color.FromHex("#38bdf8").WithAlpha(210);
+                    selPoly.LineWidth = 1.6f;
+                    selPoly.LinePattern = LinePattern.Dashed;
+
+                    // ② 左右两端垂直虚线标记
+                    var vLeft = plot.Add.VerticalLine(selLeft);
+                    vLeft.Color = Color.FromHex("#38bdf8").WithAlpha(140);
+                    vLeft.LineWidth = 1.0f;
+                    vLeft.LinePattern = LinePattern.Dotted;
+
+                    var vRight = plot.Add.VerticalLine(selRight);
+                    vRight.Color = Color.FromHex("#38bdf8").WithAlpha(140);
+                    vRight.LineWidth = 1.0f;
+                    vRight.LinePattern = LinePattern.Dotted;
+
+                    // ③ 悬浮标牌
+                    int selCount = emIdx - smIdx + 1;
+                    string selTitle = selCount == 1
+                        ? $"[微观 Bar #{smIdx + 1}]"
+                        : $"[微观 Bar #{smIdx + 1} ~ #{emIdx + 1} (共 {selCount} 根)]";
+
+                    var txtSel = plot.Add.Text(selTitle, (smIdx + emIdx) / 2.0, selHigh);
+                    txtSel.LabelFontName = chineseFont;
+                    txtSel.LabelFontSize = 8.5f;
+                    txtSel.LabelFontColor = Color.FromHex("#38bdf8");
+                    txtSel.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.9);
+                    txtSel.LabelBorderColor = Color.FromHex("#38bdf8").WithAlpha(200);
+                    txtSel.LabelBorderWidth = 1f;
+                    txtSel.LabelAlignment = Alignment.LowerCenter;
+                }
+            }
 
             // X 轴时间刻度标签与坐标范围 (若存在大通道投影或多角度趋势线，右侧预留适当空间供标签呼吸)
             plot.Axes.SetLimitsY((double)yMinPrice, (double)yMaxPrice);
