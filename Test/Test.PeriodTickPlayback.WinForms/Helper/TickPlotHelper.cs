@@ -64,6 +64,8 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             int consecutiveMinBars = 5,
             decimal consecutiveMinPct = 2.5m,
             bool showRatio = true,
+            bool showAngleLines = true,
+            IReadOnlyList<double>? customAngles = null,
             MacroConsecutiveTrendItem? selectedTrend = null,
             IReadOnlyList<MacroConsecutiveTrendItem>? activeChannels = null,
             int? selectedBarStartIndex = null,
@@ -97,6 +99,8 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                     consecutiveMinBars,
                     consecutiveMinPct,
                     showRatio,
+                    showAngleLines: showAngleLines,
+                    customAngles: customAngles,
                     selectedTrend: selectedTrend,
                     activeChannels: activeChannels,
                     selectedBarStartIndex: selectedBarStartIndex,
@@ -266,20 +270,26 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             int sBarIdx = selectedBarStartIndex ?? (selectedTrend?.StartIndex ?? 0);
             int eBarIdx = selectedBarEndIndex ?? (selectedTrend?.EndIndex ?? sBarIdx);
 
-            var effectiveChannels = new List<MacroConsecutiveTrendItem>();
-            if (showConsecutiveTrend)
+            const int forwardBars = 20;
+            var effectiveTrends = new List<MacroConsecutiveTrendItem>();
+            if (showConsecutiveTrend || showAngleLines)
             {
                 if (activeChannels != null && activeChannels.Count > 0)
                 {
                     foreach (var c in activeChannels)
                     {
-                        if (c.HasChannel && Math.Max(sBarIdx, c.StartIndex) <= Math.Min(eBarIdx, c.EndIndex) && !effectiveChannels.Any(x => x.Id == c.Id && x.StartIndex == c.StartIndex && x.EndIndex == c.EndIndex))
-                            effectiveChannels.Add(c);
+                        int cExtEnd = c.EndIndex + forwardBars;
+                        if (Math.Max(sBarIdx, c.StartIndex) <= Math.Min(eBarIdx, cExtEnd) && !effectiveTrends.Any(x => x.Id == c.Id && x.StartIndex == c.StartIndex && x.EndIndex == c.EndIndex))
+                            effectiveTrends.Add(c);
                     }
                 }
-                else if (selectedTrend != null && selectedTrend.HasChannel && Math.Max(sBarIdx, selectedTrend.StartIndex) <= Math.Min(eBarIdx, selectedTrend.EndIndex))
+                else if (selectedTrend != null)
                 {
-                    effectiveChannels.Add(selectedTrend);
+                    int trExtEnd = selectedTrend.EndIndex + forwardBars;
+                    if (Math.Max(sBarIdx, selectedTrend.StartIndex) <= Math.Min(eBarIdx, trExtEnd))
+                    {
+                        effectiveTrends.Add(selectedTrend);
+                    }
                 }
             }
 
@@ -287,57 +297,103 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             double effMaxVal = (double)maxVal;
 
             var channelProjections = new List<(MacroConsecutiveTrendItem tr, double xS, double xE, double yUpS, double yUpE, double yLowS, double yLowE)>();
+            var angleProjections = new List<(MacroConsecutiveTrendItem tr, double xS, double xE, double barPosS, double barPosE)>();
 
-            foreach (var tr in effectiveChannels)
+            foreach (var tr in effectiveTrends)
             {
+                int trExtEnd = tr.EndIndex + forwardBars;
                 int bStart = Math.Max(sBarIdx, tr.StartIndex);
-                int bEnd = Math.Min(eBarIdx, tr.EndIndex);
+                int bEnd = Math.Min(eBarIdx, trExtEnd);
                 if (bStart > bEnd) continue;
 
-                double xS, xE, yUpS, yUpE, yLowS, yLowE;
+                double xS, xE;
+                double barPosS, barPosE;
                 if (sBarIdx == eBarIdx)
                 {
                     xS = 0;
                     xE = Math.Max(1, renderCount - 1);
-                    yUpS = (double)(tr.SlopeK * (sBarIdx - 0.5m) + tr.UpperIntercept);
-                    yUpE = (double)(tr.SlopeK * (sBarIdx + 0.5m) + tr.UpperIntercept);
-                    yLowS = (double)(tr.SlopeK * (sBarIdx - 0.5m) + tr.LowerIntercept);
-                    yLowE = (double)(tr.SlopeK * (sBarIdx + 0.5m) + tr.LowerIntercept);
+                    barPosS = sBarIdx;
+                    barPosE = sBarIdx + 1.0;
                 }
                 else
                 {
-                    xS = (bStart == sBarIdx)
-                        ? 0
-                        : ((boundaryTickIndices != null && bStart - sBarIdx - 1 < boundaryTickIndices.Count)
-                            ? boundaryTickIndices[bStart - sBarIdx - 1]
-                            : 0);
-
-                    xE = (bEnd == eBarIdx)
-                        ? Math.Max(1, renderCount - 1)
-                        : ((boundaryTickIndices != null && bEnd - sBarIdx < boundaryTickIndices.Count)
-                            ? Math.Max(xS + 1, boundaryTickIndices[bEnd - sBarIdx] - 1)
-                            : Math.Max(1, renderCount - 1));
-
-                    if (bStart == tr.StartIndex && bEnd == tr.EndIndex && sBarIdx == tr.StartIndex && eBarIdx == tr.EndIndex)
+                    int totalBars = eBarIdx - sBarIdx + 1;
+                    if (bStart <= sBarIdx && bEnd >= eBarIdx)
                     {
-                        yUpS = (double)(tr.SlopeK * tr.StartIndex + tr.UpperIntercept);
-                        yUpE = (double)(tr.SlopeK * tr.EndIndex + tr.UpperIntercept);
-                        yLowS = (double)(tr.SlopeK * tr.StartIndex + tr.LowerIntercept);
-                        yLowE = (double)(tr.SlopeK * tr.EndIndex + tr.LowerIntercept);
+                        xS = 0;
+                        xE = Math.Max(1, renderCount - 1);
+                        barPosS = sBarIdx;
+                        barPosE = eBarIdx + 1.0;
                     }
                     else
                     {
-                        yUpS = (double)(tr.SlopeK * (bStart - 0.5m) + tr.UpperIntercept);
-                        yUpE = (double)(tr.SlopeK * (bEnd + 0.5m) + tr.UpperIntercept);
-                        yLowS = (double)(tr.SlopeK * (bStart - 0.5m) + tr.LowerIntercept);
-                        yLowE = (double)(tr.SlopeK * (bEnd + 0.5m) + tr.LowerIntercept);
+                        xS = (bStart == sBarIdx)
+                            ? 0
+                            : ((boundaryTickIndices != null && bStart - sBarIdx - 1 < boundaryTickIndices.Count)
+                                ? boundaryTickIndices[bStart - sBarIdx - 1]
+                                : Math.Clamp((int)Math.Round((double)(bStart - sBarIdx) / totalBars * (renderCount - 1)), 0, renderCount - 1));
+
+                        xE = (bEnd >= eBarIdx)
+                            ? Math.Max(1, renderCount - 1)
+                            : ((boundaryTickIndices != null && bEnd - sBarIdx < boundaryTickIndices.Count)
+                                ? Math.Max(xS + 1, boundaryTickIndices[bEnd - sBarIdx] - 1)
+                                : Math.Clamp((int)Math.Round((double)(bEnd - sBarIdx + 1) / totalBars * (renderCount - 1)), (int)xS + 1, renderCount - 1));
+
+                        barPosS = bStart;
+                        barPosE = bEnd + 1.0;
                     }
                 }
 
-                effMinVal = Math.Min(effMinVal, Math.Min(yLowS, yLowE));
-                effMaxVal = Math.Max(effMaxVal, Math.Max(yUpS, yUpE));
+                if (showConsecutiveTrend && tr.HasChannel)
+                {
+                    double yUpS, yUpE, yLowS, yLowE;
+                    if (sBarIdx == eBarIdx)
+                    {
+                        yUpS = (double)(tr.SlopeK * sBarIdx + tr.UpperIntercept);
+                        yUpE = (double)(tr.SlopeK * (sBarIdx + 1.0m) + tr.UpperIntercept);
+                        yLowS = (double)(tr.SlopeK * sBarIdx + tr.LowerIntercept);
+                        yLowE = (double)(tr.SlopeK * (sBarIdx + 1.0m) + tr.LowerIntercept);
+                    }
+                    else
+                    {
+                        yUpS = (double)(tr.SlopeK * (decimal)barPosS + tr.UpperIntercept);
+                        yUpE = (double)(tr.SlopeK * (decimal)barPosE + tr.UpperIntercept);
+                        yLowS = (double)(tr.SlopeK * (decimal)barPosS + tr.LowerIntercept);
+                        yLowE = (double)(tr.SlopeK * (decimal)barPosE + tr.LowerIntercept);
+                    }
 
-                channelProjections.Add((tr, xS, xE, yUpS, yUpE, yLowS, yLowE));
+                    effMinVal = Math.Min(effMinVal, Math.Min(yLowS, yLowE));
+                    effMaxVal = Math.Max(effMaxVal, Math.Max(yUpS, yUpE));
+
+                    channelProjections.Add((tr, xS, xE, yUpS, yUpE, yLowS, yLowE));
+                }
+
+                if (showAngleLines)
+                {
+                    angleProjections.Add((tr, xS, xE, barPosS, barPosE));
+
+                    double s45 = tr.MacroSlope45 > 0 ? tr.MacroSlope45 : (MacroPlotHelper.LastSlope45 > 0 ? MacroPlotHelper.LastSlope45 : (tr.SlopeK != 0 ? (double)Math.Abs(tr.SlopeK) : (double)(tr.StartPrice * 0.005m)));
+                    if (s45 > 0)
+                    {
+                        double dS = barPosS - tr.StartIndex;
+                        double dE = barPosE - tr.StartIndex;
+                        double yRef1 = (double)tr.FirstBarHigh + (tr.IsBullish ? s45 * dS : -s45 * dS);
+                        double yRef2 = (double)tr.FirstBarHigh + (tr.IsBullish ? s45 * dE : -s45 * dE);
+                        double yRef3 = (double)tr.FirstBarLow + (tr.IsBullish ? s45 * dS : -s45 * dS);
+                        double yRef4 = (double)tr.FirstBarLow + (tr.IsBullish ? s45 * dE : -s45 * dE);
+                        double curSpan = (double)(maxVal - minVal);
+                        double curMid = (double)(maxVal + minVal) / 2.0;
+                        double maxAllowedDev = Math.Max(curSpan * 3.0, curMid * 0.10);
+                        foreach (var yr in new[] { yRef1, yRef2, yRef3, yRef4 })
+                        {
+                            if (yr > 0 && Math.Abs(yr - curMid) <= maxAllowedDev)
+                            {
+                                effMinVal = Math.Min(effMinVal, yr);
+                                effMaxVal = Math.Max(effMaxVal, yr);
+                            }
+                        }
+                    }
+                }
             }
 
             // 计算价格坐标轴的上下边界及归一化视觉位置 (供比值曲线智能“凑近对齐”)
@@ -369,6 +425,15 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 foreach (var proj in channelProjections)
                 {
                     DrawChannelRailsSegment(plot, proj.tr, proj.xS, proj.xE, proj.yUpS, proj.yUpE, proj.yLowS, proj.yLowE, chineseFont);
+                }
+            }
+
+            // 2.6 若开启微观多角度趋势线，在微观 Tick 图上以第一根 K 线高低双点位投影发射趋势线 (独立控制)
+            if (showAngleLines && angleProjections.Count > 0 && renderCount >= 1)
+            {
+                foreach (var ap in angleProjections)
+                {
+                    DrawAngleLines(plot, ap.tr, ap.xS, ap.xE, ap.barPosS, ap.barPosE, customAngles, chineseFont, ap.tr == selectedTrend);
                 }
             }
 
@@ -538,6 +603,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             annotation.LabelBorderWidth = 1.0f;
 
             // 5.3 若存在平行通道，在右上角绘制醒目的通道详细信息 HUD 标牌卡片
+            var effectiveChannels = effectiveTrends.Where(t => t.HasChannel).ToList();
             if (effectiveChannels.Count == 1)
             {
                 AddChannelInformationAnnotation(plot, effectiveChannels[0], chineseFont, sBarIdx, eBarIdx);
@@ -565,7 +631,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             // 6. 坐标轴自适应 (左侧主价格坐标轴)
             if (minVal <= maxVal && minVal > 0)
             {
-                double xMax = Math.Max(totalAvailable, renderCount + 5);
+                double xMax = Math.Max(totalAvailable, renderCount + (channelProjections.Count > 0 || angleProjections.Count > 0 ? 8 : 5));
                 plot.Axes.SetLimits(-1, xMax, pLeftYMin, pLeftYMax);
             }
 
@@ -615,6 +681,8 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             int consecutiveMinBars = 5,
             decimal consecutiveMinPct = 2.5m,
             bool showRatio = true,
+            bool showAngleLines = true,
+            IReadOnlyList<double>? customAngles = null,
             MacroConsecutiveTrendItem? selectedTrend = null,
             IReadOnlyList<MacroConsecutiveTrendItem>? activeChannels = null,
             int? selectedBarStartIndex = null,
@@ -744,63 +812,68 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 linePlot.MarkerShape = MarkerShape.FilledCircle;
             }
 
-            // 若存在相关的大周期平行通道，将其轨线价格纳入坐标轴上下界计算并绘制通道导轨
+            // 若存在相关的大周期平行通道或多角度趋势线，将其轨线价格纳入坐标轴上下界计算并绘制通道导轨与角度线
             int sBarIdx = selectedBarStartIndex ?? (selectedTrend?.StartIndex ?? 0);
             int eBarIdx = selectedBarEndIndex ?? (selectedTrend?.EndIndex ?? sBarIdx);
 
-            var effectiveChannels = new List<MacroConsecutiveTrendItem>();
-            if (showConsecutiveTrend)
+            const int forwardBars = 20;
+            var effectiveTrends = new List<MacroConsecutiveTrendItem>();
+            if (showConsecutiveTrend || showAngleLines)
             {
                 if (activeChannels != null && activeChannels.Count > 0)
                 {
                     foreach (var c in activeChannels)
                     {
-                        if (c.HasChannel && Math.Max(sBarIdx, c.StartIndex) <= Math.Min(eBarIdx, c.EndIndex) && !effectiveChannels.Any(x => x.Id == c.Id && x.StartIndex == c.StartIndex && x.EndIndex == c.EndIndex))
-                            effectiveChannels.Add(c);
+                        int cExtEnd = c.EndIndex + forwardBars;
+                        if (Math.Max(sBarIdx, c.StartIndex) <= Math.Min(eBarIdx, cExtEnd) && !effectiveTrends.Any(x => x.Id == c.Id && x.StartIndex == c.StartIndex && x.EndIndex == c.EndIndex))
+                            effectiveTrends.Add(c);
                     }
                 }
-                else if (selectedTrend != null && selectedTrend.HasChannel && Math.Max(sBarIdx, selectedTrend.StartIndex) <= Math.Min(eBarIdx, selectedTrend.EndIndex))
+                else if (selectedTrend != null)
                 {
-                    effectiveChannels.Add(selectedTrend);
+                    int trExtEnd = selectedTrend.EndIndex + forwardBars;
+                    if (Math.Max(sBarIdx, selectedTrend.StartIndex) <= Math.Min(eBarIdx, trExtEnd))
+                    {
+                        effectiveTrends.Add(selectedTrend);
+                    }
                 }
             }
 
             var channelProjections = new List<(MacroConsecutiveTrendItem tr, double xS, double xE, double yUpS, double yUpE, double yLowS, double yLowE)>();
+            var angleProjections = new List<(MacroConsecutiveTrendItem tr, double xS, double xE, double barPosS, double barPosE)>();
 
-            foreach (var tr in effectiveChannels)
+            foreach (var tr in effectiveTrends)
             {
+                int trExtEnd = tr.EndIndex + forwardBars;
                 int bStart = Math.Max(sBarIdx, tr.StartIndex);
-                int bEnd = Math.Min(eBarIdx, tr.EndIndex);
+                int bEnd = Math.Min(eBarIdx, trExtEnd);
                 if (bStart > bEnd) continue;
 
-                double xS, xE, yUpS, yUpE, yLowS, yLowE;
+                double xS, xE;
+                double barPosS, barPosE;
                 if (sBarIdx == eBarIdx)
                 {
                     xS = 0;
                     xE = Math.Max(1, M - 1);
-                    yUpS = (double)(tr.SlopeK * (sBarIdx - 0.5m) + tr.UpperIntercept);
-                    yUpE = (double)(tr.SlopeK * (sBarIdx + 0.5m) + tr.UpperIntercept);
-                    yLowS = (double)(tr.SlopeK * (sBarIdx - 0.5m) + tr.LowerIntercept);
-                    yLowE = (double)(tr.SlopeK * (sBarIdx + 0.5m) + tr.LowerIntercept);
+                    barPosS = sBarIdx;
+                    barPosE = sBarIdx + 1.0;
                 }
                 else
                 {
                     int totalBars = eBarIdx - sBarIdx + 1;
-                    if (bStart == tr.StartIndex && bEnd == tr.EndIndex && sBarIdx == tr.StartIndex && eBarIdx == tr.EndIndex)
+                    if (bStart <= sBarIdx && bEnd >= eBarIdx)
                     {
                         xS = 0;
                         xE = Math.Max(1, M - 1);
-                        yUpS = (double)(tr.SlopeK * tr.StartIndex + tr.UpperIntercept);
-                        yUpE = (double)(tr.SlopeK * tr.EndIndex + tr.UpperIntercept);
-                        yLowS = (double)(tr.SlopeK * tr.StartIndex + tr.LowerIntercept);
-                        yLowE = (double)(tr.SlopeK * tr.EndIndex + tr.LowerIntercept);
+                        barPosS = sBarIdx;
+                        barPosE = eBarIdx + 1.0;
                     }
                     else
                     {
-                        if (macroBarTimes != null && macroBarTimes.Count > bEnd)
+                        if (macroBarTimes != null && macroBarTimes.Count > bEnd && bEnd < macroBarTimes.Count)
                         {
                             DateTime tStart = macroBarTimes[bStart].StartTime;
-                            DateTime tEnd = macroBarTimes[bEnd].EndTime;
+                            DateTime tEnd = macroBarTimes[Math.Min(bEnd, macroBarTimes.Count - 1)].EndTime;
                             int foundStart = -1;
                             int foundEnd = -1;
                             for (int k = 0; k < M; k++)
@@ -816,20 +889,63 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                             xS = Math.Clamp((int)Math.Round((double)(bStart - sBarIdx) / totalBars * (M - 1)), 0, M - 1);
                             xE = Math.Clamp((int)Math.Round((double)(bEnd - sBarIdx + 1) / totalBars * (M - 1)), (int)xS + 1, M - 1);
                         }
-
-                        yUpS = (double)(tr.SlopeK * (bStart - 0.5m) + tr.UpperIntercept);
-                        yUpE = (double)(tr.SlopeK * (bEnd + 0.5m) + tr.UpperIntercept);
-                        yLowS = (double)(tr.SlopeK * (bStart - 0.5m) + tr.LowerIntercept);
-                        yLowE = (double)(tr.SlopeK * (bEnd + 0.5m) + tr.LowerIntercept);
+                        barPosS = bStart;
+                        barPosE = bEnd + 1.0;
                     }
                 }
 
-                decimal chanMin = (decimal)Math.Min(yLowS, yLowE);
-                decimal chanMax = (decimal)Math.Max(yUpS, yUpE);
-                if (chanMin < minPrice) minPrice = chanMin;
-                if (chanMax > maxPrice) maxPrice = chanMax;
+                if (showConsecutiveTrend && tr.HasChannel)
+                {
+                    double yUpS, yUpE, yLowS, yLowE;
+                    if (sBarIdx == eBarIdx)
+                    {
+                        yUpS = (double)(tr.SlopeK * sBarIdx + tr.UpperIntercept);
+                        yUpE = (double)(tr.SlopeK * (sBarIdx + 1.0m) + tr.UpperIntercept);
+                        yLowS = (double)(tr.SlopeK * sBarIdx + tr.LowerIntercept);
+                        yLowE = (double)(tr.SlopeK * (sBarIdx + 1.0m) + tr.LowerIntercept);
+                    }
+                    else
+                    {
+                        yUpS = (double)(tr.SlopeK * (decimal)barPosS + tr.UpperIntercept);
+                        yUpE = (double)(tr.SlopeK * (decimal)barPosE + tr.UpperIntercept);
+                        yLowS = (double)(tr.SlopeK * (decimal)barPosS + tr.LowerIntercept);
+                        yLowE = (double)(tr.SlopeK * (decimal)barPosE + tr.LowerIntercept);
+                    }
 
-                channelProjections.Add((tr, xS, xE, yUpS, yUpE, yLowS, yLowE));
+                    decimal chanMin = (decimal)Math.Min(yLowS, yLowE);
+                    decimal chanMax = (decimal)Math.Max(yUpS, yUpE);
+                    if (chanMin < minPrice) minPrice = chanMin;
+                    if (chanMax > maxPrice) maxPrice = chanMax;
+
+                    channelProjections.Add((tr, xS, xE, yUpS, yUpE, yLowS, yLowE));
+                }
+
+                if (showAngleLines)
+                {
+                    angleProjections.Add((tr, xS, xE, barPosS, barPosE));
+
+                    double s45 = tr.MacroSlope45 > 0 ? tr.MacroSlope45 : (MacroPlotHelper.LastSlope45 > 0 ? MacroPlotHelper.LastSlope45 : (tr.SlopeK != 0 ? (double)Math.Abs(tr.SlopeK) : (double)(tr.StartPrice * 0.005m)));
+                    if (s45 > 0)
+                    {
+                        double dS = barPosS - tr.StartIndex;
+                        double dE = barPosE - tr.StartIndex;
+                        double yRef1 = (double)tr.FirstBarHigh + (tr.IsBullish ? s45 * dS : -s45 * dS);
+                        double yRef2 = (double)tr.FirstBarHigh + (tr.IsBullish ? s45 * dE : -s45 * dE);
+                        double yRef3 = (double)tr.FirstBarLow + (tr.IsBullish ? s45 * dS : -s45 * dS);
+                        double yRef4 = (double)tr.FirstBarLow + (tr.IsBullish ? s45 * dE : -s45 * dE);
+                        double curSpan = (double)(maxPrice - minPrice);
+                        double curMid = (double)(maxPrice + minPrice) / 2.0;
+                        double maxAllowedDev = Math.Max(curSpan * 3.0, curMid * 0.10);
+                        foreach (var yr in new[] { yRef1, yRef2, yRef3, yRef4 })
+                        {
+                            if (yr > 0 && Math.Abs(yr - curMid) <= maxAllowedDev)
+                            {
+                                if ((decimal)yr < minPrice) minPrice = (decimal)yr;
+                                if ((decimal)yr > maxPrice) maxPrice = (decimal)yr;
+                            }
+                        }
+                    }
+                }
             }
 
             if (channelProjections.Count > 0 && M >= 1)
@@ -837,6 +953,14 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 foreach (var proj in channelProjections)
                 {
                     DrawChannelRailsSegment(plot, proj.tr, proj.xS, proj.xE, proj.yUpS, proj.yUpE, proj.yLowS, proj.yLowE, chineseFont);
+                }
+            }
+
+            if (showAngleLines && angleProjections.Count > 0 && M >= 1)
+            {
+                foreach (var ap in angleProjections)
+                {
+                    DrawAngleLines(plot, ap.tr, ap.xS, ap.xE, ap.barPosS, ap.barPosE, customAngles, chineseFont, ap.tr == selectedTrend);
                 }
             }
 
@@ -972,9 +1096,9 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             tLow.LabelFontColor = Color.FromHex("#86efac");
             tLow.LabelAlignment = Alignment.UpperCenter;
 
-            // X 轴时间刻度标签与坐标范围 (若存在大通道投影，右侧预留适当空间供标签呼吸)
+            // X 轴时间刻度标签与坐标范围 (若存在大通道投影或多角度趋势线，右侧预留适当空间供标签呼吸)
             plot.Axes.SetLimitsY((double)yMinPrice, (double)yMaxPrice);
-            plot.Axes.SetLimitsX(-0.8, M + (channelProjections.Count > 0 ? 3.5 : -0.2));
+            plot.Axes.SetLimitsX(-0.8, M + (channelProjections.Count > 0 || angleProjections.Count > 0 ? 3.5 : -0.2));
 
             var xPos = new List<double>();
             var xLabels = new List<string>();
@@ -1015,6 +1139,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             annotation.LabelBorderWidth = 1.0f;
 
             // 标注选中的大周期平行通道详情卡片 (右上角)
+            var effectiveChannels = effectiveTrends.Where(t => t.HasChannel).ToList();
             if (effectiveChannels.Count == 1)
             {
                 AddChannelInformationAnnotation(plot, effectiveChannels[0], chineseFont, sBarIdx, eBarIdx);
@@ -1193,6 +1318,127 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             }
 
             DrawChannelRailsSegment(plot, tr, xStart, xEnd, yUpStart, yUpEnd, yLowStart, yLowEnd, chineseFont);
+        }
+
+        private static void DrawAngleLines(
+            Plot plot,
+            MacroConsecutiveTrendItem tr,
+            double xS,
+            double xE,
+            double barPosS,
+            double barPosE,
+            IReadOnlyList<double>? customAngles,
+            string chineseFont,
+            bool isSelected = false)
+        {
+            if (plot == null || tr == null || xE <= xS) return;
+
+            bool isBull = tr.IsBullish;
+            decimal firstHigh = tr.FirstBarHigh > 0 ? tr.FirstBarHigh : tr.StartPrice;
+            decimal firstLow = tr.FirstBarLow > 0 ? tr.FirstBarLow : tr.StartPrice;
+            double yHigh = (double)firstHigh;
+            double yLow = (double)firstLow;
+
+            double slope45 = tr.MacroSlope45;
+            if (slope45 <= 0 && MacroPlotHelper.LastSlope45 > 0)
+            {
+                slope45 = MacroPlotHelper.LastSlope45;
+            }
+            if (slope45 <= 0)
+            {
+                slope45 = tr.SlopeK != 0 ? (double)Math.Abs(tr.SlopeK) : (double)(tr.StartPrice * 0.005m);
+            }
+            if (slope45 <= 0) slope45 = 1.0;
+
+            var angles = (customAngles != null && customAngles.Count > 0) ? customAngles : new double[] { 25.0, 45.0, 65.0 };
+
+            var anchorPoints = isBull
+                ? new (string label, double price, bool isPrimary)[] { ("L", yLow, true), ("H", yHigh, false) }
+                : new (string label, double price, bool isPrimary)[] { ("H", yHigh, true), ("L", yLow, false) };
+
+            double deltaBarS = barPosS - tr.StartIndex;
+            double deltaBarE = barPosE - tr.StartIndex;
+            if (deltaBarE <= deltaBarS) deltaBarE = deltaBarS + 1.0;
+
+            foreach (var anchor in anchorPoints)
+            {
+                // 如果当前正好包含趋势的第一根 K 线的起点，在微观图上也绘制圆点锚点
+                if (Math.Abs(deltaBarS) < 1e-4)
+                {
+                    var mAnchor = plot.Add.Marker(xS, anchor.price);
+                    mAnchor.Shape = MarkerShape.FilledCircle;
+                    mAnchor.Size = isSelected ? 6 : 4;
+                    mAnchor.Color = isBull ? Color.FromHex("#10b981") : Color.FromHex("#ef4444");
+                }
+
+                foreach (var deg in angles)
+                {
+                    double rad = deg * Math.PI / 180.0;
+                    double slopeDeg = Math.Tan(rad) * slope45;
+                    bool is45 = Math.Abs(deg - 45.0) < 0.01;
+
+                    double yS = isBull
+                        ? anchor.price + slopeDeg * deltaBarS
+                        : anchor.price - slopeDeg * deltaBarS;
+
+                    double yE = isBull
+                        ? anchor.price + slopeDeg * deltaBarE
+                        : anchor.price - slopeDeg * deltaBarE;
+
+                    // 截断保护：如果已经完全小于等于 0 则跳过
+                    if (yS <= 0 && yE <= 0) continue;
+
+                    double actualXE = xE;
+                    double actualYE = yE;
+                    if (yS > 0 && yE < 0)
+                    {
+                        double frac = yS / (yS - yE);
+                        actualXE = xS + frac * (xE - xS);
+                        actualYE = 0;
+                    }
+
+                    if (actualXE <= xS) continue;
+
+                    Color rayColor;
+                    if (isBull)
+                    {
+                        rayColor = is45
+                            ? Color.FromHex("#10b981") // 45° 翡翠绿
+                            : (deg < 45.0 ? Color.FromHex("#34d399") : Color.FromHex("#a3e635"));
+                    }
+                    else
+                    {
+                        rayColor = is45
+                            ? Color.FromHex("#ef4444") // 45° 烈火红
+                            : (deg < 45.0 ? Color.FromHex("#fb923c") : Color.FromHex("#f43f5e"));
+                    }
+
+                    if (isSelected)
+                    {
+                        rayColor = is45 ? Color.FromHex("#fbbf24") : rayColor;
+                    }
+
+                    byte rayAlpha = isSelected ? (byte)230 : (byte)160;
+                    var pattern = is45 ? LinePattern.Solid : (deg < 45.0 ? LinePattern.Dashed : LinePattern.Dotted);
+                    float lineWidth = is45 ? (isSelected ? 1.8f : 1.3f) : (isSelected ? 1.4f : 1.0f);
+
+                    var angleLine = plot.Add.Line(xS, yS, actualXE, actualYE);
+                    angleLine.Color = rayColor.WithAlpha(rayAlpha);
+                    angleLine.LineWidth = lineWidth;
+                    angleLine.LinePattern = pattern;
+
+                    // 绘制末端角度标注
+                    string signStr = isBull ? "+" : "-";
+                    string endLabel = $"{anchor.label} {signStr}{deg:0.##}°";
+                    var txtAngle = plot.Add.Text(endLabel, actualXE, actualYE);
+                    txtAngle.LabelFontName = chineseFont;
+                    txtAngle.LabelFontSize = 7.5f;
+                    txtAngle.LabelBold = is45;
+                    txtAngle.LabelFontColor = rayColor;
+                    txtAngle.LabelAlignment = isBull ? Alignment.LowerLeft : Alignment.UpperLeft;
+                    txtAngle.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.85);
+                }
+            }
         }
     }
 

@@ -30,6 +30,9 @@ namespace Test.PeriodTickPlayback.WinForms.Models
         public int MaxHighIndex { get; set; }
         public int MinLowIndex { get; set; }
         public bool IsActive { get; set; }
+        public decimal FirstBarHigh { get; set; }
+        public decimal FirstBarLow { get; set; }
+        public double MacroSlope45 { get; set; }
 
         #region 平行通道几何属性
         public decimal SlopeK { get; set; }
@@ -273,6 +276,8 @@ namespace Test.PeriodTickPlayback.WinForms.Models
                         MaxHighIndex = maxHIdx,
                         MinLowIndex = minLIdx,
                         IsActive = streakEnd == n - 1,
+                        FirstBarHigh = bars[streakStart].High,
+                        FirstBarLow = bars[streakStart].Low,
                         SlopeK = slopeK,
                         UpperIntercept = upperB,
                         LowerIntercept = lowerB,

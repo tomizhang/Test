@@ -14,6 +14,11 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
     /// </summary>
     public static class MacroPlotHelper
     {
+        /// <summary>
+        /// 最近一次在宏观图表上计算得到的 45° 基准斜率 (单位价格/每根K线跨度)，供微观 Tick 窗口与命中检测跨图表同频复用
+        /// </summary>
+        public static double LastSlope45 { get; set; } = 0;
+
         private static readonly string[] PreferredChineseFonts = { "Microsoft YaHei", "PingFang SC", "SimHei", "Noto Sans CJK SC", "WenQuanYi Micro Hei" };
 
         public static string GetInstalledChineseFont()
@@ -61,7 +66,11 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             decimal consecutiveMinPct = 2.5m,
             int? selectedStartIndex = null,
             int? selectedEndIndex = null,
-            int channelExtensionBars = 15)
+            int channelExtensionBars = 15,
+            bool showAngleLines = true,
+            IReadOnlyList<double>? customAngles = null,
+            double canvasWidth = 1200,
+            double canvasHeight = 450)
         {
             if (plot == null) return;
 
@@ -233,8 +242,61 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 plot.Axes.SetLimitsY(0, volLimitY, plot.Axes.Right);
             }
 
-            // 4.5 绘制连续上涨 / 连续下跌波段标记 (满足门槛：连续 N 根及以上且累计幅度 >= X%)
-            if (showConsecutiveTrend && totalDisplayCount >= consecutiveMinBars)
+            // 预先计算当前视口 X/Y 轴范围与比例，供通道与多角度趋势线计算
+            int windowBars = 60; // 默认可视 60 根大周期 K 线
+            double rightMargin = showConsecutiveTrend ? Math.Max(8.0, channelExtensionBars * 0.7) : 2.5;
+            double xMax = totalDisplayCount + rightMargin;
+            double xMin = Math.Max(-0.5, totalDisplayCount - windowBars);
+            int startVisibleBar = (int)Math.Max(0, Math.Floor(xMin));
+            decimal winMinPrice = decimal.MaxValue;
+            decimal winMaxPrice = decimal.MinValue;
+            double winMaxVolume = 0;
+
+            for (int i = startVisibleBar; i < totalDisplayCount; i++)
+            {
+                if (i < completedCount && completedBars != null)
+                {
+                    var b = completedBars[i];
+                    if (b.Low < winMinPrice) winMinPrice = b.Low;
+                    if (b.High > winMaxPrice) winMaxPrice = b.High;
+                    if ((double)b.Volume > winMaxVolume) winMaxVolume = (double)b.Volume;
+                }
+                else if (hasForming)
+                {
+                    if (formingBar!.Low < winMinPrice) winMinPrice = formingBar.Low;
+                    if (formingBar.High > winMaxPrice) winMaxPrice = formingBar.High;
+                    if ((double)formingBar.Volume > winMaxVolume) winMaxVolume = (double)formingBar.Volume;
+                }
+            }
+
+            // 计算当前屏幕视口几何斜率基准 (确保 45° 在屏幕上呈现真实几何 45 度角)
+            double visibleSpanX = 60;
+            double visibleSpanY = 1.0;
+            if (autoFollow)
+            {
+                visibleSpanX = xMax - xMin;
+                if (winMinPrice <= winMaxPrice && winMinPrice > 0)
+                {
+                    visibleSpanY = (double)(winMaxPrice - winMinPrice) * 1.24;
+                }
+            }
+            else if (oldLimits.Right > oldLimits.Left && oldLimits.Top > oldLimits.Bottom)
+            {
+                visibleSpanX = oldLimits.Right - oldLimits.Left;
+                visibleSpanY = oldLimits.Top - oldLimits.Bottom;
+            }
+            if (visibleSpanX <= 0) visibleSpanX = 60;
+            if (visibleSpanY <= 0) visibleSpanY = (double)(winMaxPrice > 0 ? winMaxPrice * 0.05m : 1.0m);
+
+            double pixelAspect = (canvasWidth > 0 && canvasHeight > 0) ? (canvasWidth / canvasHeight) : 2.5;
+            if (pixelAspect <= 0.1 || pixelAspect > 10.0) pixelAspect = 2.5;
+
+            double slope45 = (visibleSpanY / visibleSpanX) * pixelAspect;
+            if (slope45 <= 0) slope45 = (double)(winMaxPrice > 0 ? winMaxPrice * 0.005m : 0.01m);
+            LastSlope45 = slope45;
+
+            // 4.5 绘制连续上涨 / 连续下跌波段标记与多角度趋势线 (满足门槛：连续 N 根及以上且累计幅度 >= X%)
+            if ((showConsecutiveTrend || showAngleLines) && totalDisplayCount >= consecutiveMinBars)
             {
                 var trends = MacroConsecutiveTrendDetector.ScanTrends(
                     completedBars,
@@ -245,6 +307,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 for (int tIdx = 0; tIdx < trends.Count; tIdx++)
                 {
                     var tr = trends[tIdx];
+                    tr.MacroSlope45 = slope45;
                     int sIdx = tr.StartIndex;
                     int eIdx = tr.EndIndex;
                     if (sIdx < 0 || eIdx >= totalDisplayCount || sIdx > eIdx) continue;
@@ -259,8 +322,16 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                     float channelLineWidth = isChannelSelected ? 2.0f : 1.2f;
                     byte channelFillAlpha = isChannelSelected ? (byte)52 : (byte)28;
 
-                    // ① 确立点三角形标记 (▲ / ▼)
-                    int cIdx = tr.ConfirmedBarIndex;
+                    int forwardBars = Math.Max(5, channelExtensionBars);
+                    bool isLatestTrend = (tIdx == trends.Count - 1);
+                    int extEnd = isLatestTrend
+                        ? Math.Max(totalDisplayCount - 1, eIdx) + forwardBars
+                        : Math.Min(Math.Max(totalDisplayCount - 1, eIdx) + forwardBars, eIdx + Math.Max(20, forwardBars));
+
+                    if (showConsecutiveTrend)
+                    {
+                        // ① 确立点三角形标记 (▲ / ▼)
+                        int cIdx = tr.ConfirmedBarIndex;
                     if (cIdx >= sIdx && cIdx <= eIdx)
                     {
                         double confPrice = (double)(cIdx < completedCount
@@ -317,12 +388,6 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                         lineMid.LinePattern = LinePattern.Dashed;
 
                         // ⑤ 平行通道向右充分延长 (突破截止限制，向前延伸至最新柱后充足未来空间)
-                        int forwardBars = Math.Max(5, channelExtensionBars);
-                        bool isLatestTrend = (tIdx == trends.Count - 1);
-                        int extEnd = isLatestTrend
-                            ? Math.Max(totalDisplayCount - 1, eIdx) + forwardBars
-                            : Math.Min(Math.Max(totalDisplayCount - 1, eIdx) + forwardBars, eIdx + Math.Max(20, forwardBars));
-
                         if (extEnd > eIdx)
                         {
                             double yUpExt = (double)(slopeK * extEnd + upperB);
@@ -414,6 +479,106 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                     txtTag.LabelBackgroundColor = Color.FromHex("#0f172a").WithAlpha(0.92);
                     txtTag.LabelBorderColor = isChannelSelected ? Color.FromHex("#fbbf24") : themeColor;
                     txtTag.LabelBorderWidth = isChannelSelected ? 2f : 1f;
+                    } // end of if (showConsecutiveTrend)
+
+                    // ⑧ 基于第一根 K 线高低双点位的多角度趋势线 (延长趋势线，可独立显示)
+                    if (showAngleLines && slope45 > 0)
+                    {
+                        decimal firstHigh = tr.FirstBarHigh > 0 ? tr.FirstBarHigh : (sIdx < completedCount && completedBars != null ? completedBars[sIdx].High : (formingBar?.High ?? tr.StartPrice));
+                        decimal firstLow = tr.FirstBarLow > 0 ? tr.FirstBarLow : (sIdx < completedCount && completedBars != null ? completedBars[sIdx].Low : (formingBar?.Low ?? tr.StartPrice));
+                        double yHigh = (double)firstHigh;
+                        double yLow = (double)firstLow;
+                        double xStart = sIdx;
+                        double xEnd = extEnd;
+                        double dx = xEnd - xStart;
+
+                        if (dx > 0)
+                        {
+                            var angles = (customAngles != null && customAngles.Count > 0) ? customAngles : new double[] { 25.0, 45.0, 65.0 };
+                            var angleConfigs = new List<(double deg, double slope, LinePattern pattern, float width)>(angles.Count);
+                            foreach (var deg in angles)
+                            {
+                                double rad = deg * Math.PI / 180.0;
+                                double slope = Math.Tan(rad) * slope45;
+                                bool is45 = Math.Abs(deg - 45.0) < 0.01;
+                                LinePattern pat = is45 ? LinePattern.Solid : (deg < 45.0 ? LinePattern.Dashed : LinePattern.Dotted);
+                                float w = is45 ? (isChannelSelected ? 1.8f : 1.3f) : (isChannelSelected ? 1.4f : 1.0f);
+                                angleConfigs.Add((deg, slope, pat, w));
+                            }
+
+                            // 高低双点位 (连续下跌：第一根为高点绘制，同理以第一根低点绘制；连续上涨：第一根为低点绘制，同理以第一根高点绘制)
+                            var anchorPoints = isBull
+                                ? new (string label, double price, bool isPrimary)[] { ("L", yLow, true), ("H", yHigh, false) }
+                                : new (string label, double price, bool isPrimary)[] { ("H", yHigh, true), ("L", yLow, false) };
+
+                            foreach (var anchor in anchorPoints)
+                            {
+                                // 绘制第一根 K 线锚点圆点标记
+                                var anchorMarker = plot.Add.Marker(xStart, anchor.price);
+                                anchorMarker.Shape = MarkerShape.FilledCircle;
+                                anchorMarker.Size = isChannelSelected ? 6 : 4;
+                                anchorMarker.Color = themeColor;
+
+                                foreach (var ac in angleConfigs)
+                                {
+                                    double targetY = isBull
+                                        ? anchor.price + ac.slope * dx
+                                        : anchor.price - ac.slope * dx;
+
+                                    // 底部保护截断 (防止价格跌破零)
+                                    double actualXEnd = xEnd;
+                                    if (targetY <= 0 && anchor.price > 0)
+                                    {
+                                        actualXEnd = xStart + (anchor.price / ac.slope);
+                                        targetY = 0;
+                                    }
+
+                                    if (actualXEnd <= xStart) continue;
+
+                                    Color rayColor;
+                                    bool is45 = Math.Abs(ac.deg - 45.0) < 0.01;
+                                    if (isBull)
+                                    {
+                                        rayColor = is45
+                                            ? Color.FromHex("#10b981") // 45° 翡翠绿基准
+                                            : (ac.deg < 45.0 ? Color.FromHex("#34d399") : Color.FromHex("#a3e635"));
+                                    }
+                                    else
+                                    {
+                                        rayColor = is45
+                                            ? Color.FromHex("#ef4444") // 45° 烈火红基准
+                                            : (ac.deg < 45.0 ? Color.FromHex("#fb923c") : Color.FromHex("#f43f5e"));
+                                    }
+
+                                    if (isChannelSelected)
+                                    {
+                                        rayColor = is45 ? Color.FromHex("#fbbf24") : rayColor;
+                                    }
+
+                                    byte rayAlpha = isChannelSelected ? (byte)230 : (isLatestTrend ? (byte)180 : (byte)100);
+
+                                    var angleRay = plot.Add.Line(xStart, anchor.price, actualXEnd, targetY);
+                                    angleRay.Color = rayColor.WithAlpha(rayAlpha);
+                                    angleRay.LineWidth = ac.width;
+                                    angleRay.LinePattern = ac.pattern;
+
+                                    // 射线末端角度标注 (为最新活跃波段或选中波段标注)
+                                    if (isLatestTrend || isChannelSelected)
+                                    {
+                                        string signStr = isBull ? "+" : "-";
+                                        string endLabel = $"{anchor.label} {signStr}{ac.deg:0.##}°";
+                                        var txtAngle = plot.Add.Text(endLabel, actualXEnd, targetY);
+                                        txtAngle.LabelFontName = chineseFont;
+                                        txtAngle.LabelFontSize = 7.5f;
+                                        txtAngle.LabelBold = is45;
+                                        txtAngle.LabelFontColor = rayColor;
+                                        txtAngle.LabelAlignment = isBull ? Alignment.LowerLeft : Alignment.UpperLeft;
+                                        txtAngle.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.85);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -510,37 +675,9 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             // 6. 坐标轴范围与自适应视口
             if (totalDisplayCount > 0)
             {
-                int windowBars = 60; // 默认可视 60 根大周期 K 线
-                double rightMargin = showConsecutiveTrend ? Math.Max(8.0, channelExtensionBars * 0.7) : 2.5;
-                double xMax = totalDisplayCount + rightMargin;
-                double xMin = Math.Max(-0.5, totalDisplayCount - windowBars);
-
                 if (autoFollow)
                 {
-                    // 🌟 核心修复：自动跟随模式下，Y 轴范围必须基于【当前窗口内实际可视的 K 线】，
-                    // 彻底解决全局历史远古极值过大导致当前最新蜡烛被压缩成细线、看起来像跟随失效的问题！
-                    int startVisibleBar = (int)Math.Max(0, Math.Floor(xMin));
-                    decimal winMinPrice = decimal.MaxValue;
-                    decimal winMaxPrice = decimal.MinValue;
-                    double winMaxVolume = 0;
-
-                    for (int i = startVisibleBar; i < totalDisplayCount; i++)
-                    {
-                        if (i < completedCount && completedBars != null)
-                        {
-                            var b = completedBars[i];
-                            if (b.Low < winMinPrice) winMinPrice = b.Low;
-                            if (b.High > winMaxPrice) winMaxPrice = b.High;
-                            if ((double)b.Volume > winMaxVolume) winMaxVolume = (double)b.Volume;
-                        }
-                        else if (hasForming)
-                        {
-                            if (formingBar!.Low < winMinPrice) winMinPrice = formingBar.Low;
-                            if (formingBar.High > winMaxPrice) winMaxPrice = formingBar.High;
-                            if ((double)formingBar.Volume > winMaxVolume) winMaxVolume = (double)formingBar.Volume;
-                        }
-                    }
-
+                    // 🌟 自动跟随模式：Y 轴范围基于当前窗口内实际可视的 K 线
                     if (winMinPrice <= winMaxPrice && winMinPrice > 0)
                     {
                         double padY = (double)(winMaxPrice - winMinPrice) * 0.12;
@@ -681,6 +818,11 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                     minDistance = currentMinDist;
                     bestHit = tr;
                 }
+            }
+
+            if (bestHit != null && bestHit.MacroSlope45 <= 0 && LastSlope45 > 0)
+            {
+                bestHit.MacroSlope45 = LastSlope45;
             }
 
             return bestHit;

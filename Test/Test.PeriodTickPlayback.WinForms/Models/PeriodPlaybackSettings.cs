@@ -41,7 +41,35 @@ namespace Test.PeriodTickPlayback.WinForms.Models
         public int TickCustomMinutes { get; set; } = 5; // 自定义分钟数 (默认 5 分钟)
         public int TickChartTypeIndex { get; set; } = 0; // 微观图表类型: 0: 蜡烛图(K线), 1: 折线图
         public bool ShowTickConsecutiveTrend { get; set; } = true; // 微观 Tick 窗口大通道投影开关 (默认开启，微观小通道已移除)
+        public bool ShowMacroAngleLines { get; set; } = true; // 大周期 K 线多角度趋势线开关 (默认开启)
+        public bool ShowTickAngleLines { get; set; } = true; // 微观 Tick 窗口多角度趋势线开关 (默认开启)
+        public string CustomAngles { get; set; } = "25, 45, 65"; // 自定义趋势线角度列表 (逗号/分号/空格隔开)
+        public bool ShowAngleLines { get => ShowMacroAngleLines; set => ShowMacroAngleLines = value; } // 向后兼容别名
         public bool VerboseLog { get; set; } = false; // 详细定型日志开关 (默认关闭，避免高频刷屏)
+
+        /// <summary>
+        /// 解析用户自定义角度字符串为升序去重的正浮点度数列表 (0 < deg < 90)
+        /// </summary>
+        public static double[] ParseAngles(string? input)
+        {
+            if (string.IsNullOrWhiteSpace(input)) return new double[] { 25.0, 45.0, 65.0 };
+            var parts = input.Split(new[] { ',', ';', ' ', '，', '；', '、', '|' }, StringSplitOptions.RemoveEmptyEntries);
+            var list = new System.Collections.Generic.List<double>();
+            foreach (var p in parts)
+            {
+                string clean = p.Replace("°", "").Trim();
+                if (double.TryParse(clean, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double deg) ||
+                    double.TryParse(clean, out deg))
+                {
+                    if (deg > 0.05 && deg < 89.95)
+                    {
+                        list.Add(Math.Round(deg, 2));
+                    }
+                }
+            }
+            if (list.Count == 0) return new double[] { 25.0, 45.0, 65.0 };
+            return System.Linq.Enumerable.ToArray(System.Linq.Enumerable.OrderBy(System.Linq.Enumerable.Distinct(list), a => a));
+        }
 
         /// <summary>
         /// 获取 AppData 主配置文件路径 (永久存储，防止 dotnet clean / rebuild 清空 bin 目录导致配置丢失)

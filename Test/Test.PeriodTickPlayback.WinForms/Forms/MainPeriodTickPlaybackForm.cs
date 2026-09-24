@@ -74,6 +74,9 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
         private Button btnToggleChartType = null!;
         private Label lblBatchBadge = null!;
         private CheckBox chkConsecutiveTrend = null!;
+        private CheckBox chkAngleLines = null!;
+        private Label lblCustomAngles = null!;
+        private TextBox txtCustomAngles = null!;
         private NumericUpDown numConsecutiveBars = null!;
         private NumericUpDown numConsecutivePct = null!;
 
@@ -109,6 +112,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
         private Button btnToggleTickChartType = null!;
         private CheckBox chkShowTickRatio = null!;
         private CheckBox chkTickConsecutiveTrend = null!;
+        private CheckBox chkTickAngleLines = null!;
 
         // K线点击与Shift多选状态
         private int? _selectedBarAnchor = null;
@@ -439,6 +443,48 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             var lblProgBucket = CreateLabel("周期进度:", 532, 66);
             prgBucket = new ProgressBar { Location = new Point(594, 66), Width = 160, Height = 14 };
 
+            chkAngleLines = new CheckBox
+            {
+                Text = "K线角度线",
+                Location = new Point(764, 64),
+                AutoSize = true,
+                Checked = _settings.ShowMacroAngleLines,
+                ForeColor = Color.FromArgb(168, 85, 247), // 科技紫
+                Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold),
+                Cursor = Cursors.Hand
+            };
+            _toolTip.SetToolTip(chkAngleLines, "开启/隐藏连续涨跌第一根 K 线高低双点位发射的多角度趋势线 (大周期K线)");
+            chkAngleLines.CheckedChanged += (s, e) =>
+            {
+                _settings.ShowMacroAngleLines = chkAngleLines.Checked;
+                _macroPlotNeedsRefresh = true;
+                formsPlotMacro.Refresh();
+                SaveSettingsFromUi();
+            };
+
+            lblCustomAngles = CreateLabel("角度:", 860, 66);
+            lblCustomAngles.ForeColor = Color.FromArgb(203, 213, 225);
+
+            txtCustomAngles = new TextBox
+            {
+                Location = new Point(898, 63),
+                Width = 86,
+                Text = _settings.CustomAngles,
+                Font = new Font("Consolas", 8.5F, FontStyle.Bold),
+                BackColor = Color.FromArgb(15, 23, 42),
+                ForeColor = Color.FromArgb(56, 189, 248),
+                BorderStyle = BorderStyle.FixedSingle
+            };
+            _toolTip.SetToolTip(txtCustomAngles, "自定义趋势线角度（度数，逗号或空格隔开，如: 25, 45, 65 或 15, 30, 45, 60）");
+            txtCustomAngles.TextChanged += (s, e) =>
+            {
+                _settings.CustomAngles = txtCustomAngles.Text;
+                _macroPlotNeedsRefresh = true;
+                _tickPlotNeedsRefresh = true;
+                SaveSettingsFromUi();
+                RefreshTickPlotDirectly();
+            };
+
             pnlTop.Controls.AddRange(new Control[]
             {
                 lblCoin, cboCoin,
@@ -452,7 +498,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 chkAutoFollow, chkShowVolume,
                 lblChartType, cboChartType,
                 chkConsecutiveTrend, lblConsecutiveBars, numConsecutiveBars, lblConsecutivePct, numConsecutivePct,
-                lblProgOverall, prgOverall, lblProgBucket, prgBucket
+                lblProgOverall, prgOverall, lblProgBucket, prgBucket,
+                chkAngleLines, lblCustomAngles, txtCustomAngles
             });
 
             // 2. 主分割容器 (上下切分：上部大周期 K 线，下部 Tick 图表 + 右侧监控看板)
@@ -764,6 +811,24 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 RepositionTickHeaderControls();
             };
 
+            chkTickAngleLines = new CheckBox
+            {
+                Text = "角度线",
+                Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(168, 85, 247), // 科技紫
+                AutoSize = true,
+                Checked = _settings.ShowTickAngleLines,
+                Cursor = Cursors.Hand
+            };
+            _toolTip.SetToolTip(chkTickAngleLines, "在微观 Tick 视窗内同频投影大周期高低多角度趋势线 (独立控制)");
+            chkTickAngleLines.CheckedChanged += (s, e) =>
+            {
+                _settings.ShowTickAngleLines = chkTickAngleLines.Checked;
+                SaveSettingsFromUi();
+                RefreshTickPlotDirectly();
+                RepositionTickHeaderControls();
+            };
+
             chkShowTickRatio = new CheckBox
             {
                 Text = "显示比值",
@@ -787,6 +852,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             lblTickTitle.SizeChanged += (s, e) => RepositionTickHeaderControls();
             lblTickBadge.SizeChanged += (s, e) => RepositionTickHeaderControls();
             chkTickConsecutiveTrend.SizeChanged += (s, e) => RepositionTickHeaderControls();
+            chkTickAngleLines.SizeChanged += (s, e) => RepositionTickHeaderControls();
             chkShowTickRatio.SizeChanged += (s, e) => RepositionTickHeaderControls();
             lblTickRatioBadge.SizeChanged += (s, e) => RepositionTickHeaderControls();
             lblVolRatioBadge.SizeChanged += (s, e) => RepositionTickHeaderControls();
@@ -803,6 +869,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             tickControls.Add(numTickCustomMinutes);
             tickControls.Add(btnToggleTickChartType);
             tickControls.Add(chkTickConsecutiveTrend);
+            tickControls.Add(chkTickAngleLines);
             tickControls.Add(chkShowTickRatio);
             tickControls.Add(lblTickBadge);
             tickControls.Add(lblTickRatioBadge);
@@ -1451,6 +1518,12 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 row1LeftX = chkTickConsecutiveTrend.Right + 8;
             }
 
+            if (chkTickAngleLines != null)
+            {
+                chkTickAngleLines.Location = new Point(row1LeftX, 7);
+                row1LeftX = chkTickAngleLines.Right + 8;
+            }
+
             if (chkShowTickRatio != null)
             {
                 chkShowTickRatio.Location = new Point(row1LeftX, 7);
@@ -1560,7 +1633,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
 
             MacroConsecutiveTrendItem? liveMacroTrend = null;
             List<MacroConsecutiveTrendItem>? liveMacroChannels = null;
-            if (_settings.ShowTickConsecutiveTrend && _settings.ShowConsecutiveTrend)
+            if (_settings.ShowTickConsecutiveTrend || _settings.ShowTickAngleLines)
             {
                 var completedBars = _engine.GetCompletedMacroBarsSnapshot();
                 var formingBar = _engine.CurrentFormingBar;
@@ -1571,13 +1644,23 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                     _settings.ConsecutiveMinPct);
 
                 int curIdx = _engine.CurrentBucketIndex;
-                var matched = trends.Where(tr => tr.HasChannel && curIdx >= tr.StartIndex && curIdx <= tr.EndIndex).ToList();
+                int forwardBars = Math.Max(20, _settings.ChannelExtensionBars);
+                var matched = trends.Where(tr =>
+                {
+                    tr.MacroSlope45 = MacroPlotHelper.LastSlope45;
+                    if (!_settings.ShowTickAngleLines && !tr.HasChannel) return false;
+                    int extEnd = Math.Max(tr.EndIndex + forwardBars, _engine.TotalBuckets - 1);
+                    return curIdx >= tr.StartIndex && curIdx <= extEnd;
+                }).ToList();
+
                 if (matched.Count > 0)
                 {
                     liveMacroChannels = matched;
-                    liveMacroTrend = matched.FirstOrDefault();
+                    liveMacroTrend = matched.LastOrDefault(tr => curIdx >= tr.StartIndex && curIdx <= tr.EndIndex) ?? matched.Last();
                 }
             }
+
+            var parsedAngles = PeriodPlaybackSettings.ParseAngles(_settings.CustomAngles);
 
             TickPlotHelper.BuildTickPlot(
                 formsPlotTick.Plot,
@@ -1596,6 +1679,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 consecutiveMinBars: _settings.ConsecutiveMinBars,
                 consecutiveMinPct: _settings.ConsecutiveMinPct,
                 showRatio: _settings.ShowTickRatio,
+                showAngleLines: _settings.ShowTickAngleLines,
+                customAngles: parsedAngles,
                 selectedTrend: liveMacroTrend,
                 activeChannels: liveMacroChannels,
                 selectedBarStartIndex: _engine.CurrentBucketIndex,
@@ -1774,7 +1859,11 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                             consecutiveMinPct: numConsecutivePct.Value,
                             selectedStartIndex: _selectedBarStartIndex,
                             selectedEndIndex: _selectedBarEndIndex,
-                            channelExtensionBars: _settings.ChannelExtensionBars);
+                            channelExtensionBars: _settings.ChannelExtensionBars,
+                            showAngleLines: chkAngleLines.Checked,
+                            customAngles: PeriodPlaybackSettings.ParseAngles(_settings.CustomAngles),
+                            canvasWidth: formsPlotMacro.Width,
+                            canvasHeight: formsPlotMacro.Height);
 
                         formsPlotMacro.Refresh();
                     }
@@ -1941,7 +2030,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 var mouseCoord = formsPlotMacro.Plot.GetCoordinates(new ScottPlot.Pixel(e.X, e.Y));
 
                 // 1. 优先进行平行通道命中检测 (Hit-Test)
-                if (chkConsecutiveTrend.Checked && totalDisplayCount >= (int)numConsecutiveBars.Value)
+                if ((chkConsecutiveTrend.Checked || _settings.ShowMacroAngleLines) && totalDisplayCount >= (int)numConsecutiveBars.Value)
                 {
                     var completedBars = _engine.GetCompletedMacroBarsSnapshot();
                     var formingBar = _engine.CurrentFormingBar;
@@ -1961,6 +2050,10 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
 
                     if (hitChannel != null)
                     {
+                        if (hitChannel.MacroSlope45 <= 0 && MacroPlotHelper.LastSlope45 > 0)
+                        {
+                            hitChannel.MacroSlope45 = MacroPlotHelper.LastSlope45;
+                        }
                         _selectedConsecutiveTrend = hitChannel;
                         _selectedBarAnchor = hitChannel.StartIndex;
                         _selectedBarStartIndex = hitChannel.StartIndex;
@@ -2163,13 +2256,17 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             string periodLabel = GetSelectedTickPeriodTitle();
             var displayType = (MacroChartDisplayType)Math.Clamp(_settings.TickChartTypeIndex, 0, 1);
 
-            // 检测选中的 K 线集合中是否存在大周期平行通道
+            // 检测选中的 K 线集合中是否存在大周期平行通道或多角度趋势线
             var relevantChannels = new List<MacroConsecutiveTrendItem>();
             if (_selectedConsecutiveTrend != null)
             {
+                if (_selectedConsecutiveTrend.MacroSlope45 <= 0 && MacroPlotHelper.LastSlope45 > 0)
+                {
+                    _selectedConsecutiveTrend.MacroSlope45 = MacroPlotHelper.LastSlope45;
+                }
                 relevantChannels.Add(_selectedConsecutiveTrend);
             }
-            else if (_settings.ShowConsecutiveTrend)
+            else if (_settings.ShowConsecutiveTrend || _settings.ShowTickAngleLines || _settings.ShowTickConsecutiveTrend)
             {
                 var completedBars = _engine.GetCompletedMacroBarsSnapshot();
                 var formingBar = _engine.CurrentFormingBar;
@@ -2179,10 +2276,13 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                     _settings.ConsecutiveMinBars,
                     _settings.ConsecutiveMinPct);
 
+                int forwardBars = Math.Max(20, _settings.ChannelExtensionBars);
                 foreach (var tr in trends)
                 {
-                    if (!tr.HasChannel) continue;
-                    if (Math.Max(sIdx, tr.StartIndex) <= Math.Min(eIdx, tr.EndIndex))
+                    tr.MacroSlope45 = MacroPlotHelper.LastSlope45;
+                    if (!_settings.ShowTickAngleLines && !tr.HasChannel) continue;
+                    int extEnd = tr.EndIndex + forwardBars;
+                    if (Math.Max(sIdx, tr.StartIndex) <= Math.Min(eIdx, extEnd))
                     {
                         relevantChannels.Add(tr);
                     }
@@ -2190,7 +2290,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             }
 
             bool hasChannel = relevantChannels.Count > 0;
-            var primaryTrend = relevantChannels.FirstOrDefault();
+            var primaryTrend = relevantChannels.FirstOrDefault(tr => sIdx >= tr.StartIndex && sIdx <= tr.EndIndex) ?? relevantChannels.FirstOrDefault();
             bool isExactChannel = primaryTrend != null &&
                                   primaryTrend.StartIndex == sIdx &&
                                   primaryTrend.EndIndex == eIdx;
@@ -2308,8 +2408,10 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 consecutiveMinBars: _settings.ConsecutiveMinBars,
                 consecutiveMinPct: _settings.ConsecutiveMinPct,
                 showRatio: _settings.ShowTickRatio,
-                selectedTrend: _settings.ShowTickConsecutiveTrend ? primaryTrend : null,
-                activeChannels: _settings.ShowTickConsecutiveTrend ? relevantChannels : null,
+                showAngleLines: _settings.ShowTickAngleLines,
+                customAngles: PeriodPlaybackSettings.ParseAngles(_settings.CustomAngles),
+                selectedTrend: (_settings.ShowTickConsecutiveTrend || _settings.ShowTickAngleLines) ? primaryTrend : null,
+                activeChannels: (_settings.ShowTickConsecutiveTrend || _settings.ShowTickAngleLines) ? relevantChannels : null,
                 selectedBarStartIndex: sIdx,
                 selectedBarEndIndex: eIdx,
                 macroBarTimes: _engine.Buckets.Select(b => (b.StartTime, b.EndTime)).ToList(),
@@ -2387,6 +2489,12 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             if (tr.HasChannel)
             {
                 AppendLog($"   📏 拟合: 基准{tr.ChannelBaseBars}根 | 斜率 k={tr.SlopeK:+0.000000;-0.000000;0.000000} | 通道高 {channelH:F2} USDT (约 {channelHPct:F2}%)", Color.FromArgb(168, 85, 247));
+            }
+
+            if (_settings.ShowAngleLines)
+            {
+                string signStr = tr.IsBullish ? "+" : "-";
+                AppendLog($"   📐 趋势线: 第一根 #{tr.StartIndex} 高低双锚点 | 射线角度: {signStr}25°, {signStr}45°, {signStr}65°", Color.FromArgb(168, 85, 247));
             }
 
             if (tickStats.HasValue)
@@ -2563,6 +2671,9 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
 
                 // 7. 连续涨跌形态标记参数
                 chkConsecutiveTrend.Checked = _settings.ShowConsecutiveTrend;
+                if (chkAngleLines != null) chkAngleLines.Checked = _settings.ShowMacroAngleLines;
+                if (chkTickAngleLines != null) chkTickAngleLines.Checked = _settings.ShowTickAngleLines;
+                if (txtCustomAngles != null) txtCustomAngles.Text = _settings.CustomAngles;
                 numConsecutiveBars.Value = Math.Clamp(_settings.ConsecutiveMinBars, 2, 50);
                 numConsecutivePct.Value = Math.Clamp(_settings.ConsecutiveMinPct, 0.1m, 50.0m);
 
@@ -2658,6 +2769,9 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
 
             // 连续涨跌形态标记参数
             _settings.ShowConsecutiveTrend = chkConsecutiveTrend.Checked;
+            if (chkAngleLines != null) _settings.ShowMacroAngleLines = chkAngleLines.Checked;
+            if (chkTickAngleLines != null) _settings.ShowTickAngleLines = chkTickAngleLines.Checked;
+            if (txtCustomAngles != null && !string.IsNullOrWhiteSpace(txtCustomAngles.Text)) _settings.CustomAngles = txtCustomAngles.Text.Trim();
             _settings.ConsecutiveMinBars = (int)numConsecutiveBars.Value;
             _settings.ConsecutiveMinPct = numConsecutivePct.Value;
 
