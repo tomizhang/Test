@@ -15,6 +15,7 @@ namespace Test.PeriodTickPlayback.WinForms.Models
         public int MacroPeriodMinutes { get; set; } = 30; // 默认 30 分钟
         public int PeriodIndex { get; set; } = 0; // 对应 cboPeriod.SelectedIndex
         public int CustomMinutes { get; set; } = 30; // 对应 numCustomMinutes.Value
+        public int CustomSeconds { get; set; } = 5; // 对应 numCustomSeconds.Value
         public int SpeedIndex { get; set; } = 2; // 默认 10x
         public bool AutoFollow { get; set; } = false; // 默认不勾选自动跟随
         public bool ShowVolume { get; set; } = true;
@@ -40,7 +41,10 @@ namespace Test.PeriodTickPlayback.WinForms.Models
         public int TickCustomSeconds { get; set; } = 5; // 自定义秒数 (默认 5 秒)
         public int TickCustomMinutes { get; set; } = 5; // 自定义分钟数 (默认 5 分钟)
         public int TickChartTypeIndex { get; set; } = 0; // 微观图表类型: 0: 蜡烛图(K线), 1: 折线图
-        public bool ShowTickConsecutiveTrend { get; set; } = true; // 微观 Tick 窗口大通道投影开关 (默认开启，微观小通道已移除)
+        public bool ShowTickConsecutiveTrend { get; set; } = true; // 微观 Tick 窗口大通道投影开关 (默认开启)
+        public bool ShowTickChannel { get; set; } = true; // 微观 Tick 窗口自身通道开关 (默认开启)
+        public int TickConsecutiveMinBars { get; set; } = 5; // 微观通道最少连续根数 (默认 5 根)
+        public decimal TickConsecutiveMinPct { get; set; } = 0.8m; // 微观通道最低累计涨跌幅度百分比 (默认 0.8%)
         public bool ShowMacroAngleLines { get; set; } = true; // 大周期 K 线多角度趋势线开关 (默认开启)
         public bool ShowTickAngleLines { get; set; } = true; // 微观 Tick 窗口多角度趋势线开关 (默认开启)
         public string CustomAngles { get; set; } = "25, 45, 65"; // 自定义趋势线角度列表 (逗号/分号/空格隔开)

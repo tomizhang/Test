@@ -82,7 +82,8 @@ namespace Test.PeriodTickPlayback.WinForms.Engine
                 return buckets;
             }
 
-            onProgress?.Invoke($"[分桶切片] 共读取 {allTicks.Count:N0} 笔 Tick，正在按照 {periodSpan.TotalMinutes} 分钟周期对齐切片...", 80);
+            string spanDesc = periodSpan.TotalMinutes >= 1 ? $"{periodSpan.TotalMinutes:0.##} 分钟" : $"{periodSpan.TotalSeconds:0.##} 秒";
+            onProgress?.Invoke($"[分桶切片] 共读取 {allTicks.Count:N0} 笔 Tick，正在按照 {spanDesc} 周期对齐切片...", 80);
 
             // 3. 严格按时间对齐进行宏观周期桶切分
             buckets = SliceTicksIntoBuckets(allTicks, periodSpan);

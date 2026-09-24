@@ -71,16 +71,25 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             int? selectedBarStartIndex = null,
             int? selectedBarEndIndex = null,
             IReadOnlyList<(DateTime StartTime, DateTime EndTime)>? macroBarTimes = null,
-            TickHoverIndicator? hoverIndicator = null)
+            TickHoverIndicator? hoverIndicator = null,
+            bool showTickChannel = true,
+            int tickConsecutiveMinBars = 5,
+            decimal tickConsecutiveMinPct = 0.8m)
         {
             if (plot == null) return;
 
             // 若指定了子周期，或者选择以蜡烛图 (K线) 查看，则执行全量子周期 K 线图表构建
             if (subPeriodSpan.HasValue || displayType == MacroChartDisplayType.Candlestick)
             {
-                TimeSpan effectiveSpan = subPeriodSpan ?? (bucketEnd - bucketStart > TimeSpan.FromHours(2)
-                    ? TimeSpan.FromMinutes(5)
-                    : TimeSpan.FromMinutes(1));
+                TimeSpan totalBucketSpan = bucketEnd > bucketStart ? (bucketEnd - bucketStart) : TimeSpan.FromSeconds(5);
+                TimeSpan defaultSpan;
+                if (totalBucketSpan > TimeSpan.FromHours(2)) defaultSpan = TimeSpan.FromMinutes(5);
+                else if (totalBucketSpan > TimeSpan.FromMinutes(30)) defaultSpan = TimeSpan.FromMinutes(1);
+                else if (totalBucketSpan > TimeSpan.FromMinutes(5)) defaultSpan = TimeSpan.FromSeconds(15);
+                else if (totalBucketSpan > TimeSpan.FromMinutes(1)) defaultSpan = TimeSpan.FromSeconds(5);
+                else defaultSpan = TimeSpan.FromSeconds(1);
+
+                TimeSpan effectiveSpan = subPeriodSpan ?? defaultSpan;
 
                 BuildSubPeriodKlinesPlot(
                     plot,
@@ -106,7 +115,10 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                     selectedBarStartIndex: selectedBarStartIndex,
                     selectedBarEndIndex: selectedBarEndIndex,
                     macroBarTimes: macroBarTimes,
-                    hoverIndicator: hoverIndicator);
+                    hoverIndicator: hoverIndicator,
+                    showTickChannel: showTickChannel,
+                    tickConsecutiveMinBars: tickConsecutiveMinBars,
+                    tickConsecutiveMinPct: tickConsecutiveMinPct);
                 return;
             }
 
@@ -396,6 +408,57 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 }
             }
 
+            // 1.9 若开启微观 Tick 图表自身通道，扫描独立微观通道 (拥有专属独立通道参数)
+            var tickMicroProjections = new List<(MacroConsecutiveTrendItem tr, double xS, double xE, double yUpS, double yUpE, double yLowS, double yLowE)>();
+            if (showTickChannel && renderCount >= tickConsecutiveMinBars * 8)
+            {
+                int numBuckets = Math.Clamp(renderCount / 25, 10, 60);
+                double ticksPerBucket = (double)renderCount / numBuckets;
+                var microBars = new List<MacroConsecutiveTrendDetector.BarSnapshot>(numBuckets);
+                for (int b = 0; b < numBuckets; b++)
+                {
+                    int startT = (int)Math.Round(b * ticksPerBucket);
+                    int endT = Math.Min(renderCount - 1, (int)Math.Round((b + 1) * ticksPerBucket) - 1);
+                    if (startT > endT) startT = endT;
+                    decimal o = ticks![startT].Price;
+                    decimal c = ticks![endT].Price;
+                    decimal h = decimal.MinValue;
+                    decimal l = decimal.MaxValue;
+                    for (int k = startT; k <= endT; k++)
+                    {
+                        var t = ticks![k];
+                        if (t.Price > h) h = t.Price;
+                        if (t.Price < l) l = t.Price;
+                    }
+                    microBars.Add(new MacroConsecutiveTrendDetector.BarSnapshot(b, o, h, l, c));
+                }
+
+                var detectedTrends = MacroConsecutiveTrendDetector.ScanTrends(
+                    microBars,
+                    tickConsecutiveMinBars,
+                    tickConsecutiveMinPct);
+
+                foreach (var tr in detectedTrends)
+                {
+                    if (!tr.HasChannel) continue;
+                    int bStart = tr.StartIndex;
+                    int bEnd = tr.EndIndex;
+                    double xS = bStart * ticksPerBucket;
+                    double xE = Math.Min(renderCount - 1, (bEnd + 1) * ticksPerBucket - 1);
+                    if (xE <= xS) continue;
+
+                    double yUpS = (double)(tr.SlopeK * bStart + tr.UpperIntercept);
+                    double yUpE = (double)(tr.SlopeK * (bEnd + 1) + tr.UpperIntercept);
+                    double yLowS = (double)(tr.SlopeK * bStart + tr.LowerIntercept);
+                    double yLowE = (double)(tr.SlopeK * (bEnd + 1) + tr.LowerIntercept);
+
+                    effMinVal = Math.Min(effMinVal, Math.Min(yLowS, yLowE));
+                    effMaxVal = Math.Max(effMaxVal, Math.Max(yUpS, yUpE));
+
+                    tickMicroProjections.Add((tr, xS, xE, yUpS, yUpE, yLowS, yLowE));
+                }
+            }
+
             // 计算价格坐标轴的上下边界及归一化视觉位置 (供比值曲线智能“凑近对齐”)
             double priceSpan = effMaxVal - effMinVal;
             double padY = priceSpan * 0.15;
@@ -418,6 +481,15 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             scatter.Color = mainThemeColor;
             scatter.LineWidth = 1.4f;
             scatter.MarkerSize = 0; // 高频不画圆点以保帧率
+
+            // 2.4 若开启微观 Tick 图表自身通道，在折线走势图上绘制微观通道 (拥有专属独立通道参数)
+            if (tickMicroProjections.Count > 0)
+            {
+                foreach (var proj in tickMicroProjections)
+                {
+                    DrawChannelRailsSegment(plot, proj.tr, proj.xS, proj.xE, proj.yUpS, proj.yUpE, proj.yLowS, proj.yLowE, chineseFont, "#10b981");
+                }
+            }
 
             // 2.5 若存在相关的大周期平行通道，在微观 Tick 图上同频投影通道导轨与微光多边形
             if (channelProjections.Count > 0 && renderCount >= 1)
@@ -612,6 +684,10 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             {
                 AddMultiChannelInformationAnnotation(plot, effectiveChannels, chineseFont);
             }
+            else if (tickMicroProjections.Count > 0)
+            {
+                AddMicroChannelAnnotation(plot, tickMicroProjections.Select(p => p.tr).ToList(), chineseFont);
+            }
 
             // 5.5 若存在多根 K 线的周期分界点，绘制分界垂线
             if (boundaryTickIndices != null && boundaryTickIndices.Count > 0)
@@ -631,7 +707,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             // 6. 坐标轴自适应 (左侧主价格坐标轴)
             if (minVal <= maxVal && minVal > 0)
             {
-                double xMax = Math.Max(totalAvailable, renderCount + (channelProjections.Count > 0 || angleProjections.Count > 0 ? 8 : 5));
+                double xMax = Math.Max(totalAvailable, renderCount + (channelProjections.Count > 0 || angleProjections.Count > 0 || tickMicroProjections.Count > 0 ? 8 : 5));
                 plot.Axes.SetLimits(-1, xMax, pLeftYMin, pLeftYMax);
             }
 
@@ -688,7 +764,10 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             int? selectedBarStartIndex = null,
             int? selectedBarEndIndex = null,
             IReadOnlyList<(DateTime StartTime, DateTime EndTime)>? macroBarTimes = null,
-            TickHoverIndicator? hoverIndicator = null)
+            TickHoverIndicator? hoverIndicator = null,
+            bool showTickChannel = true,
+            int tickConsecutiveMinBars = 5,
+            decimal tickConsecutiveMinPct = 0.8m)
         {
             if (plot == null) return;
 
@@ -745,6 +824,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
 
             int M = subBuckets.Count;
             var ohlcList = new List<OHLC>(M);
+            var microBars = new List<MacroConsecutiveTrendDetector.BarSnapshot>(M);
             double[] lineXs = new double[M];
             double[] lineYs = new double[M];
             double[] volumes = new double[M];
@@ -794,6 +874,8 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
 
                 lineXs[i] = i;
                 lineYs[i] = (double)c;
+
+                microBars.Add(new MacroConsecutiveTrendDetector.BarSnapshot(i, o, h, l, c));
             }
 
             // 绘制价格图元 (蜡烛图或折线图)
@@ -948,6 +1030,45 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 }
             }
 
+            // 微观 Tick 图表自身通道投影 (拥有专属独立通道设置)
+            var microChannelProjections = new List<(MacroConsecutiveTrendItem tr, double xS, double xE, double yUpS, double yUpE, double yLowS, double yLowE)>();
+            if (showTickChannel && M >= tickConsecutiveMinBars)
+            {
+                var microTrends = MacroConsecutiveTrendDetector.ScanTrends(
+                    microBars,
+                    tickConsecutiveMinBars,
+                    tickConsecutiveMinPct);
+
+                foreach (var tr in microTrends)
+                {
+                    if (!tr.HasChannel) continue;
+                    int bStart = tr.StartIndex;
+                    int bEnd = tr.EndIndex;
+                    double xS = bStart;
+                    double xE = Math.Min(M - 1, bEnd + 1);
+
+                    double yUpS = (double)(tr.SlopeK * bStart + tr.UpperIntercept);
+                    double yUpE = (double)(tr.SlopeK * (bEnd + 1) + tr.UpperIntercept);
+                    double yLowS = (double)(tr.SlopeK * bStart + tr.LowerIntercept);
+                    double yLowE = (double)(tr.SlopeK * (bEnd + 1) + tr.LowerIntercept);
+
+                    decimal chanMin = (decimal)Math.Min(yLowS, yLowE);
+                    decimal chanMax = (decimal)Math.Max(yUpS, yUpE);
+                    if (chanMin < minPrice) minPrice = chanMin;
+                    if (chanMax > maxPrice) maxPrice = chanMax;
+
+                    microChannelProjections.Add((tr, xS, xE, yUpS, yUpE, yLowS, yLowE));
+                }
+            }
+
+            if (microChannelProjections.Count > 0 && M >= 1)
+            {
+                foreach (var proj in microChannelProjections)
+                {
+                    DrawChannelRailsSegment(plot, proj.tr, proj.xS, proj.xE, proj.yUpS, proj.yUpE, proj.yLowS, proj.yLowE, chineseFont, "#10b981");
+                }
+            }
+
             if (channelProjections.Count > 0 && M >= 1)
             {
                 foreach (var proj in channelProjections)
@@ -1098,7 +1219,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
 
             // X 轴时间刻度标签与坐标范围 (若存在大通道投影或多角度趋势线，右侧预留适当空间供标签呼吸)
             plot.Axes.SetLimitsY((double)yMinPrice, (double)yMaxPrice);
-            plot.Axes.SetLimitsX(-0.8, M + (channelProjections.Count > 0 || angleProjections.Count > 0 ? 3.5 : -0.2));
+            plot.Axes.SetLimitsX(-0.8, M + (channelProjections.Count > 0 || angleProjections.Count > 0 || microChannelProjections.Count > 0 ? 3.5 : -0.2));
 
             var xPos = new List<double>();
             var xLabels = new List<string>();
@@ -1147,6 +1268,10 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             else if (effectiveChannels.Count > 1)
             {
                 AddMultiChannelInformationAnnotation(plot, effectiveChannels, chineseFont);
+            }
+            else if (microChannelProjections.Count > 0)
+            {
+                AddMicroChannelAnnotation(plot, microChannelProjections.Select(p => p.tr).ToList(), chineseFont);
             }
 
             string defaultTitle = string.IsNullOrEmpty(customTitle)
@@ -1228,6 +1353,28 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             channelBox.LabelBorderWidth = 1.2f;
         }
 
+        private static void AddMicroChannelAnnotation(
+            Plot plot,
+            IReadOnlyList<MacroConsecutiveTrendItem> microTrends,
+            string chineseFont)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"⭐【Tick微观通道详情 ({microTrends.Count}个)】");
+            for (int i = 0; i < microTrends.Count; i++)
+            {
+                var tr = microTrends[i];
+                string dirText = tr.IsBullish ? "▲ 微连涨" : "▼ 微连跌";
+                sb.AppendLine($"• 通道 {i + 1}: {dirText} #{tr.StartIndex}~#{tr.EndIndex} ({tr.BarCount}根, {tr.PriceChangePct:+0.00;-0.00;0.00}%) | k={tr.SlopeK:+0.0000;-0.0000} | 高度 {tr.ChannelHeight:F2}");
+            }
+            var channelBox = plot.Add.Annotation(sb.ToString().TrimEnd(), Alignment.UpperRight);
+            channelBox.LabelFontName = chineseFont;
+            channelBox.LabelFontSize = 8.5f;
+            channelBox.LabelFontColor = Color.FromHex("#34d399");
+            channelBox.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.92);
+            channelBox.LabelBorderColor = Color.FromHex("#10b981").WithAlpha(220);
+            channelBox.LabelBorderWidth = 1.2f;
+        }
+
         private static void DrawChannelRailsSegment(
             Plot plot,
             MacroConsecutiveTrendItem tr,
@@ -1237,7 +1384,8 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             double yUpEnd,
             double yLowStart,
             double yLowEnd,
-            string chineseFont)
+            string chineseFont,
+            string hexColor = "#fbbf24")
         {
             if (xEnd <= xStart)
             {
@@ -1247,8 +1395,9 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
 
             double yMidStart = (yUpStart + yLowStart) / 2.0;
             double yMidEnd = (yUpEnd + yLowEnd) / 2.0;
+            Color themeColor = Color.FromHex(hexColor);
 
-            // ① 通道微光多边形 (琥珀金透明度 22)
+            // ① 通道微光多边形
             var corridorCoords = new Coordinates[]
             {
                 new Coordinates(xStart, yUpStart),
@@ -1257,24 +1406,24 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 new Coordinates(xStart, yLowStart)
             };
             var corridorPoly = plot.Add.Polygon(corridorCoords);
-            corridorPoly.FillColor = Color.FromHex("#fbbf24").WithAlpha(22);
+            corridorPoly.FillColor = themeColor.WithAlpha(22);
             corridorPoly.LineWidth = 0;
 
             // ② 上轨实线
             var lineUp = plot.Add.Line(xStart, yUpStart, xEnd, yUpEnd);
-            lineUp.Color = Color.FromHex("#fbbf24");
+            lineUp.Color = themeColor;
             lineUp.LineWidth = 1.5f;
             lineUp.LinePattern = LinePattern.Solid;
 
             // ③ 下轨实线
             var lineLow = plot.Add.Line(xStart, yLowStart, xEnd, yLowEnd);
-            lineLow.Color = Color.FromHex("#fbbf24");
+            lineLow.Color = themeColor;
             lineLow.LineWidth = 1.5f;
             lineLow.LinePattern = LinePattern.Solid;
 
             // ④ 中轴中枢虚线
             var lineMid = plot.Add.Line(xStart, yMidStart, xEnd, yMidEnd);
-            lineMid.Color = Color.FromHex("#fbbf24").WithAlpha(170);
+            lineMid.Color = themeColor.WithAlpha(170);
             lineMid.LineWidth = 1.0f;
             lineMid.LinePattern = LinePattern.Dashed;
 
@@ -1282,14 +1431,14 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             var tUp = plot.Add.Text($"上轨: {yUpEnd:F2}", xEnd, yUpEnd);
             tUp.LabelFontName = chineseFont;
             tUp.LabelFontSize = 8.0f;
-            tUp.LabelFontColor = Color.FromHex("#fbbf24");
+            tUp.LabelFontColor = themeColor;
             tUp.LabelAlignment = Alignment.LowerRight;
             tUp.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.85);
 
             var tLow = plot.Add.Text($"下轨: {yLowEnd:F2}", xEnd, yLowEnd);
             tLow.LabelFontName = chineseFont;
             tLow.LabelFontSize = 8.0f;
-            tLow.LabelFontColor = Color.FromHex("#fbbf24");
+            tLow.LabelFontColor = themeColor;
             tLow.LabelAlignment = Alignment.UpperRight;
             tLow.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.85);
         }

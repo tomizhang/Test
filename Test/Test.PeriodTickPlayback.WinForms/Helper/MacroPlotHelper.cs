@@ -709,7 +709,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
 
             // 7. 纯净标题 (无任何额外 MA 等指标)
             string chartTypeName = displayType == MacroChartDisplayType.LineChart ? "收盘折线" : "K 线";
-            plot.Title($"{coin} {periodTitle} 大周期{chartTypeName}走势图 (已定型: {completedCount} 根)", size: 12);
+            plot.Title($"{coin} {periodTitle} {chartTypeName}走势图 (已定型: {completedCount} 根)", size: 12);
             plot.Axes.Title.Label.FontName = chineseFont;
             plot.Axes.Title.Label.ForeColor = Color.FromHex("#f1f5f9");
             plot.Axes.Left.Label.Text = "价格 (USDT)";
