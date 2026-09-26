@@ -143,6 +143,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
 
         // 微观 Tick 窗口 K线点击与Shift多选状态
         private Point _tickMouseDownPoint;
+        private bool _tickIsDragging = false;
+        private bool _tickAutoFollow = true;
         private int? _selectedMicroBarAnchor = null;
         private int? _selectedMicroBarStartIndex = null;
         private int? _selectedMicroBarEndIndex = null;
@@ -789,6 +791,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 _selectedMicroBarAnchor = null;
                 _selectedMicroBarStartIndex = null;
                 _selectedMicroBarEndIndex = null;
+                _tickAutoFollow = true;
+                UpdateLiveFollowButtonState(isLive: !_selectedBarStartIndex.HasValue);
                 if (tabDashboard != null) tabDashboard.Text = "实时仪表盘 & 逐笔流水";
                 UpdateTickChartTypeButtonState();
                 SaveSettingsFromUi();
@@ -876,6 +880,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 }
                 else
                 {
+                    _tickAutoFollow = true;
+                    UpdateLiveFollowButtonState(isLive: true);
                     RefreshTickPlotDirectly();
                 }
             };
@@ -1089,6 +1095,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             formsPlotTick.MouseUp += OnFormsPlotTickMouseUp;
             formsPlotTick.MouseMove += OnFormsPlotTickMouseMove;
             formsPlotTick.MouseLeave += OnFormsPlotTickMouseLeave;
+            formsPlotTick.MouseWheel += OnFormsPlotTickMouseWheel;
             formsPlotTick.MouseDoubleClick += (s, e) =>
             {
                 if (_selectedMicroBarStartIndex.HasValue || _selectedMicroBarEndIndex.HasValue)
@@ -1099,6 +1106,12 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 if (_selectedBarStartIndex.HasValue || _selectedBarEndIndex.HasValue || _selectedConsecutiveTrend != null)
                 {
                     ClearBarSelection();
+                }
+                else
+                {
+                    _tickAutoFollow = true;
+                    UpdateLiveFollowButtonState(isLive: true);
+                    RefreshTickPlotDirectly();
                 }
             };
             pnlBottomLeft.Controls.Add(formsPlotTick);
@@ -1636,6 +1649,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             _selectedMicroBarAnchor = null;
             _selectedMicroBarStartIndex = null;
             _selectedMicroBarEndIndex = null;
+            _tickAutoFollow = true;
+            UpdateLiveFollowButtonState(isLive: !_selectedBarStartIndex.HasValue);
             if (tabDashboard != null) tabDashboard.Text = "实时仪表盘 & 逐笔流水";
             UpdateTickPeriodButtonsUi();
             RepositionTickHeaderControls();
@@ -2088,7 +2103,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 int forwardBars = Math.Max(20, _settings.ChannelExtensionBars);
                 var matched = trends.Where(tr =>
                 {
-                    tr.MacroSlope45 = MacroPlotHelper.LastSlope45;
+                    if (tr.MacroSlope45 <= 0 && MacroPlotHelper.LastSlope45 > 0) tr.MacroSlope45 = MacroPlotHelper.LastSlope45;
                     if (!_settings.ShowTickAngleLines && !tr.HasChannel) return false;
                     return curIdx >= tr.StartIndex; // 🌟 且保留：所有历史通道持续在微观视窗中保留并前向投影
                 }).ToList();
@@ -2134,7 +2149,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 showRecentTrendLines: _settings.ShowTickRecentTrendLines && _hasConsecutiveTrendTriggered && (dynTrendLines?.HasLines ?? false),
                 recentTrendLineResult: dynTrendLines,
                 selectedMicroBarStartIndex: _selectedMicroBarStartIndex,
-                selectedMicroBarEndIndex: _selectedMicroBarEndIndex);
+                selectedMicroBarEndIndex: _selectedMicroBarEndIndex,
+                autoFollow: _tickAutoFollow);
 
             _currentMicroBuckets = TickPlotHelper.LastSubBuckets;
             formsPlotTick.Refresh();
@@ -2189,6 +2205,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
 
                 this.BeginInvoke(() =>
                 {
+                    _tickAutoFollow = true;
+                    UpdateLiveFollowButtonState(isLive: !_selectedBarStartIndex.HasValue);
                     if (!_selectedBarStartIndex.HasValue)
                     {
                         lblTickBadge.Text = $"周期 #{bucketIdx + 1}/{totalBuckets}: {FormatTimeSpanRange(bucket.StartTime, bucket.EndTime)} (共 {bucket.TickCount:N0} Ticks)";
@@ -2520,6 +2538,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                         _selectedBarStartIndex = hitChannel.StartIndex;
                         _selectedBarEndIndex = hitChannel.EndIndex;
 
+                        _tickAutoFollow = true;
                         DisplaySelectedBarsTicks();
                         _macroPlotNeedsRefresh = true;
                         return;
@@ -2555,6 +2574,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                         _selectedBarEndIndex = targetIndex;
                     }
 
+                    _tickAutoFollow = true;
                     DisplaySelectedBarsTicks();
                     _macroPlotNeedsRefresh = true;
                 }
@@ -2627,6 +2647,17 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
         {
             try
             {
+                if (_tickIsDragging && _tickAutoFollow)
+                {
+                    int dx = Math.Abs(e.Location.X - _tickMouseDownPoint.X);
+                    int dy = Math.Abs(e.Location.Y - _tickMouseDownPoint.Y);
+                    if (dx > 4 || dy > 4)
+                    {
+                        _tickAutoFollow = false;
+                        UpdateLiveFollowButtonState(isLive: !_selectedBarStartIndex.HasValue);
+                    }
+                }
+
                 var subBuckets = _tickHoverIndicator.ActiveSubBuckets ?? _currentMicroBuckets;
                 if (subBuckets != null && subBuckets.Count > 0)
                 {
@@ -2673,6 +2704,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
         {
             try
             {
+                _tickIsDragging = false;
                 formsPlotTick.Cursor = Cursors.Default;
                 if (!_tickHoverIndicator.IsAttached) return;
 
@@ -2688,21 +2720,41 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
 
         private void OnFormsPlotTickMouseDown(object? sender, MouseEventArgs e)
         {
-            if (e.Button == MouseButtons.Left)
+            if (e.Button == MouseButtons.Left || e.Button == MouseButtons.Right || e.Button == MouseButtons.Middle)
             {
                 _tickMouseDownPoint = e.Location;
+                _tickIsDragging = true;
+            }
+        }
+
+        private void OnFormsPlotTickMouseWheel(object? sender, MouseEventArgs e)
+        {
+            if (_tickAutoFollow)
+            {
+                _tickAutoFollow = false;
+                UpdateLiveFollowButtonState(isLive: !_selectedBarStartIndex.HasValue);
             }
         }
 
         private void OnFormsPlotTickMouseUp(object? sender, MouseEventArgs e)
         {
-            if (e.Button != MouseButtons.Left) return;
+            _tickIsDragging = false;
 
             int dx = Math.Abs(e.Location.X - _tickMouseDownPoint.X);
             int dy = Math.Abs(e.Location.Y - _tickMouseDownPoint.Y);
 
             // 如果鼠标位移大于 4 像素，判定为用户手动平移或缩放图表视角
-            if (dx > 4 || dy > 4) return;
+            if (dx > 4 || dy > 4)
+            {
+                if (_tickAutoFollow)
+                {
+                    _tickAutoFollow = false;
+                    UpdateLiveFollowButtonState(isLive: !_selectedBarStartIndex.HasValue);
+                }
+                return;
+            }
+
+            if (e.Button != MouseButtons.Left) return;
 
             var subBuckets = _tickHoverIndicator.ActiveSubBuckets ?? _currentMicroBuckets;
             if (subBuckets == null || subBuckets.Count == 0) return;
@@ -2855,6 +2907,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             _selectedMicroBarAnchor = null;
             _selectedMicroBarStartIndex = null;
             _selectedMicroBarEndIndex = null;
+            _tickAutoFollow = true;
             if (tabDashboard != null) tabDashboard.Text = "实时仪表盘 & 逐笔流水";
 
             if (_selectedBarStartIndex.HasValue && _selectedBarEndIndex.HasValue)
@@ -2942,7 +2995,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 int forwardBars = Math.Max(20, _settings.ChannelExtensionBars);
                 foreach (var tr in trends)
                 {
-                    tr.MacroSlope45 = MacroPlotHelper.LastSlope45;
+                    if (tr.MacroSlope45 <= 0 && MacroPlotHelper.LastSlope45 > 0) tr.MacroSlope45 = MacroPlotHelper.LastSlope45;
                     if (!_settings.ShowTickAngleLines && !tr.HasChannel) continue;
                     int extEnd = tr.EndIndex + forwardBars;
                     if (Math.Max(sIdx, tr.StartIndex) <= Math.Min(eIdx, extEnd))
@@ -3138,7 +3191,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 showRecentTrendLines: _settings.ShowTickRecentTrendLines && (selDynTrendLines?.HasLines ?? false),
                 recentTrendLineResult: selDynTrendLines,
                 selectedMicroBarStartIndex: _selectedMicroBarStartIndex,
-                selectedMicroBarEndIndex: _selectedMicroBarEndIndex);
+                selectedMicroBarEndIndex: _selectedMicroBarEndIndex,
+                autoFollow: _tickAutoFollow);
 
             _currentMicroBuckets = TickPlotHelper.LastSubBuckets;
             formsPlotTick.Refresh();
@@ -3236,6 +3290,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
 
         private void ClearBarSelection()
         {
+            _tickAutoFollow = true;
             if (!_selectedBarStartIndex.HasValue && !_selectedBarEndIndex.HasValue && _selectedConsecutiveTrend == null)
             {
                 UpdateLiveFollowButtonState(isLive: true);
@@ -3281,14 +3336,28 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             if (btnResumeLiveFollow == null) return;
             if (isLive)
             {
-                btnResumeLiveFollow.Text = "🟢 实时播放中";
-                btnResumeLiveFollow.Size = new Size(100, 24);
-                btnResumeLiveFollow.BackColor = Color.FromArgb(15, 23, 42);
-                btnResumeLiveFollow.ForeColor = Color.FromArgb(52, 211, 153);
-                btnResumeLiveFollow.FlatAppearance.BorderColor = Color.FromArgb(30, 41, 59);
-                btnResumeLiveFollow.FlatAppearance.BorderSize = 1;
-                btnResumeLiveFollow.Cursor = Cursors.Default;
-                _toolTip.SetToolTip(btnResumeLiveFollow, "微观视窗当前正在跟随最新实时播放的 Tick 数据。点击上方 K 线可随时切出巡检历史周期的微观 Tick。");
+                if (_tickAutoFollow)
+                {
+                    btnResumeLiveFollow.Text = "🟢 实时跟随中";
+                    btnResumeLiveFollow.Size = new Size(100, 24);
+                    btnResumeLiveFollow.BackColor = Color.FromArgb(15, 23, 42);
+                    btnResumeLiveFollow.ForeColor = Color.FromArgb(52, 211, 153);
+                    btnResumeLiveFollow.FlatAppearance.BorderColor = Color.FromArgb(30, 41, 59);
+                    btnResumeLiveFollow.FlatAppearance.BorderSize = 1;
+                    btnResumeLiveFollow.Cursor = Cursors.Default;
+                    _toolTip.SetToolTip(btnResumeLiveFollow, "微观视窗当前正在跟随最新实时播放的 Tick 数据。拖拽或滚轮可自由缩放平移视口。点击上方 K 线可切出巡检历史周期的微观 Tick。");
+                }
+                else
+                {
+                    btnResumeLiveFollow.Text = "🔍 视口自定义 (点击重置)";
+                    btnResumeLiveFollow.Size = new Size(160, 24);
+                    btnResumeLiveFollow.BackColor = Color.FromArgb(30, 41, 59);
+                    btnResumeLiveFollow.ForeColor = Color.FromArgb(251, 191, 36);
+                    btnResumeLiveFollow.FlatAppearance.BorderColor = Color.FromArgb(245, 158, 11);
+                    btnResumeLiveFollow.FlatAppearance.BorderSize = 1;
+                    btnResumeLiveFollow.Cursor = Cursors.Hand;
+                    _toolTip.SetToolTip(btnResumeLiveFollow, "微观视窗当前已被手动平移/缩放，不会强行重置视口。点击此处或双击图表可恢复视口自动跟随。");
+                }
             }
             else
             {

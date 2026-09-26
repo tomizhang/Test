@@ -293,9 +293,9 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             double pixelAspect = (canvasWidth > 0 && canvasHeight > 0) ? (canvasWidth / canvasHeight) : 2.5;
             if (pixelAspect <= 0.1 || pixelAspect > 10.0) pixelAspect = 2.5;
 
-            double slope45 = (visibleSpanY / visibleSpanX) * pixelAspect;
-            if (slope45 <= 0) slope45 = (double)(winMaxPrice > 0 ? winMaxPrice * 0.005m : 0.01m);
-            LastSlope45 = slope45;
+            double fallbackSlope45 = (visibleSpanY / visibleSpanX) * pixelAspect;
+            if (fallbackSlope45 <= 0) fallbackSlope45 = (double)(winMaxPrice > 0 ? winMaxPrice * 0.005m : 0.01m);
+            if (LastSlope45 <= 0) LastSlope45 = fallbackSlope45;
 
             // 4.5 绘制连续上涨 / 连续下跌波段标记与多角度趋势线 (满足门槛：连续 N 根及以上且累计幅度 >= X%)
             if ((showConsecutiveTrend || showAngleLines) && totalDisplayCount >= consecutiveMinBars)
@@ -309,7 +309,24 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 for (int tIdx = 0; tIdx < trends.Count; tIdx++)
                 {
                     var tr = trends[tIdx];
-                    tr.MacroSlope45 = slope45;
+                    if (tr.MacroSlope45 <= 0)
+                    {
+                        double baseSlope = Math.Abs((double)tr.SlopeK);
+                        if (baseSlope <= 1e-6)
+                        {
+                            baseSlope = Math.Abs((double)(tr.EndPrice - tr.StartPrice)) / Math.Max(1, tr.EndIndex - tr.StartIndex);
+                        }
+                        if (baseSlope <= 1e-6)
+                        {
+                            baseSlope = (double)Math.Max(0.01m, tr.FirstBarHigh - tr.FirstBarLow);
+                        }
+                        if (baseSlope <= 1e-6)
+                        {
+                            baseSlope = fallbackSlope45;
+                        }
+                        tr.MacroSlope45 = baseSlope;
+                    }
+                    LastSlope45 = tr.MacroSlope45;
                     int sIdx = tr.StartIndex;
                     int eIdx = tr.EndIndex;
                     if (sIdx < 0 || eIdx >= totalDisplayCount || sIdx > eIdx) continue;
@@ -482,91 +499,101 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                     txtTag.LabelBorderWidth = isChannelSelected ? 2f : 1f;
                     } // end of if (showConsecutiveTrend)
 
-                    // ⑧ 基于通道每个关键点位 (起点、确立点、极值最高点、极值最低点、终点) 的多角度趋势线与前向射线 (且保留持续延伸)
-                    if (showAngleLines && slope45 > 0)
+                    // ⑧ 基于第一根 K 线高低双点位的多角度趋势线 (延长趋势线，可独立显示)
+                    double trendSlope45 = tr.MacroSlope45 > 0 ? tr.MacroSlope45 : (tr.SlopeK != 0 ? Math.Abs((double)tr.SlopeK) : fallbackSlope45);
+                    if (showAngleLines && trendSlope45 > 0)
                     {
-                        var anchorPoints = GetChannelKeyAnchorPoints(tr, completedBars, formingBar, totalDisplayCount);
+                        decimal firstHigh = tr.FirstBarHigh > 0 ? tr.FirstBarHigh : (sIdx < completedCount && completedBars != null ? completedBars[sIdx].High : (formingBar?.High ?? tr.StartPrice));
+                        decimal firstLow = tr.FirstBarLow > 0 ? tr.FirstBarLow : (sIdx < completedCount && completedBars != null ? completedBars[sIdx].Low : (formingBar?.Low ?? tr.StartPrice));
+                        double yHigh = (double)firstHigh;
+                        double yLow = (double)firstLow;
+                        double xStart = sIdx;
+                        double xEnd = extEnd;
+                        double dx = xEnd - xStart;
 
-                        var angles = (customAngles != null && customAngles.Count > 0) ? customAngles : new double[] { 25.0, 45.0, 65.0 };
-                        var angleConfigs = new List<(double deg, double slope, LinePattern pattern, float width)>(angles.Count);
-                        foreach (var deg in angles)
+                        if (dx > 0)
                         {
-                            double rad = deg * Math.PI / 180.0;
-                            double slope = Math.Tan(rad) * slope45;
-                            bool is45 = Math.Abs(deg - 45.0) < 0.01;
-                            LinePattern pat = is45 ? LinePattern.Solid : (deg < 45.0 ? LinePattern.Dashed : LinePattern.Dotted);
-                            float w = is45 ? (isChannelSelected ? 1.8f : 1.3f) : (isChannelSelected ? 1.4f : 1.0f);
-                            angleConfigs.Add((deg, slope, pat, w));
-                        }
-
-                        foreach (var anchor in anchorPoints)
-                        {
-                            double xStart = anchor.x;
-                            double dx = extEnd - xStart;
-                            if (dx <= 0) continue;
-
-                            // 绘制通道每个特征点位的锚点标记
-                            var anchorMarker = plot.Add.Marker(xStart, anchor.price);
-                            anchorMarker.Shape = anchor.isHigh ? MarkerShape.FilledTriangleUp : MarkerShape.FilledTriangleDown;
-                            anchorMarker.Size = isChannelSelected ? 6 : (isLatestTrend ? 5 : 4);
-                            anchorMarker.Color = isChannelSelected ? Color.FromHex("#fbbf24") : themeColor;
-
-                            foreach (var ac in angleConfigs)
+                            var angles = (customAngles != null && customAngles.Count > 0) ? customAngles : new double[] { 25.0, 45.0, 65.0 };
+                            var angleConfigs = new List<(double deg, double slope, LinePattern pattern, float width)>(angles.Count);
+                            foreach (var deg in angles)
                             {
-                                double targetY = isBull
-                                    ? anchor.price + ac.slope * dx
-                                    : anchor.price - ac.slope * dx;
+                                double rad = deg * Math.PI / 180.0;
+                                double slope = Math.Tan(rad) * trendSlope45;
+                                bool is45 = Math.Abs(deg - 45.0) < 0.01;
+                                LinePattern pat = is45 ? LinePattern.Solid : (deg < 45.0 ? LinePattern.Dashed : LinePattern.Dotted);
+                                float w = is45 ? (isChannelSelected ? 1.8f : 1.3f) : (isChannelSelected ? 1.4f : 1.0f);
+                                angleConfigs.Add((deg, slope, pat, w));
+                            }
 
-                                // 底部保护截断 (防止价格跌破零)
-                                double actualXEnd = extEnd;
-                                if (targetY <= 0 && anchor.price > 0)
+                            // 仅以第一根 K 线为基准：高低双点位 (连续下跌：第一根为高点绘制，同理以第一根低点绘制；连续上涨：第一根为低点绘制，同理以第一根高点绘制)
+                            var anchorPoints = isBull
+                                ? new (string label, double price, bool isPrimary)[] { ("L", yLow, true), ("H", yHigh, false) }
+                                : new (string label, double price, bool isPrimary)[] { ("H", yHigh, true), ("L", yLow, false) };
+
+                            foreach (var anchor in anchorPoints)
+                            {
+                                // 绘制第一根 K 线锚点圆点标记
+                                var anchorMarker = plot.Add.Marker(xStart, anchor.price);
+                                anchorMarker.Shape = MarkerShape.FilledCircle;
+                                anchorMarker.Size = isChannelSelected ? 6 : 4;
+                                anchorMarker.Color = themeColor;
+
+                                foreach (var ac in angleConfigs)
                                 {
-                                    actualXEnd = xStart + (anchor.price / ac.slope);
-                                    targetY = 0;
-                                }
+                                    double targetY = isBull
+                                        ? anchor.price + ac.slope * dx
+                                        : anchor.price - ac.slope * dx;
 
-                                if (actualXEnd <= xStart) continue;
+                                    // 底部保护截断 (防止价格跌破零)
+                                    double actualXEnd = xEnd;
+                                    if (targetY <= 0 && anchor.price > 0)
+                                    {
+                                        actualXEnd = xStart + (anchor.price / ac.slope);
+                                        targetY = 0;
+                                    }
 
-                                Color rayColor;
-                                bool is45 = Math.Abs(ac.deg - 45.0) < 0.01;
-                                if (isBull)
-                                {
-                                    rayColor = is45
-                                        ? Color.FromHex("#10b981") // 45° 翡翠绿基准
-                                        : (ac.deg < 45.0 ? Color.FromHex("#34d399") : Color.FromHex("#a3e635"));
-                                }
-                                else
-                                {
-                                    rayColor = is45
-                                        ? Color.FromHex("#ef4444") // 45° 烈火红基准
-                                        : (ac.deg < 45.0 ? Color.FromHex("#fb923c") : Color.FromHex("#f43f5e"));
-                                }
+                                    if (actualXEnd <= xStart) continue;
 
-                                if (isChannelSelected)
-                                {
-                                    rayColor = is45 ? Color.FromHex("#fbbf24") : rayColor;
-                                }
+                                    Color rayColor;
+                                    bool is45 = Math.Abs(ac.deg - 45.0) < 0.01;
+                                    if (isBull)
+                                    {
+                                        rayColor = is45
+                                            ? Color.FromHex("#10b981") // 45° 翡翠绿基准
+                                            : (ac.deg < 45.0 ? Color.FromHex("#34d399") : Color.FromHex("#a3e635"));
+                                    }
+                                    else
+                                    {
+                                        rayColor = is45
+                                            ? Color.FromHex("#ef4444") // 45° 烈火红基准
+                                            : (ac.deg < 45.0 ? Color.FromHex("#fb923c") : Color.FromHex("#f43f5e"));
+                                    }
 
-                                // 🌟 且保留：保留适中通透度的线条，清晰可辨
-                                byte rayAlpha = isChannelSelected ? (byte)230 : (isLatestTrend ? (byte)180 : (byte)125);
+                                    if (isChannelSelected)
+                                    {
+                                        rayColor = is45 ? Color.FromHex("#fbbf24") : rayColor;
+                                    }
 
-                                var angleRay = plot.Add.Line(xStart, anchor.price, actualXEnd, targetY);
-                                angleRay.Color = rayColor.WithAlpha(rayAlpha);
-                                angleRay.LineWidth = ac.width;
-                                angleRay.LinePattern = ac.pattern;
+                                    byte rayAlpha = isChannelSelected ? (byte)230 : (isLatestTrend ? (byte)180 : (byte)100);
 
-                                // 射线末端角度标注 (为最新活跃波段、选中波段、基准45°或确立/极值点位标注)
-                                if (isLatestTrend || isChannelSelected || is45 || anchor.label == "确立" || anchor.label.Contains("顶") || anchor.label.Contains("底"))
-                                {
-                                    string signStr = isBull ? "+" : "-";
-                                    string endLabel = $"{anchor.label} {signStr}{ac.deg:0.##}°";
-                                    var txtAngle = plot.Add.Text(endLabel, actualXEnd, targetY);
-                                    txtAngle.LabelFontName = chineseFont;
-                                    txtAngle.LabelFontSize = 7.5f;
-                                    txtAngle.LabelBold = is45;
-                                    txtAngle.LabelFontColor = rayColor;
-                                    txtAngle.LabelAlignment = isBull ? Alignment.LowerLeft : Alignment.UpperLeft;
-                                    txtAngle.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.85);
+                                    var angleRay = plot.Add.Line(xStart, anchor.price, actualXEnd, targetY);
+                                    angleRay.Color = rayColor.WithAlpha(rayAlpha);
+                                    angleRay.LineWidth = ac.width;
+                                    angleRay.LinePattern = ac.pattern;
+
+                                    // 射线末端角度标注 (为最新活跃波段或选中波段标注)
+                                    if (isLatestTrend || isChannelSelected)
+                                    {
+                                        string signStr = isBull ? "+" : "-";
+                                        string endLabel = $"{anchor.label} {signStr}{ac.deg:0.##}°";
+                                        var txtAngle = plot.Add.Text(endLabel, actualXEnd, targetY);
+                                        txtAngle.LabelFontName = chineseFont;
+                                        txtAngle.LabelFontSize = 7.5f;
+                                        txtAngle.LabelBold = is45;
+                                        txtAngle.LabelFontColor = rayColor;
+                                        txtAngle.LabelAlignment = isBull ? Alignment.LowerLeft : Alignment.UpperLeft;
+                                        txtAngle.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.85);
+                                    }
                                 }
                             }
                         }

@@ -261,6 +261,21 @@ namespace Test.PeriodTickPlayback.WinForms.Models
                     int fitEnd = Math.Min(streakEnd, streakStart + channelBase - 1);
                     FitParallelChannel(bars, streakStart, fitEnd, out decimal slopeK, out decimal upperB, out decimal lowerB);
 
+                    // 45° 角度线内在基准斜率 (单位: 价格/Bar)：锁定波段自身内在拟合斜率，完全脱钩屏幕视口 X/Y 缩放
+                    double baseSlope45 = Math.Abs((double)slopeK);
+                    if (baseSlope45 <= 1e-6)
+                    {
+                        baseSlope45 = Math.Abs((double)(finalEndPrice - startPrice)) / Math.Max(1, streakEnd - streakStart);
+                    }
+                    if (baseSlope45 <= 1e-6)
+                    {
+                        baseSlope45 = (double)Math.Max(0.01m, bars[streakStart].High - bars[streakStart].Low);
+                    }
+                    if (baseSlope45 <= 1e-6)
+                    {
+                        baseSlope45 = (double)(startPrice > 0 ? startPrice * 0.005m : 1.0m);
+                    }
+
                     result.Add(new MacroConsecutiveTrendItem
                     {
                         Id = stableId,
@@ -282,7 +297,8 @@ namespace Test.PeriodTickPlayback.WinForms.Models
                         UpperIntercept = upperB,
                         LowerIntercept = lowerB,
                         HasChannel = upperB > lowerB,
-                        ChannelBaseBars = channelBase
+                        ChannelBaseBars = channelBase,
+                        MacroSlope45 = baseSlope45
                     });
                 }
 

@@ -83,7 +83,8 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             bool showRecentTrendLines = true,
             RecentSubPeriodTrendLineResult? recentTrendLineResult = null,
             int? selectedMicroBarStartIndex = null,
-            int? selectedMicroBarEndIndex = null)
+            int? selectedMicroBarEndIndex = null,
+            bool autoFollow = true)
         {
             if (plot == null) return;
 
@@ -131,9 +132,17 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                     showRecentTrendLines: showRecentTrendLines,
                     recentTrendLineResult: recentTrendLineResult,
                     selectedMicroBarStartIndex: selectedMicroBarStartIndex,
-                    selectedMicroBarEndIndex: selectedMicroBarEndIndex);
+                    selectedMicroBarEndIndex: selectedMicroBarEndIndex,
+                    autoFollow: autoFollow);
                 return;
             }
+
+            AxisLimits oldLimits = default;
+            try
+            {
+                oldLimits = plot.Axes.GetLimits();
+            }
+            catch { }
 
             LastSubBuckets = null;
             plot.Clear();
@@ -798,7 +807,14 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             if (minVal <= maxVal && minVal > 0)
             {
                 double xMax = Math.Max(totalAvailable, renderCount + (channelProjections.Count > 0 || angleProjections.Count > 0 || tickMicroProjections.Count > 0 ? 8 : 5));
-                plot.Axes.SetLimits(-1, xMax, pLeftYMin, pLeftYMax);
+                if (autoFollow || !(oldLimits.Right > oldLimits.Left && oldLimits.Top > oldLimits.Bottom))
+                {
+                    plot.Axes.SetLimits(-1, xMax, pLeftYMin, pLeftYMax);
+                }
+                else
+                {
+                    plot.Axes.SetLimits(oldLimits);
+                }
             }
 
             // 标题
@@ -861,9 +877,17 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             bool showRecentTrendLines = true,
             RecentSubPeriodTrendLineResult? recentTrendLineResult = null,
             int? selectedMicroBarStartIndex = null,
-            int? selectedMicroBarEndIndex = null)
+            int? selectedMicroBarEndIndex = null,
+            bool autoFollow = true)
         {
             if (plot == null) return;
+
+            AxisLimits oldLimits = default;
+            try
+            {
+                oldLimits = plot.Axes.GetLimits();
+            }
+            catch { }
 
             LastSubBuckets = null;
             plot.Clear();
@@ -1494,8 +1518,15 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             }
 
             // X 轴时间刻度标签与坐标范围 (若存在大通道投影或多角度趋势线，右侧预留适当空间供标签呼吸)
-            plot.Axes.SetLimitsY((double)yMinPrice, (double)yMaxPrice);
-            plot.Axes.SetLimitsX(-0.8, M + (channelProjections.Count > 0 || angleProjections.Count > 0 || microChannelProjections.Count > 0 ? 3.5 : -0.2));
+            if (autoFollow || !(oldLimits.Right > oldLimits.Left && oldLimits.Top > oldLimits.Bottom))
+            {
+                plot.Axes.SetLimitsY((double)yMinPrice, (double)yMaxPrice);
+                plot.Axes.SetLimitsX(-0.8, M + (channelProjections.Count > 0 || angleProjections.Count > 0 || microChannelProjections.Count > 0 ? 3.5 : -0.2));
+            }
+            else
+            {
+                plot.Axes.SetLimits(oldLimits);
+            }
 
             var xPos = new List<double>();
             var xLabels = new List<string>();
@@ -1772,35 +1803,30 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
 
             var angles = (customAngles != null && customAngles.Count > 0) ? customAngles : new double[] { 25.0, 45.0, 65.0 };
 
-            // 提取通道各关键特征点位 (起点、确立点、极值最高点、极值最低点、终点)
-            var anchorPoints = MacroPlotHelper.GetChannelKeyAnchorPoints(tr, null, null, int.MaxValue);
-            double totalSpan = barPosE - barPosS;
-            if (totalSpan <= 0) totalSpan = 1.0;
+            decimal firstHigh = tr.FirstBarHigh > 0 ? tr.FirstBarHigh : tr.StartPrice;
+            decimal firstLow = tr.FirstBarLow > 0 ? tr.FirstBarLow : tr.StartPrice;
+            double yHigh = (double)firstHigh;
+            double yLow = (double)firstLow;
+
+            // 仅以第一根 K 线为基准：高低双点位 (连续下跌：第一根为高点绘制，同理以第一根低点绘制；连续上涨：第一根为低点绘制，同理以第一根高点绘制)
+            var anchorPoints = isBull
+                ? new (string label, double price, bool isPrimary)[] { ("L", yLow, true), ("H", yHigh, false) }
+                : new (string label, double price, bool isPrimary)[] { ("H", yHigh, true), ("L", yLow, false) };
+
+            double deltaBarS = barPosS - tr.StartIndex;
+            double deltaBarE = barPosE - tr.StartIndex;
+            if (deltaBarE <= deltaBarS) deltaBarE = deltaBarS + 1.0;
 
             foreach (var anchor in anchorPoints)
             {
-                // 若该点位发生在未来（相对当前微观视窗末端），在当前视窗中不发射
-                if (anchor.x > barPosE) continue;
-
-                double deltaBarS = barPosS - anchor.x;
-                double deltaBarE = barPosE - anchor.x;
-
-                // 若锚点位于当前微观图表区间内，绘制圆点/三角形特征锚点标记
-                if (anchor.x >= barPosS && anchor.x <= barPosE)
+                // 如果当前正好包含趋势的第一根 K 线的起点，在微观图上也绘制圆点锚点
+                if (Math.Abs(deltaBarS) < 1e-4)
                 {
-                    double mX = xS + ((anchor.x - barPosS) / totalSpan) * (xE - xS);
-                    var mAnchor = plot.Add.Marker(mX, anchor.price);
-                    mAnchor.Shape = anchor.isHigh ? MarkerShape.FilledTriangleUp : MarkerShape.FilledTriangleDown;
+                    var mAnchor = plot.Add.Marker(xS, anchor.price);
+                    mAnchor.Shape = MarkerShape.FilledCircle;
                     mAnchor.Size = isSelected ? 6 : 4;
                     mAnchor.Color = isBull ? Color.FromHex("#10b981") : Color.FromHex("#ef4444");
                 }
-
-                // 确定微观绘制的起始 X 像素位置
-                double lineStartMicroX = anchor.x >= barPosS
-                    ? xS + ((anchor.x - barPosS) / totalSpan) * (xE - xS)
-                    : xS;
-
-                double startDelta = anchor.x >= barPosS ? 0 : deltaBarS;
 
                 foreach (var deg in angles)
                 {
@@ -1809,8 +1835,8 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                     bool is45 = Math.Abs(deg - 45.0) < 0.01;
 
                     double yS = isBull
-                        ? anchor.price + slopeDeg * startDelta
-                        : anchor.price - slopeDeg * startDelta;
+                        ? anchor.price + slopeDeg * deltaBarS
+                        : anchor.price - slopeDeg * deltaBarS;
 
                     double yE = isBull
                         ? anchor.price + slopeDeg * deltaBarE
@@ -1824,11 +1850,11 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                     if (yS > 0 && yE < 0)
                     {
                         double frac = yS / (yS - yE);
-                        actualXE = lineStartMicroX + frac * (xE - lineStartMicroX);
+                        actualXE = xS + frac * (xE - xS);
                         actualYE = 0;
                     }
 
-                    if (actualXE <= lineStartMicroX) continue;
+                    if (actualXE <= xS) continue;
 
                     Color rayColor;
                     if (isBull)
@@ -1849,28 +1875,25 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                         rayColor = is45 ? Color.FromHex("#fbbf24") : rayColor;
                     }
 
-                    byte rayAlpha = isSelected ? (byte)230 : (byte)140;
+                    byte rayAlpha = isSelected ? (byte)230 : (byte)160;
                     var pattern = is45 ? LinePattern.Solid : (deg < 45.0 ? LinePattern.Dashed : LinePattern.Dotted);
                     float lineWidth = is45 ? (isSelected ? 1.8f : 1.3f) : (isSelected ? 1.4f : 1.0f);
 
-                    var angleLine = plot.Add.Line(lineStartMicroX, yS, actualXE, actualYE);
+                    var angleLine = plot.Add.Line(xS, yS, actualXE, actualYE);
                     angleLine.Color = rayColor.WithAlpha(rayAlpha);
                     angleLine.LineWidth = lineWidth;
                     angleLine.LinePattern = pattern;
 
                     // 绘制末端角度标注
-                    if (isSelected || is45 || anchor.label == "确立" || anchor.label.Contains("顶") || anchor.label.Contains("底"))
-                    {
-                        string signStr = isBull ? "+" : "-";
-                        string endLabel = $"{anchor.label} {signStr}{deg:0.##}°";
-                        var txtAngle = plot.Add.Text(endLabel, actualXE, actualYE);
-                        txtAngle.LabelFontName = chineseFont;
-                        txtAngle.LabelFontSize = 7.5f;
-                        txtAngle.LabelBold = is45;
-                        txtAngle.LabelFontColor = rayColor;
-                        txtAngle.LabelAlignment = isBull ? Alignment.LowerLeft : Alignment.UpperLeft;
-                        txtAngle.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.85);
-                    }
+                    string signStr = isBull ? "+" : "-";
+                    string endLabel = $"{anchor.label} {signStr}{deg:0.##}°";
+                    var txtAngle = plot.Add.Text(endLabel, actualXE, actualYE);
+                    txtAngle.LabelFontName = chineseFont;
+                    txtAngle.LabelFontSize = 7.5f;
+                    txtAngle.LabelBold = is45;
+                    txtAngle.LabelFontColor = rayColor;
+                    txtAngle.LabelAlignment = isBull ? Alignment.LowerLeft : Alignment.UpperLeft;
+                    txtAngle.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.85);
                 }
             }
         }
