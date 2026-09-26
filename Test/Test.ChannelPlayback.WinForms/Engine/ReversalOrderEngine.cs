@@ -56,6 +56,11 @@ namespace Test.ChannelPlayback.WinForms.Engine
         public int MinTicksAfterNearLine { get; set; } = 2;
 
         /// <summary>
+        /// 做空单时在 Tick 级别形成高点后确保高点已经形成所需的最小后续 Tick 笔数 (默认 5 笔)
+        /// </summary>
+        public int MinTicksAfterPeakForSell { get; set; } = 5;
+
+        /// <summary>
         /// 观察期开始时向前回溯计算高低点的 Tick 数量 (默认 1000 笔)
         /// </summary>
         public int LookbackTickCount { get; set; } = 1000;
@@ -873,6 +878,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
                     decimal testedLinePrice = 0m;
                     bool hasEnteredNearZone = false;
                     int firstNearTickIdx = -1;
+                    int minTicksForSell = MinTicksAfterPeakForSell > 0 ? MinTicksAfterPeakForSell : 5;
 
                     for (int ti = 0; ti < cycleTicks.Count; ti++)
                     {
@@ -1026,18 +1032,16 @@ namespace Test.ChannelPlayback.WinForms.Engine
                                 decimal pullbackPct = (localPeak - t.Price) / localPeak * 100m;
                                 if (pullbackPct > maxPullbackPct) maxPullbackPct = pullbackPct;
 
-                                // 判定是否满足【到线附近后过几个Tick，出现相对Tick的高点】:
+                                // 判定是否满足【在tick级别形成高点后5个tick后进行下单，确保高点已经形成】:
                                 int ticksSinceNear = hasEnteredNearZone ? (ti - firstNearTickIdx) : (ti - localPeakIdx);
                                 int ticksSincePeak = ti - localPeakIdx;
                                 bool ticksEnough = ticksSinceNear >= MinTicksAfterNearLine;
 
                                 // 出现相对高点并转折回落:
-                                // 1) 达到标准回落阈值 (如 >= 0.06%);
-                                // 2) 或在到线经过数笔Tick后，波峰确立并连续回落 (ticksSincePeak >= 2 且回落 >= 0.02% 或价格低于波峰)
-                                bool isRelativeHighConfirmed = ticksEnough && (t.Price < localPeak) && (
-                                    (pullbackPct >= TickPullbackThresholdPct) ||
-                                    (ticksSincePeak >= 2 && pullbackPct >= 0.02m)
-                                );
+                                // 做空单必须严格满足：在 tick 级别形成高点后至少经过 minTicksForSell 笔 Tick (默认 5 笔)，且当前价格处于高点下方 (t.Price < localPeak)，确保高点已经形成
+                                bool isRelativeHighConfirmed = ticksEnough && 
+                                                               (ticksSincePeak >= minTicksForSell) && 
+                                                               (t.Price < localPeak);
 
                                 if (lineEligible && isRelativeHighConfirmed)
                                 {
@@ -1065,10 +1069,10 @@ namespace Test.ChannelPlayback.WinForms.Engine
                                         pattern.SuggestedDirection = OrderSignalDirection.Sell;
                                     }
 
-                                    decimal entryPrice = localPeak; // 方案 3：做空严格在观察期内走出的 Tick 高点 (波峰价) 开仓，绝不用历史点位
-                                    long triggerTime = localPeakTime;
-                                    RawTick triggerTick = localPeakTick;
-                                    int triggerTickIdx = localPeakIdx;
+                                    decimal entryPrice = t.Price; // 优化：在实际触发信号的 Tick 进行开仓下单与标记 (零未来函数)
+                                    long triggerTime = t.Time;
+                                    RawTick triggerTick = t;
+                                    int triggerTickIdx = ti;
                                     decimal stopLoss = Math.Round(localPeak * 1.0015m, 2); // 防守止损精准锁定在观察期波峰上方 0.15%
                                     decimal takeProfit = trend.StartPrice;
 
@@ -1134,9 +1138,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
                                     DateTime peakDt = DateTimeOffset.FromUnixTimeMilliseconds(localPeakTime).LocalDateTime;
                                     string tickSide = triggerTick.IsBuyerMaker ? "主动卖出(Taker Sell)" : "主动买入(Taker Buy)";
                                     string histNote = hasHistExtreme ? " (历史曾达极值)" : "";
-                                    string triggerReason = pullbackPct >= TickPullbackThresholdPct
-                                        ? $"滞涨回落:-{pullbackPct:F2}% (门槛:{TickPullbackThresholdPct:F2}%)"
-                                        : $"相对高点确立(回落:-{pullbackPct:F2}%, 到线后经{ticksSinceNear + 1}笔Tick)";
+                                    string triggerReason = $"高点后经{ticksSincePeak}笔Tick确立(回落:-{pullbackPct:F2}%, 到线后经{ticksSinceNear + 1}笔Tick, 门槛:{minTicksForSell}笔)";
                                     string calcNote = isMidLowZone
                                         ? $" [计算模式: 分钟级前{prev60Bars.Count}根K线高低点(高:{minute60High:F2}, 低:{minute60Low:F2})]"
                                         : $" [计算模式: Tick高低点(回溯{lookbackTicks.Count}笔Tick)]";
@@ -1145,8 +1147,8 @@ namespace Test.ChannelPlayback.WinForms.Engine
                                         : "";
 
                                     string notify = $"[做单信号] ⚡ 第 {cycleIndex} 个 {ObservationMinutes}分钟观察期 Tick流在【{testedLineDesc}】(价格:{testedLinePrice:F2}) 触发 🔴高点做空(Sell)！{histNote}{calcNote}{prevHighTag}\n" +
-                                                    $"  └ 🎯 观察期Tick高点开仓: 开仓价:{entryPrice:F2} USDT | 观察期高点时间:{peakDt:HH:mm:ss.fff} | 确认时刻:{confirmDt:HH:mm:ss.fff} (确认价:{t.Price:F2}, {triggerReason})\n" +
-                                                    $"  └ 📊 极值推演风控: 波峰开仓:{entryPrice:F2} | 防守止损:{stopLoss:F2} (+0.15%), 目标止盈:{takeProfit:F2} | 高低点基准: 分钟前高{signal.MinutePrevHigh:F2}, 高{signal.HighPointPrice:F2} 低{signal.LowPointPrice:F2} ({signal.HighLowCalculationMode})";
+                                                    $"  └ 🎯 触发Tick开仓: 开仓价:{entryPrice:F2} USDT (触发时刻:{confirmDt:HH:mm:ss.fff}, Tick #{ti + 1}/{cycleTicks.Count}, {tickSide}) | 观察期波峰:{localPeak:F2} (波峰时刻:{peakDt:HH:mm:ss.fff}, {triggerReason})\n" +
+                                                    $"  └ 📊 极值推演风控: 触发Tick开仓:{entryPrice:F2} | 波峰防守止损:{stopLoss:F2} (+0.15%), 目标止盈:{takeProfit:F2} | 高低点基准: 分钟前高{signal.MinutePrevHigh:F2}, 高{signal.HighPointPrice:F2} 低{signal.LowPointPrice:F2} ({signal.HighLowCalculationMode})";
                                     OnReversalOrderSignal?.Invoke(signal, notify);
                                     break;
                                 }
@@ -1260,10 +1262,10 @@ namespace Test.ChannelPlayback.WinForms.Engine
                                         pattern.SuggestedDirection = OrderSignalDirection.Buy;
                                     }
 
-                                    decimal entryPrice = localTrough; // 方案 3：做多严格在观察期内走出的 Tick 低点 (波谷价) 开仓
-                                    long triggerTime = localTroughTime;
-                                    RawTick triggerTick = localTroughTick;
-                                    int triggerTickIdx = localTroughIdx;
+                                    decimal entryPrice = t.Price; // 优化：在实际触发信号的 Tick 进行开仓下单与标记 (零未来函数)
+                                    long triggerTime = t.Time;
+                                    RawTick triggerTick = t;
+                                    int triggerTickIdx = ti;
                                     decimal stopLoss = Math.Round(localTrough * 0.9985m, 2); // 防守止损精准锁定在观察期波谷下方 0.15%
                                     decimal takeProfit = trend.StartPrice;
 
@@ -1318,8 +1320,8 @@ namespace Test.ChannelPlayback.WinForms.Engine
                                         : $"相对低点确立(反弹:+{bouncePct:F2}%, 到线后经{ticksSinceNear + 1}笔Tick)";
 
                                     string notify = $"[做单信号] ⚡ 第 {cycleIndex} 个 {ObservationMinutes}分钟观察期 Tick流在【{testedLineDesc}】(价格:{testedLinePrice:F2}) 触发 🟢低点做多(Buy)！{histNote}\n" +
-                                                    $"  └ 🎯 观察期Tick低点开仓: 开仓价:{entryPrice:F2} USDT | 观察期低点时间:{troughDt:HH:mm:ss.fff} | 确认时刻:{confirmDt:HH:mm:ss.fff} (确认价:{t.Price:F2}, {triggerReason})\n" +
-                                                    $"  └ 📊 极值推演风控: 波谷开仓:{entryPrice:F2} | 防守止损:{stopLoss:F2} (-0.15%), 目标止盈:{takeProfit:F2} | 已在观察期低点标记短黄线";
+                                                    $"  └ 🎯 触发Tick开仓: 开仓价:{entryPrice:F2} USDT (触发时刻:{confirmDt:HH:mm:ss.fff}, Tick #{ti + 1}/{cycleTicks.Count}, {tickSide}) | 观察期波谷:{localTrough:F2} (波谷时刻:{troughDt:HH:mm:ss.fff}, {triggerReason})\n" +
+                                                    $"  └ 📊 极值推演风控: 触发Tick开仓:{entryPrice:F2} | 波谷防守止损:{stopLoss:F2} (-0.15%), 目标止盈:{takeProfit:F2} | 已在触发Tick标记短黄线";
                                     OnReversalOrderSignal?.Invoke(signal, notify);
                                     break;
                                 }
@@ -1370,13 +1372,13 @@ namespace Test.ChannelPlayback.WinForms.Engine
                                 {
                                     failureReason = $"在【{testedLineDesc}】附近仅短暂触及，未达到至少经历 {MinTicksAfterNearLine} 笔Tick的观察门槛";
                                 }
-                                else if (localPeakIdx >= cycleTicks.Count - 2)
+                                else if (localPeakIdx >= cycleTicks.Count - minTicksForSell)
                                 {
-                                    failureReason = $"在【{testedLineDesc}】最高冲至 {localPeak:F2}，但出现于周期最末尾，尚未形成转折相对高点";
+                                    failureReason = $"在【{testedLineDesc}】最高冲至 {localPeak:F2}，但出现于周期末尾（后仅经 {cycleTicks.Count - 1 - localPeakIdx} 笔Tick，未达高点形成后至少 {minTicksForSell} 笔Tick确认下单要求）";
                                 }
-                                else if (maxPullbackPct < TickPullbackThresholdPct)
+                                else if (maxPullbackPct <= 0m)
                                 {
-                                    failureReason = $"测试【{testedLineDesc}】后波峰 {localPeak:F2} 最大回落仅 -{maxPullbackPct:F3}%，未确立相对高点转折 (门槛 -{TickPullbackThresholdPct:F2}%)";
+                                    failureReason = $"测试【{testedLineDesc}】后价格持续持平未见滞涨回落，未确立相对高点转折";
                                 }
                                 else
                                 {
@@ -1616,7 +1618,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
                         cycleObj.IsSignalTriggered = true;
                         _processedCycleKeys.Add(cycleKey);
 
-                        decimal entryPrice = direction == OrderSignalDirection.Sell ? sb.High : sb.Low; // 优化：做空在最高点开仓，做多在最低点开仓
+                        decimal entryPrice = sb.Close; // 优化：在实际触发信号的收盘时刻进行开仓下单与标记 (零未来函数)
                         decimal peakTrough = direction == OrderSignalDirection.Sell ? sb.High : sb.Low; // 观察期波峰/波谷极值
                         long triggerTime = sb.CloseTime;
                         decimal stopLoss = direction == OrderSignalDirection.Sell
@@ -1679,7 +1681,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
                             : "";
                         string notify = $"[做单信号] ⚡ 第 {cycleIndex} 个 {ObservationMinutes}分钟观察期 1m回退在【{fallbackLineDesc}】(价格:{fallbackLinePrice:F2}) 触发 {dirText}！{histNote}{calcNote}{prevHighTagFallback}\n" +
                                         $"  └ 📊 观察期K线明细: 时间:{barStart:HH:mm:ss}~{barEnd:HH:mm:ss} | 开:{sb.Open:F2} 高:{sb.High:F2} 低:{sb.Low:F2} 收:{sb.Close:F2} | 量:{sb.Volume:F2} | 形态:[#{pattern.PatternId}]{pattern.PatternName}\n" +
-                                        $"  └ 🎯 极值点开仓风控: 开仓价:{entryPrice:F2} USDT ({(direction == OrderSignalDirection.Sell ? "高点做空" : "低点做多")}) | 防守止损:{stopLoss:F2} (0.15%), 目标止盈:{takeProfit:F2} | 高低点基准: 分钟前高{signal.MinutePrevHigh:F2}, 高{signal.HighPointPrice:F2} 低{signal.LowPointPrice:F2} ({signal.HighLowCalculationMode})";
+                                        $"  └ 🎯 触发时刻开仓风控: 开仓价:{entryPrice:F2} USDT ({(direction == OrderSignalDirection.Sell ? "高点做空" : "低点做多")}) | 极值参考:{peakTrough:F2} | 防守止损:{stopLoss:F2} (0.15%), 目标止盈:{takeProfit:F2} | 高低点基准: 分钟前高{signal.MinutePrevHigh:F2}, 高{signal.HighPointPrice:F2} 低{signal.LowPointPrice:F2} ({signal.HighLowCalculationMode})";
 
                         OnReversalOrderSignal?.Invoke(signal, notify);
                         break;

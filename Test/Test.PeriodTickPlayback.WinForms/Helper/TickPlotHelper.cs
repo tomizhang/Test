@@ -80,6 +80,8 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             bool showTickChannel = true,
             int tickConsecutiveMinBars = 5,
             decimal tickConsecutiveMinPct = 0.8m,
+            bool showRecentTrendLines = true,
+            RecentSubPeriodTrendLineResult? recentTrendLineResult = null,
             int? selectedMicroBarStartIndex = null,
             int? selectedMicroBarEndIndex = null)
         {
@@ -126,6 +128,8 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                     showTickChannel: showTickChannel,
                     tickConsecutiveMinBars: tickConsecutiveMinBars,
                     tickConsecutiveMinPct: tickConsecutiveMinPct,
+                    showRecentTrendLines: showRecentTrendLines,
+                    recentTrendLineResult: recentTrendLineResult,
                     selectedMicroBarStartIndex: selectedMicroBarStartIndex,
                     selectedMicroBarEndIndex: selectedMicroBarEndIndex);
                 return;
@@ -323,7 +327,8 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
 
             foreach (var tr in effectiveTrends)
             {
-                int trExtEnd = tr.EndIndex + forwardBars;
+                // 🌟 且保留：所有历史通道向前持续延伸，保留在微观视窗中
+                int trExtEnd = Math.Max(eBarIdx, tr.EndIndex + forwardBars);
                 int bStart = Math.Max(sBarIdx, tr.StartIndex);
                 int bEnd = Math.Min(eBarIdx, trExtEnd);
                 if (bStart > bEnd) continue;
@@ -516,6 +521,81 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 foreach (var ap in angleProjections)
                 {
                     DrawAngleLines(plot, ap.tr, ap.xS, ap.xE, ap.barPosS, ap.barPosE, customAngles, chineseFont, ap.tr == selectedTrend);
+                }
+            }
+
+            // 2.7 绘制基于最近 300 根小周期 K 线高低点的动态趋势线 (支持独立勾选控制与前向延伸)
+            if (showRecentTrendLines && recentTrendLineResult != null && recentTrendLineResult.SelectedLines.Count > 0 && renderCount >= 1)
+            {
+                double extTickX = (renderCount - 1) + Math.Max(20.0, renderCount * 0.12);
+                var chIdxMap = recentTrendLineResult.ChannelRecords?.ToDictionary(r => r.ChannelId, r => r.ChannelIndex) ?? new Dictionary<int, int>();
+
+                foreach (var line in recentTrendLineResult.SelectedLines)
+                {
+                    double x1 = MapTimeToTickX(line.Time1, ticks, renderCount);
+                    double x2 = MapTimeToTickX(line.Time2, ticks, renderCount);
+                    double y1 = (double)line.Y1;
+                    double y2 = (double)line.Y2;
+
+                    double dx = x2 - x1;
+                    if (Math.Abs(dx) < 1.0) dx = 1.0;
+
+                    double slope = (y2 - y1) / dx;
+                    double targetExtX = Math.Max(x2 + 10.0, extTickX);
+                    double yExt = y1 + slope * (targetExtX - x1);
+
+                    double actualExtX = targetExtX;
+                    if (yExt <= 0 && y1 > 0 && slope < 0)
+                    {
+                        actualExtX = x1 - (y1 / slope);
+                        yExt = 0;
+                    }
+
+                    bool isRes = line.IsResistance;
+                    chIdxMap.TryGetValue(line.ChannelId, out int chIdx);
+                    string chTag = chIdx > 0 ? $"[#{chIdx}] " : "";
+
+                    Color lineColor;
+                    if (chIdx == 2)
+                    {
+                        lineColor = isRes ? Color.FromHex("#f43f5e") : Color.FromHex("#3b82f6");
+                    }
+                    else if (chIdx == 3)
+                    {
+                        lineColor = isRes ? Color.FromHex("#eab308") : Color.FromHex("#14b8a6");
+                    }
+                    else if (chIdx >= 4)
+                    {
+                        lineColor = isRes ? Color.FromHex("#a855f7") : Color.FromHex("#10b981");
+                    }
+                    else
+                    {
+                        lineColor = isRes ? Color.FromHex("#fb923c") : Color.FromHex("#06b6d4");
+                    }
+
+                    var baseLine = plot.Add.Line(x1, y1, x2, y2);
+                    baseLine.Color = lineColor;
+                    baseLine.LineWidth = 1.8f;
+                    baseLine.LinePattern = LinePattern.Solid;
+
+                    if (actualExtX > x2)
+                    {
+                        var extLine = plot.Add.Line(x2, y2, actualExtX, yExt);
+                        extLine.Color = lineColor.WithAlpha(170);
+                        extLine.LineWidth = 1.2f;
+                        extLine.LinePattern = LinePattern.Dashed;
+                    }
+
+                    string tag = isRes ? $"{chTag}R: {yExt:F2}" : $"{chTag}S: {yExt:F2}";
+                    var txt = plot.Add.Text(tag, actualExtX, yExt);
+                    txt.LabelFontName = chineseFont;
+                    txt.LabelFontSize = 8.0f;
+                    txt.LabelBold = true;
+                    txt.LabelFontColor = lineColor;
+                    txt.LabelBackgroundColor = Color.FromHex("#0f172a").WithAlpha(0.90);
+                    txt.LabelBorderColor = lineColor;
+                    txt.LabelBorderWidth = 1f;
+                    txt.LabelAlignment = isRes ? Alignment.LowerLeft : Alignment.UpperLeft;
                 }
             }
 
@@ -778,6 +858,8 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             bool showTickChannel = true,
             int tickConsecutiveMinBars = 5,
             decimal tickConsecutiveMinPct = 0.8m,
+            bool showRecentTrendLines = true,
+            RecentSubPeriodTrendLineResult? recentTrendLineResult = null,
             int? selectedMicroBarStartIndex = null,
             int? selectedMicroBarEndIndex = null)
         {
@@ -923,14 +1005,14 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 {
                     foreach (var c in activeChannels)
                     {
-                        int cExtEnd = c.EndIndex + forwardBars;
+                        int cExtEnd = Math.Max(eBarIdx, c.EndIndex + forwardBars);
                         if (Math.Max(sBarIdx, c.StartIndex) <= Math.Min(eBarIdx, cExtEnd) && !effectiveTrends.Any(x => x.Id == c.Id && x.StartIndex == c.StartIndex && x.EndIndex == c.EndIndex))
                             effectiveTrends.Add(c);
                     }
                 }
                 else if (selectedTrend != null)
                 {
-                    int trExtEnd = selectedTrend.EndIndex + forwardBars;
+                    int trExtEnd = Math.Max(eBarIdx, selectedTrend.EndIndex + forwardBars);
                     if (Math.Max(sBarIdx, selectedTrend.StartIndex) <= Math.Min(eBarIdx, trExtEnd))
                     {
                         effectiveTrends.Add(selectedTrend);
@@ -943,7 +1025,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
 
             foreach (var tr in effectiveTrends)
             {
-                int trExtEnd = tr.EndIndex + forwardBars;
+                int trExtEnd = Math.Max(eBarIdx, tr.EndIndex + forwardBars);
                 int bStart = Math.Max(sBarIdx, tr.StartIndex);
                 int bEnd = Math.Min(eBarIdx, trExtEnd);
                 if (bStart > bEnd) continue;
@@ -1099,6 +1181,122 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 foreach (var ap in angleProjections)
                 {
                     DrawAngleLines(plot, ap.tr, ap.xS, ap.xE, ap.barPosS, ap.barPosE, customAngles, chineseFont, ap.tr == selectedTrend);
+                }
+            }
+
+            // 绘制基于最近 300 根小周期 K 线高低点的动态趋势线 (支持独立勾选控制与前向延伸)
+            if (showRecentTrendLines && recentTrendLineResult != null && recentTrendLineResult.SelectedLines.Count > 0 && M >= 1)
+            {
+                // ① 极值高低点标记
+                if (recentTrendLineResult.Peaks != null)
+                {
+                    foreach (var pk in recentTrendLineResult.Peaks)
+                    {
+                        double pkX = MapTimeToSubBucketX(pk.Time, subBuckets);
+                        if (pkX >= -5 && pkX <= M + 15)
+                        {
+                            var m = plot.Add.Marker(pkX, (double)pk.Price);
+                            m.Shape = MarkerShape.FilledTriangleUp;
+                            m.Size = 4;
+                            m.Color = Color.FromHex("#fb923c").WithAlpha(180);
+                        }
+                    }
+                }
+                if (recentTrendLineResult.Valleys != null)
+                {
+                    foreach (var vy in recentTrendLineResult.Valleys)
+                    {
+                        double vyX = MapTimeToSubBucketX(vy.Time, subBuckets);
+                        if (vyX >= -5 && vyX <= M + 15)
+                        {
+                            var m = plot.Add.Marker(vyX, (double)vy.Price);
+                            m.Shape = MarkerShape.FilledTriangleDown;
+                            m.Size = 4;
+                            m.Color = Color.FromHex("#06b6d4").WithAlpha(180);
+                        }
+                    }
+                }
+
+                // ② 绘制精选动态趋势线
+                double extSubX = (M - 1) + 12;
+                var chIdxMap = recentTrendLineResult.ChannelRecords?.ToDictionary(r => r.ChannelId, r => r.ChannelIndex) ?? new Dictionary<int, int>();
+
+                foreach (var line in recentTrendLineResult.SelectedLines)
+                {
+                    double x1 = MapTimeToSubBucketX(line.Time1, subBuckets);
+                    double x2 = MapTimeToSubBucketX(line.Time2, subBuckets);
+                    double y1 = (double)line.Y1;
+                    double y2 = (double)line.Y2;
+
+                    double dx = x2 - x1;
+                    if (Math.Abs(dx) < 0.05) dx = 0.05;
+
+                    double slope = (y2 - y1) / dx;
+                    double targetExtX = Math.Max(x2 + 1.0, extSubX);
+                    double yExt = y1 + slope * (targetExtX - x1);
+
+                    double actualExtX = targetExtX;
+                    if (yExt <= 0 && y1 > 0 && slope < 0)
+                    {
+                        actualExtX = x1 - (y1 / slope);
+                        yExt = 0;
+                    }
+
+                    bool isRes = line.IsResistance;
+                    chIdxMap.TryGetValue(line.ChannelId, out int chIdx);
+                    string chTag = chIdx > 0 ? $"[#{chIdx}] " : "";
+
+                    Color lineColor;
+                    if (chIdx == 2)
+                    {
+                        lineColor = isRes ? Color.FromHex("#f43f5e") : Color.FromHex("#3b82f6");
+                    }
+                    else if (chIdx == 3)
+                    {
+                        lineColor = isRes ? Color.FromHex("#eab308") : Color.FromHex("#14b8a6");
+                    }
+                    else if (chIdx >= 4)
+                    {
+                        lineColor = isRes ? Color.FromHex("#a855f7") : Color.FromHex("#10b981");
+                    }
+                    else
+                    {
+                        lineColor = isRes ? Color.FromHex("#fb923c") : Color.FromHex("#06b6d4");
+                    }
+
+                    var baseLine = plot.Add.Line(x1, y1, x2, y2);
+                    baseLine.Color = lineColor;
+                    baseLine.LineWidth = 1.8f;
+                    baseLine.LinePattern = LinePattern.Solid;
+
+                    var m1 = plot.Add.Marker(x1, y1);
+                    m1.Shape = MarkerShape.FilledCircle;
+                    m1.Size = 4;
+                    m1.Color = lineColor;
+
+                    var m2 = plot.Add.Marker(x2, y2);
+                    m2.Shape = MarkerShape.FilledCircle;
+                    m2.Size = 4;
+                    m2.Color = lineColor;
+
+                    if (actualExtX > x2)
+                    {
+                        var extLine = plot.Add.Line(x2, y2, actualExtX, yExt);
+                        extLine.Color = lineColor.WithAlpha(170);
+                        extLine.LineWidth = 1.2f;
+                        extLine.LinePattern = LinePattern.Dashed;
+                    }
+
+                    string tag = isRes ? $"{chTag}R: {yExt:F2}" : $"{chTag}S: {yExt:F2}";
+                    var txt = plot.Add.Text(tag, actualExtX, yExt);
+                    txt.LabelFontName = chineseFont;
+                    txt.LabelFontSize = 8.0f;
+                    txt.LabelBold = true;
+                    txt.LabelFontColor = lineColor;
+                    txt.LabelBackgroundColor = Color.FromHex("#0f172a").WithAlpha(0.90);
+                    txt.LabelBorderColor = lineColor;
+                    txt.LabelBorderWidth = 1f;
+                    txt.LabelAlignment = isRes ? Alignment.LowerLeft : Alignment.UpperLeft;
                 }
             }
 
@@ -1561,11 +1759,6 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             if (plot == null || tr == null || xE <= xS) return;
 
             bool isBull = tr.IsBullish;
-            decimal firstHigh = tr.FirstBarHigh > 0 ? tr.FirstBarHigh : tr.StartPrice;
-            decimal firstLow = tr.FirstBarLow > 0 ? tr.FirstBarLow : tr.StartPrice;
-            double yHigh = (double)firstHigh;
-            double yLow = (double)firstLow;
-
             double slope45 = tr.MacroSlope45;
             if (slope45 <= 0 && MacroPlotHelper.LastSlope45 > 0)
             {
@@ -1579,24 +1772,35 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
 
             var angles = (customAngles != null && customAngles.Count > 0) ? customAngles : new double[] { 25.0, 45.0, 65.0 };
 
-            var anchorPoints = isBull
-                ? new (string label, double price, bool isPrimary)[] { ("L", yLow, true), ("H", yHigh, false) }
-                : new (string label, double price, bool isPrimary)[] { ("H", yHigh, true), ("L", yLow, false) };
-
-            double deltaBarS = barPosS - tr.StartIndex;
-            double deltaBarE = barPosE - tr.StartIndex;
-            if (deltaBarE <= deltaBarS) deltaBarE = deltaBarS + 1.0;
+            // 提取通道各关键特征点位 (起点、确立点、极值最高点、极值最低点、终点)
+            var anchorPoints = MacroPlotHelper.GetChannelKeyAnchorPoints(tr, null, null, int.MaxValue);
+            double totalSpan = barPosE - barPosS;
+            if (totalSpan <= 0) totalSpan = 1.0;
 
             foreach (var anchor in anchorPoints)
             {
-                // 如果当前正好包含趋势的第一根 K 线的起点，在微观图上也绘制圆点锚点
-                if (Math.Abs(deltaBarS) < 1e-4)
+                // 若该点位发生在未来（相对当前微观视窗末端），在当前视窗中不发射
+                if (anchor.x > barPosE) continue;
+
+                double deltaBarS = barPosS - anchor.x;
+                double deltaBarE = barPosE - anchor.x;
+
+                // 若锚点位于当前微观图表区间内，绘制圆点/三角形特征锚点标记
+                if (anchor.x >= barPosS && anchor.x <= barPosE)
                 {
-                    var mAnchor = plot.Add.Marker(xS, anchor.price);
-                    mAnchor.Shape = MarkerShape.FilledCircle;
+                    double mX = xS + ((anchor.x - barPosS) / totalSpan) * (xE - xS);
+                    var mAnchor = plot.Add.Marker(mX, anchor.price);
+                    mAnchor.Shape = anchor.isHigh ? MarkerShape.FilledTriangleUp : MarkerShape.FilledTriangleDown;
                     mAnchor.Size = isSelected ? 6 : 4;
                     mAnchor.Color = isBull ? Color.FromHex("#10b981") : Color.FromHex("#ef4444");
                 }
+
+                // 确定微观绘制的起始 X 像素位置
+                double lineStartMicroX = anchor.x >= barPosS
+                    ? xS + ((anchor.x - barPosS) / totalSpan) * (xE - xS)
+                    : xS;
+
+                double startDelta = anchor.x >= barPosS ? 0 : deltaBarS;
 
                 foreach (var deg in angles)
                 {
@@ -1605,8 +1809,8 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                     bool is45 = Math.Abs(deg - 45.0) < 0.01;
 
                     double yS = isBull
-                        ? anchor.price + slopeDeg * deltaBarS
-                        : anchor.price - slopeDeg * deltaBarS;
+                        ? anchor.price + slopeDeg * startDelta
+                        : anchor.price - slopeDeg * startDelta;
 
                     double yE = isBull
                         ? anchor.price + slopeDeg * deltaBarE
@@ -1620,11 +1824,11 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                     if (yS > 0 && yE < 0)
                     {
                         double frac = yS / (yS - yE);
-                        actualXE = xS + frac * (xE - xS);
+                        actualXE = lineStartMicroX + frac * (xE - lineStartMicroX);
                         actualYE = 0;
                     }
 
-                    if (actualXE <= xS) continue;
+                    if (actualXE <= lineStartMicroX) continue;
 
                     Color rayColor;
                     if (isBull)
@@ -1645,27 +1849,78 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                         rayColor = is45 ? Color.FromHex("#fbbf24") : rayColor;
                     }
 
-                    byte rayAlpha = isSelected ? (byte)230 : (byte)160;
+                    byte rayAlpha = isSelected ? (byte)230 : (byte)140;
                     var pattern = is45 ? LinePattern.Solid : (deg < 45.0 ? LinePattern.Dashed : LinePattern.Dotted);
                     float lineWidth = is45 ? (isSelected ? 1.8f : 1.3f) : (isSelected ? 1.4f : 1.0f);
 
-                    var angleLine = plot.Add.Line(xS, yS, actualXE, actualYE);
+                    var angleLine = plot.Add.Line(lineStartMicroX, yS, actualXE, actualYE);
                     angleLine.Color = rayColor.WithAlpha(rayAlpha);
                     angleLine.LineWidth = lineWidth;
                     angleLine.LinePattern = pattern;
 
                     // 绘制末端角度标注
-                    string signStr = isBull ? "+" : "-";
-                    string endLabel = $"{anchor.label} {signStr}{deg:0.##}°";
-                    var txtAngle = plot.Add.Text(endLabel, actualXE, actualYE);
-                    txtAngle.LabelFontName = chineseFont;
-                    txtAngle.LabelFontSize = 7.5f;
-                    txtAngle.LabelBold = is45;
-                    txtAngle.LabelFontColor = rayColor;
-                    txtAngle.LabelAlignment = isBull ? Alignment.LowerLeft : Alignment.UpperLeft;
-                    txtAngle.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.85);
+                    if (isSelected || is45 || anchor.label == "确立" || anchor.label.Contains("顶") || anchor.label.Contains("底"))
+                    {
+                        string signStr = isBull ? "+" : "-";
+                        string endLabel = $"{anchor.label} {signStr}{deg:0.##}°";
+                        var txtAngle = plot.Add.Text(endLabel, actualXE, actualYE);
+                        txtAngle.LabelFontName = chineseFont;
+                        txtAngle.LabelFontSize = 7.5f;
+                        txtAngle.LabelBold = is45;
+                        txtAngle.LabelFontColor = rayColor;
+                        txtAngle.LabelAlignment = isBull ? Alignment.LowerLeft : Alignment.UpperLeft;
+                        txtAngle.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.85);
+                    }
                 }
             }
+        }
+
+        /// <summary>
+        /// 将时间精确映射到微观小周期 K 线图表的 X 轴坐标
+        /// </summary>
+        public static double MapTimeToSubBucketX(DateTime targetTime, IReadOnlyList<PeriodBucket>? subBuckets)
+        {
+            if (subBuckets == null || subBuckets.Count == 0) return 0;
+            int M = subBuckets.Count;
+            for (int k = 0; k < M; k++)
+            {
+                if (targetTime >= subBuckets[k].StartTime && targetTime <= subBuckets[k].EndTime)
+                {
+                    double totalSec = (subBuckets[k].EndTime - subBuckets[k].StartTime).TotalSeconds;
+                    double frac = totalSec > 0 ? (targetTime - subBuckets[k].StartTime).TotalSeconds / totalSec : 0.5;
+                    return k + frac - 0.5;
+                }
+            }
+            if (targetTime < subBuckets[0].StartTime)
+            {
+                double barSec = (subBuckets[0].EndTime - subBuckets[0].StartTime).TotalSeconds;
+                if (barSec <= 0) barSec = 60;
+                return (targetTime - subBuckets[0].StartTime).TotalSeconds / barSec;
+            }
+            var last = subBuckets[M - 1];
+            double lastSec = (last.EndTime - last.StartTime).TotalSeconds;
+            if (lastSec <= 0) lastSec = 60;
+            return (M - 1) + (targetTime - last.EndTime).TotalSeconds / lastSec;
+        }
+
+        /// <summary>
+        /// 将时间精确映射到微观 Tick 原始序列的 X 轴下标坐标
+        /// </summary>
+        public static double MapTimeToTickX(DateTime targetTime, IReadOnlyList<RawTick>? ticks, int cursor)
+        {
+            if (ticks == null || ticks.Count == 0 || cursor <= 0) return 0;
+            int count = Math.Min(cursor, ticks.Count);
+            long targetMs = ((DateTimeOffset)targetTime).ToUnixTimeMilliseconds();
+
+            int low = 0, high = count - 1;
+            while (low <= high)
+            {
+                int mid = (low + high) / 2;
+                if (ticks[mid].Time == targetMs) return mid;
+                if (ticks[mid].Time < targetMs) low = mid + 1;
+                else high = mid - 1;
+            }
+            return Math.Clamp(low, 0, count - 1);
         }
     }
 

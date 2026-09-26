@@ -74,6 +74,7 @@ namespace Test.ChannelPlayback.WinForms.Models
         public decimal ReversalChannelZonePct { get; set; } = 25.0m; // 绿色通道顶部/底部观察阶段进入区间阈值(%), 默认 25% (即上涨需到达通道上部 25% 或突破上轨，下跌需到达通道下部 25% 或突破下轨)
         public decimal ReversalNearLineTolerancePct { get; set; } = 8.0m; // 到达百分比观察线附近的容差比例(占通道高度%, 默认 8%)
         public int ReversalMinTicksAfterNearLine { get; set; } = 2; // 到线附近后确认相对高低点所需最小后续Tick笔数 (默认 2 笔)
+        public int ReversalMinTicksAfterPeakForSell { get; set; } = 5; // 做空单在 Tick 级别形成高点后确保高点已经形成所需的最小后续 Tick 笔数 (默认 5 笔)
         public int ReversalLookbackTicks { get; set; } = 1000; // 观察期开始时向前回溯计算高低点的 Tick 数量 (默认 1000 笔)
         public bool ShowReversalYellowLines { get; set; } = true;
         public bool ShowObservationCycles { get; set; } = true;

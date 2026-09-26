@@ -1,4 +1,6 @@
 using Common;
+using Common.Helper;
+using Common.Models;
 using ScottPlot.WinForms;
 using System;
 using System.Collections.Concurrent;
@@ -76,6 +78,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
         private Label lblBatchBadge = null!;
         private CheckBox chkConsecutiveTrend = null!;
         private CheckBox chkAngleLines = null!;
+        private CheckBox chkMacroRecentTrendLines = null!;
         private Label lblCustomAngles = null!;
         private TextBox txtCustomAngles = null!;
         private NumericUpDown numConsecutiveBars = null!;
@@ -119,6 +122,17 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
         private Label lblTickConsecutivePct = null!;
         private NumericUpDown numTickConsecutivePct = null!;
         private CheckBox chkTickAngleLines = null!;
+        private CheckBox chkTickRecentTrendLines = null!;
+
+        // 动态通道趋势线记录与管理 (只有通道信号产生后才绘制，且每个通道的趋势线均保留观察)
+        private bool _hasConsecutiveTrendTriggered = false;
+        private RecentSubPeriodTrendLineResult? _latestDynamicTrendLines = null;
+        private long _lastEvaluatedTotalTicks = -1;
+        private readonly List<Common.Models.TrendLine> _persistentRetainedLines = new();
+        private readonly Dictionary<int, ChannelTrendLineRecord> _channelTrendLineRecords = new();
+        private TimeSpan _lastTrendSubPeriodSpan = TimeSpan.Zero;
+        private int _lastEvaluatedTrendsCount = -1;
+        private int _lastEvaluatedEndIndex = -1;
 
         // K线点击与Shift多选状态 (大周期)
         private int? _selectedBarAnchor = null;
@@ -333,7 +347,17 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             };
 
             btnStop = CreateButton("停止", 80, 35, 64, 26, Color.FromArgb(225, 29, 72));
-            btnStop.Click += (s, e) => _engine.Stop();
+            btnStop.Click += (s, e) =>
+            {
+                _engine.Stop();
+                _hasConsecutiveTrendTriggered = false;
+                _latestDynamicTrendLines = null;
+                _lastEvaluatedTotalTicks = -1;
+                _lastEvaluatedTrendsCount = -1;
+                _lastEvaluatedEndIndex = -1;
+                _persistentRetainedLines.Clear();
+                _channelTrendLineRecords.Clear();
+            };
 
             btnNextBucket = CreateButton("完成当前周期", 150, 35, 102, 26, Color.FromArgb(124, 58, 237));
             btnNextBucket.Click += (s, e) => _engine.FastForwardCurrentBucket();
@@ -519,6 +543,25 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 RefreshTickPlotDirectly();
             };
 
+            chkMacroRecentTrendLines = new CheckBox
+            {
+                Text = "300根趋势线",
+                Location = new Point(995, 64),
+                AutoSize = true,
+                Checked = _settings.ShowMacroRecentTrendLines,
+                ForeColor = Color.FromArgb(56, 189, 248), // 亮天蓝
+                Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold),
+                Cursor = Cursors.Hand
+            };
+            _toolTip.SetToolTip(chkMacroRecentTrendLines, "当出现连续涨跌后，提取最近300根小周期K线的高低点绘制动态趋势线 (大周期K线图显示)");
+            chkMacroRecentTrendLines.CheckedChanged += (s, e) =>
+            {
+                _settings.ShowMacroRecentTrendLines = chkMacroRecentTrendLines.Checked;
+                _macroPlotNeedsRefresh = true;
+                formsPlotMacro.Refresh();
+                SaveSettingsFromUi();
+            };
+
             pnlTop.Controls.AddRange(new Control[]
             {
                 lblCoin, cboCoin,
@@ -533,7 +576,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 lblChartType, cboChartType,
                 chkConsecutiveTrend, lblConsecutiveBars, numConsecutiveBars, lblConsecutivePct, numConsecutivePct,
                 lblProgOverall, prgOverall, lblProgBucket, prgBucket,
-                chkAngleLines, lblCustomAngles, txtCustomAngles
+                chkAngleLines, lblCustomAngles, txtCustomAngles,
+                chkMacroRecentTrendLines
             });
 
             // 2. 主分割容器 (上下切分：上部大周期 K 线，下部 Tick 图表 + 右侧监控看板)
@@ -960,6 +1004,24 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 RepositionTickHeaderControls();
             };
 
+            chkTickRecentTrendLines = new CheckBox
+            {
+                Text = "300根线",
+                Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(249, 115, 22), // 珊瑚橙
+                AutoSize = true,
+                Checked = _settings.ShowTickRecentTrendLines,
+                Cursor = Cursors.Hand
+            };
+            _toolTip.SetToolTip(chkTickRecentTrendLines, "当出现连续涨跌后，提取最近300根小周期K线的高低点绘制动态趋势线 (微观Tick视窗显示)");
+            chkTickRecentTrendLines.CheckedChanged += (s, e) =>
+            {
+                _settings.ShowTickRecentTrendLines = chkTickRecentTrendLines.Checked;
+                SaveSettingsFromUi();
+                RefreshTickPlotDirectly();
+                RepositionTickHeaderControls();
+            };
+
             chkShowTickRatio = new CheckBox
             {
                 Text = "显示比值",
@@ -989,6 +1051,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             lblTickConsecutivePct.SizeChanged += (s, e) => RepositionTickHeaderControls();
             numTickConsecutivePct.SizeChanged += (s, e) => RepositionTickHeaderControls();
             chkTickAngleLines.SizeChanged += (s, e) => RepositionTickHeaderControls();
+            chkTickRecentTrendLines.SizeChanged += (s, e) => RepositionTickHeaderControls();
             chkShowTickRatio.SizeChanged += (s, e) => RepositionTickHeaderControls();
             lblTickRatioBadge.SizeChanged += (s, e) => RepositionTickHeaderControls();
             lblVolRatioBadge.SizeChanged += (s, e) => RepositionTickHeaderControls();
@@ -1011,6 +1074,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             tickControls.Add(lblTickConsecutivePct);
             tickControls.Add(numTickConsecutivePct);
             tickControls.Add(chkTickAngleLines);
+            tickControls.Add(chkTickRecentTrendLines);
             tickControls.Add(chkShowTickRatio);
             tickControls.Add(lblTickBadge);
             tickControls.Add(lblTickRatioBadge);
@@ -1285,6 +1349,13 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
 
             ClearBarSelection();
             _engine.Stop();
+            _hasConsecutiveTrendTriggered = false;
+            _latestDynamicTrendLines = null;
+            _lastEvaluatedTotalTicks = -1;
+            _lastEvaluatedTrendsCount = -1;
+            _lastEvaluatedEndIndex = -1;
+            _persistentRetainedLines.Clear();
+            _channelTrendLineRecords.Clear();
 
             string coin = cboCoin.SelectedItem?.ToString() ?? "BTCUSDT";
             DateTime startDate = dtpStart.Value.Date;
@@ -1724,6 +1795,12 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 row1LeftX = chkTickAngleLines.Right + 8;
             }
 
+            if (chkTickRecentTrendLines != null)
+            {
+                chkTickRecentTrendLines.Location = new Point(row1LeftX, 7);
+                row1LeftX = chkTickRecentTrendLines.Right + 8;
+            }
+
             if (chkShowTickRatio != null)
             {
                 chkShowTickRatio.Location = new Point(row1LeftX, 7);
@@ -1789,6 +1866,170 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             }
         }
 
+        /// <summary>
+        /// 评估并管理基于通道信号的 300 根小周期 K 线高低点与动态趋势线
+        /// 核心规则：
+        /// 1. 只有在通道信号产生后才进行趋势线绘制 (通道信号产生前绝不画趋势线)
+        /// 2. 每个通道产生的趋势线均独立保留并在后续回放中持续观察
+        /// </summary>
+        private RecentSubPeriodTrendLineResult? EvaluateRecentDynamicTrendLines()
+        {
+            if (!_settings.ShowMacroRecentTrendLines && !_settings.ShowTickRecentTrendLines)
+            {
+                return null;
+            }
+
+            var completed = _engine.GetCompletedMacroBarsSnapshot();
+            var forming = _engine.CurrentFormingBar;
+            var trends = MacroConsecutiveTrendDetector.ScanTrends(
+                completed,
+                forming,
+                _settings.ConsecutiveMinBars,
+                _settings.ConsecutiveMinPct);
+
+            // 🌟 核心要求 1：只有在通道信号产生后才进行趋势线绘制
+            // 若当前尚未产生任何通道信号，且历史记录为空，绝不绘制任何趋势线
+            if (trends.Count == 0 && _channelTrendLineRecords.Count == 0)
+            {
+                _hasConsecutiveTrendTriggered = false;
+                _latestDynamicTrendLines = null;
+                return null;
+            }
+
+            var subSpan = GetSelectedTickPeriodSpan() ?? TimeSpan.FromMinutes(1);
+            if (_lastTrendSubPeriodSpan != subSpan)
+            {
+                _lastTrendSubPeriodSpan = subSpan;
+                _channelTrendLineRecords.Clear();
+                _lastEvaluatedTrendsCount = -1;
+                _lastEvaluatedEndIndex = -1;
+            }
+
+            int activeEndIndex = trends.Count > 0 ? trends[^1].EndIndex : -1;
+            long curTotalTicks = _engine.TotalTicksPlayed;
+
+            bool needsUpdate = false;
+            // 通道数量增加 (产生新通道信号)
+            if (trends.Count != _lastEvaluatedTrendsCount)
+            {
+                needsUpdate = true;
+            }
+            // 存在尚未记录生成趋势线的通道
+            else if (trends.Any(t => !_channelTrendLineRecords.ContainsKey(t.Id)))
+            {
+                needsUpdate = true;
+            }
+            // 最新通道仍在活跃形成中，随 K 线推进或经过一定 Tick 量动态精细更新
+            else if (trends.Count > 0 && trends[^1].IsActive &&
+                     (activeEndIndex != _lastEvaluatedEndIndex || Math.Abs(curTotalTicks - _lastEvaluatedTotalTicks) >= 30))
+            {
+                needsUpdate = true;
+            }
+
+            if (!needsUpdate && _latestDynamicTrendLines != null)
+            {
+                return _latestDynamicTrendLines;
+            }
+
+            _lastEvaluatedTrendsCount = trends.Count;
+            _lastEvaluatedEndIndex = activeEndIndex;
+            _lastEvaluatedTotalTicks = curTotalTicks;
+
+            // 🌟 核心要求 2：每个通道产生的趋势线均需要保留以便后续观察
+            int chIndex = 1;
+            foreach (var tr in trends)
+            {
+                if (!_channelTrendLineRecords.TryGetValue(tr.Id, out var existingRecord))
+                {
+                    // 为新确立的通道生成 300 根小周期动态趋势线记录
+                    var rec = RecentSubPeriodTrendLineDetector.GenerateForChannel(
+                        tr,
+                        chIndex,
+                        _engine.Buckets,
+                        _engine.CurrentBucketIndex,
+                        _engine.CurrentTickIndex,
+                        subSpan,
+                        maxSmallBars: 300);
+
+                    if (rec != null)
+                    {
+                        _channelTrendLineRecords[tr.Id] = rec;
+                    }
+                }
+                else if (tr.IsActive)
+                {
+                    // 活跃通道推进中更新其最新高低点与趋势线
+                    var updatedRec = RecentSubPeriodTrendLineDetector.GenerateForChannel(
+                        tr,
+                        existingRecord.ChannelIndex,
+                        _engine.Buckets,
+                        _engine.CurrentBucketIndex,
+                        _engine.CurrentTickIndex,
+                        subSpan,
+                        maxSmallBars: 300);
+
+                    if (updatedRec != null)
+                    {
+                        _channelTrendLineRecords[tr.Id] = updatedRec;
+                    }
+                }
+                chIndex++;
+            }
+
+            if (_channelTrendLineRecords.Count == 0)
+            {
+                _hasConsecutiveTrendTriggered = false;
+                _latestDynamicTrendLines = null;
+                return null;
+            }
+
+            _hasConsecutiveTrendTriggered = true;
+
+            // 汇总所有已保留通道的趋势线与高低极值点，供图表全面渲染与前向延伸观察
+            var allSelected = new List<TrendLine>();
+            var allPeaks = new List<PivotPoint>();
+            var allValleys = new List<PivotPoint>();
+            var allRes = new List<TrendLine>();
+            var allSup = new List<TrendLine>();
+
+            foreach (var rec in _channelTrendLineRecords.Values.OrderBy(r => r.ChannelIndex))
+            {
+                if (rec.SelectedLines != null && rec.SelectedLines.Count > 0)
+                {
+                    allSelected.AddRange(rec.SelectedLines);
+                }
+                if (rec.Peaks != null && rec.Peaks.Count > 0)
+                {
+                    allPeaks.AddRange(rec.Peaks);
+                }
+                if (rec.Valleys != null && rec.Valleys.Count > 0)
+                {
+                    allValleys.AddRange(rec.Valleys);
+                }
+                if (rec.ResistanceLines != null && rec.ResistanceLines.Count > 0)
+                {
+                    allRes.AddRange(rec.ResistanceLines);
+                }
+                if (rec.SupportLines != null && rec.SupportLines.Count > 0)
+                {
+                    allSup.AddRange(rec.SupportLines);
+                }
+            }
+
+            _latestDynamicTrendLines = new RecentSubPeriodTrendLineResult
+            {
+                SubPeriodSpan = subSpan,
+                SelectedLines = allSelected,
+                Peaks = allPeaks,
+                Valleys = allValleys,
+                ResistanceLines = allRes,
+                SupportLines = allSup,
+                ChannelRecords = _channelTrendLineRecords.Values.ToList()
+            };
+
+            return _latestDynamicTrendLines;
+        }
+
         private void RenderLiveTickPlot()
         {
             var curBucket = _engine.CurrentBucket;
@@ -1849,8 +2090,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 {
                     tr.MacroSlope45 = MacroPlotHelper.LastSlope45;
                     if (!_settings.ShowTickAngleLines && !tr.HasChannel) return false;
-                    int extEnd = Math.Max(tr.EndIndex + forwardBars, _engine.TotalBuckets - 1);
-                    return curIdx >= tr.StartIndex && curIdx <= extEnd;
+                    return curIdx >= tr.StartIndex; // 🌟 且保留：所有历史通道持续在微观视窗中保留并前向投影
                 }).ToList();
 
                 if (matched.Count > 0)
@@ -1861,6 +2101,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             }
 
             var parsedAngles = PeriodPlaybackSettings.ParseAngles(_settings.CustomAngles);
+            var dynTrendLines = EvaluateRecentDynamicTrendLines();
 
             TickPlotHelper.BuildTickPlot(
                 formsPlotTick.Plot,
@@ -1890,6 +2131,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 selectedBarEndIndex: _engine.CurrentBucketIndex,
                 macroBarTimes: _engine.Buckets?.Select(b => (b.StartTime, b.EndTime)).ToList(),
                 hoverIndicator: _tickHoverIndicator,
+                showRecentTrendLines: _settings.ShowTickRecentTrendLines && _hasConsecutiveTrendTriggered && (dynTrendLines?.HasLines ?? false),
+                recentTrendLineResult: dynTrendLines,
                 selectedMicroBarStartIndex: _selectedMicroBarStartIndex,
                 selectedMicroBarEndIndex: _selectedMicroBarEndIndex);
 
@@ -2054,6 +2297,7 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                     _macroPlotNeedsRefresh = false;
                     try
                     {
+                        var dynTrendLines = EvaluateRecentDynamicTrendLines();
                         MacroPlotHelper.BuildMacroPlot(
                             formsPlotMacro.Plot,
                             _engine.GetCompletedMacroBarsSnapshot(),
@@ -2071,6 +2315,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                             channelExtensionBars: _settings.ChannelExtensionBars,
                             showAngleLines: chkAngleLines.Checked,
                             customAngles: PeriodPlaybackSettings.ParseAngles(_settings.CustomAngles),
+                            showRecentTrendLines: _settings.ShowMacroRecentTrendLines && _hasConsecutiveTrendTriggered && (dynTrendLines?.HasLines ?? false),
+                            recentTrendLineResult: dynTrendLines,
                             canvasWidth: formsPlotMacro.Width,
                             canvasHeight: formsPlotMacro.Height);
 
@@ -2809,6 +3055,56 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 _lastDefaultTickBadgeColor = lblTickBadge.ForeColor;
             }
 
+            RecentSubPeriodTrendLineResult? selDynTrendLines = null;
+            if (_settings.ShowTickRecentTrendLines && (hasChannel || primaryTrend != null || _channelTrendLineRecords.Count > 0))
+            {
+                if (primaryTrend != null && _channelTrendLineRecords.TryGetValue(primaryTrend.Id, out var chRec))
+                {
+                    selDynTrendLines = new RecentSubPeriodTrendLineResult
+                    {
+                        SubPeriodSpan = span ?? TimeSpan.FromMinutes(1),
+                        SelectedLines = chRec.SelectedLines,
+                        Peaks = chRec.Peaks,
+                        Valleys = chRec.Valleys,
+                        ResistanceLines = chRec.ResistanceLines,
+                        SupportLines = chRec.SupportLines,
+                        ChannelRecords = new[] { chRec }
+                    };
+                }
+                else if (primaryTrend != null)
+                {
+                    var newChRec = RecentSubPeriodTrendLineDetector.GenerateForChannel(
+                        primaryTrend,
+                        1,
+                        _engine.Buckets,
+                        primaryTrend.EndIndex,
+                        0,
+                        span ?? TimeSpan.FromMinutes(1),
+                        maxSmallBars: 300);
+
+                    if (newChRec != null)
+                    {
+                        selDynTrendLines = new RecentSubPeriodTrendLineResult
+                        {
+                            SubPeriodSpan = span ?? TimeSpan.FromMinutes(1),
+                            SelectedLines = newChRec.SelectedLines,
+                            Peaks = newChRec.Peaks,
+                            Valleys = newChRec.Valleys,
+                            ResistanceLines = newChRec.ResistanceLines,
+                            SupportLines = newChRec.SupportLines,
+                            ChannelRecords = new[] { newChRec }
+                        };
+                    }
+                }
+                else if (hasChannel)
+                {
+                    selDynTrendLines = RecentSubPeriodTrendLineDetector.DetectFromTicks(
+                        aggregatedTicks,
+                        span ?? TimeSpan.FromMinutes(1),
+                        maxSmallBars: 300);
+                }
+            }
+
             // 绘制微观走势 (蜡烛图或折线图，含副图与 HUD)
             TickPlotHelper.BuildTickPlot(
                 formsPlotTick.Plot,
@@ -2839,6 +3135,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 selectedBarEndIndex: eIdx,
                 macroBarTimes: _engine.Buckets.Select(b => (b.StartTime, b.EndTime)).ToList(),
                 hoverIndicator: _tickHoverIndicator,
+                showRecentTrendLines: _settings.ShowTickRecentTrendLines && (selDynTrendLines?.HasLines ?? false),
+                recentTrendLineResult: selDynTrendLines,
                 selectedMicroBarStartIndex: _selectedMicroBarStartIndex,
                 selectedMicroBarEndIndex: _selectedMicroBarEndIndex);
 
@@ -3108,6 +3406,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 chkConsecutiveTrend.Checked = _settings.ShowConsecutiveTrend;
                 if (chkAngleLines != null) chkAngleLines.Checked = _settings.ShowMacroAngleLines;
                 if (chkTickAngleLines != null) chkTickAngleLines.Checked = _settings.ShowTickAngleLines;
+                if (chkMacroRecentTrendLines != null) chkMacroRecentTrendLines.Checked = _settings.ShowMacroRecentTrendLines;
+                if (chkTickRecentTrendLines != null) chkTickRecentTrendLines.Checked = _settings.ShowTickRecentTrendLines;
                 if (txtCustomAngles != null) txtCustomAngles.Text = _settings.CustomAngles;
                 numConsecutiveBars.Value = Math.Clamp(_settings.ConsecutiveMinBars, 2, 50);
                 numConsecutivePct.Value = Math.Clamp(_settings.ConsecutiveMinPct, 0.1m, 50.0m);
@@ -3229,6 +3529,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             _settings.ShowConsecutiveTrend = chkConsecutiveTrend.Checked;
             if (chkAngleLines != null) _settings.ShowMacroAngleLines = chkAngleLines.Checked;
             if (chkTickAngleLines != null) _settings.ShowTickAngleLines = chkTickAngleLines.Checked;
+            if (chkMacroRecentTrendLines != null) _settings.ShowMacroRecentTrendLines = chkMacroRecentTrendLines.Checked;
+            if (chkTickRecentTrendLines != null) _settings.ShowTickRecentTrendLines = chkTickRecentTrendLines.Checked;
             if (txtCustomAngles != null && !string.IsNullOrWhiteSpace(txtCustomAngles.Text)) _settings.CustomAngles = txtCustomAngles.Text.Trim();
             _settings.ConsecutiveMinBars = (int)numConsecutiveBars.Value;
             _settings.ConsecutiveMinPct = numConsecutivePct.Value;

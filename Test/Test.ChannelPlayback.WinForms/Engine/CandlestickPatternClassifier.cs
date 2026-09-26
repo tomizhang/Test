@@ -22,7 +22,7 @@ namespace Test.ChannelPlayback.WinForms.Engine
             decimal pLong = DefaultPLong,
             decimal pMedium = DefaultPMedium,
             decimal pShort = DefaultPShort)
-        {
+        { 
             return Classify(kline.Open, kline.High, kline.Low, kline.Close, pLong, pMedium, pShort);
         }
 

@@ -69,6 +69,8 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             int channelExtensionBars = 15,
             bool showAngleLines = true,
             IReadOnlyList<double>? customAngles = null,
+            bool showRecentTrendLines = true,
+            RecentSubPeriodTrendLineResult? recentTrendLineResult = null,
             double canvasWidth = 1200,
             double canvasHeight = 450)
         {
@@ -324,9 +326,8 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
 
                     int forwardBars = Math.Max(5, channelExtensionBars);
                     bool isLatestTrend = (tIdx == trends.Count - 1);
-                    int extEnd = isLatestTrend
-                        ? Math.Max(totalDisplayCount - 1, eIdx) + forwardBars
-                        : Math.Min(Math.Max(totalDisplayCount - 1, eIdx) + forwardBars, eIdx + Math.Max(20, forwardBars));
+                    // 🌟 且保留：所有历史通道与活跃通道均持续向前延伸至图表最新位置及未来空间，绝不在回放推进时截断消失
+                    int extEnd = Math.Max(totalDisplayCount - 1, eIdx) + forwardBars;
 
                     if (showConsecutiveTrend)
                     {
@@ -481,104 +482,219 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                     txtTag.LabelBorderWidth = isChannelSelected ? 2f : 1f;
                     } // end of if (showConsecutiveTrend)
 
-                    // ⑧ 基于第一根 K 线高低双点位的多角度趋势线 (延长趋势线，可独立显示)
+                    // ⑧ 基于通道每个关键点位 (起点、确立点、极值最高点、极值最低点、终点) 的多角度趋势线与前向射线 (且保留持续延伸)
                     if (showAngleLines && slope45 > 0)
                     {
-                        decimal firstHigh = tr.FirstBarHigh > 0 ? tr.FirstBarHigh : (sIdx < completedCount && completedBars != null ? completedBars[sIdx].High : (formingBar?.High ?? tr.StartPrice));
-                        decimal firstLow = tr.FirstBarLow > 0 ? tr.FirstBarLow : (sIdx < completedCount && completedBars != null ? completedBars[sIdx].Low : (formingBar?.Low ?? tr.StartPrice));
-                        double yHigh = (double)firstHigh;
-                        double yLow = (double)firstLow;
-                        double xStart = sIdx;
-                        double xEnd = extEnd;
-                        double dx = xEnd - xStart;
+                        var anchorPoints = GetChannelKeyAnchorPoints(tr, completedBars, formingBar, totalDisplayCount);
 
-                        if (dx > 0)
+                        var angles = (customAngles != null && customAngles.Count > 0) ? customAngles : new double[] { 25.0, 45.0, 65.0 };
+                        var angleConfigs = new List<(double deg, double slope, LinePattern pattern, float width)>(angles.Count);
+                        foreach (var deg in angles)
                         {
-                            var angles = (customAngles != null && customAngles.Count > 0) ? customAngles : new double[] { 25.0, 45.0, 65.0 };
-                            var angleConfigs = new List<(double deg, double slope, LinePattern pattern, float width)>(angles.Count);
-                            foreach (var deg in angles)
+                            double rad = deg * Math.PI / 180.0;
+                            double slope = Math.Tan(rad) * slope45;
+                            bool is45 = Math.Abs(deg - 45.0) < 0.01;
+                            LinePattern pat = is45 ? LinePattern.Solid : (deg < 45.0 ? LinePattern.Dashed : LinePattern.Dotted);
+                            float w = is45 ? (isChannelSelected ? 1.8f : 1.3f) : (isChannelSelected ? 1.4f : 1.0f);
+                            angleConfigs.Add((deg, slope, pat, w));
+                        }
+
+                        foreach (var anchor in anchorPoints)
+                        {
+                            double xStart = anchor.x;
+                            double dx = extEnd - xStart;
+                            if (dx <= 0) continue;
+
+                            // 绘制通道每个特征点位的锚点标记
+                            var anchorMarker = plot.Add.Marker(xStart, anchor.price);
+                            anchorMarker.Shape = anchor.isHigh ? MarkerShape.FilledTriangleUp : MarkerShape.FilledTriangleDown;
+                            anchorMarker.Size = isChannelSelected ? 6 : (isLatestTrend ? 5 : 4);
+                            anchorMarker.Color = isChannelSelected ? Color.FromHex("#fbbf24") : themeColor;
+
+                            foreach (var ac in angleConfigs)
                             {
-                                double rad = deg * Math.PI / 180.0;
-                                double slope = Math.Tan(rad) * slope45;
-                                bool is45 = Math.Abs(deg - 45.0) < 0.01;
-                                LinePattern pat = is45 ? LinePattern.Solid : (deg < 45.0 ? LinePattern.Dashed : LinePattern.Dotted);
-                                float w = is45 ? (isChannelSelected ? 1.8f : 1.3f) : (isChannelSelected ? 1.4f : 1.0f);
-                                angleConfigs.Add((deg, slope, pat, w));
-                            }
+                                double targetY = isBull
+                                    ? anchor.price + ac.slope * dx
+                                    : anchor.price - ac.slope * dx;
 
-                            // 高低双点位 (连续下跌：第一根为高点绘制，同理以第一根低点绘制；连续上涨：第一根为低点绘制，同理以第一根高点绘制)
-                            var anchorPoints = isBull
-                                ? new (string label, double price, bool isPrimary)[] { ("L", yLow, true), ("H", yHigh, false) }
-                                : new (string label, double price, bool isPrimary)[] { ("H", yHigh, true), ("L", yLow, false) };
-
-                            foreach (var anchor in anchorPoints)
-                            {
-                                // 绘制第一根 K 线锚点圆点标记
-                                var anchorMarker = plot.Add.Marker(xStart, anchor.price);
-                                anchorMarker.Shape = MarkerShape.FilledCircle;
-                                anchorMarker.Size = isChannelSelected ? 6 : 4;
-                                anchorMarker.Color = themeColor;
-
-                                foreach (var ac in angleConfigs)
+                                // 底部保护截断 (防止价格跌破零)
+                                double actualXEnd = extEnd;
+                                if (targetY <= 0 && anchor.price > 0)
                                 {
-                                    double targetY = isBull
-                                        ? anchor.price + ac.slope * dx
-                                        : anchor.price - ac.slope * dx;
+                                    actualXEnd = xStart + (anchor.price / ac.slope);
+                                    targetY = 0;
+                                }
 
-                                    // 底部保护截断 (防止价格跌破零)
-                                    double actualXEnd = xEnd;
-                                    if (targetY <= 0 && anchor.price > 0)
-                                    {
-                                        actualXEnd = xStart + (anchor.price / ac.slope);
-                                        targetY = 0;
-                                    }
+                                if (actualXEnd <= xStart) continue;
 
-                                    if (actualXEnd <= xStart) continue;
+                                Color rayColor;
+                                bool is45 = Math.Abs(ac.deg - 45.0) < 0.01;
+                                if (isBull)
+                                {
+                                    rayColor = is45
+                                        ? Color.FromHex("#10b981") // 45° 翡翠绿基准
+                                        : (ac.deg < 45.0 ? Color.FromHex("#34d399") : Color.FromHex("#a3e635"));
+                                }
+                                else
+                                {
+                                    rayColor = is45
+                                        ? Color.FromHex("#ef4444") // 45° 烈火红基准
+                                        : (ac.deg < 45.0 ? Color.FromHex("#fb923c") : Color.FromHex("#f43f5e"));
+                                }
 
-                                    Color rayColor;
-                                    bool is45 = Math.Abs(ac.deg - 45.0) < 0.01;
-                                    if (isBull)
-                                    {
-                                        rayColor = is45
-                                            ? Color.FromHex("#10b981") // 45° 翡翠绿基准
-                                            : (ac.deg < 45.0 ? Color.FromHex("#34d399") : Color.FromHex("#a3e635"));
-                                    }
-                                    else
-                                    {
-                                        rayColor = is45
-                                            ? Color.FromHex("#ef4444") // 45° 烈火红基准
-                                            : (ac.deg < 45.0 ? Color.FromHex("#fb923c") : Color.FromHex("#f43f5e"));
-                                    }
+                                if (isChannelSelected)
+                                {
+                                    rayColor = is45 ? Color.FromHex("#fbbf24") : rayColor;
+                                }
 
-                                    if (isChannelSelected)
-                                    {
-                                        rayColor = is45 ? Color.FromHex("#fbbf24") : rayColor;
-                                    }
+                                // 🌟 且保留：保留适中通透度的线条，清晰可辨
+                                byte rayAlpha = isChannelSelected ? (byte)230 : (isLatestTrend ? (byte)180 : (byte)125);
 
-                                    byte rayAlpha = isChannelSelected ? (byte)230 : (isLatestTrend ? (byte)180 : (byte)100);
+                                var angleRay = plot.Add.Line(xStart, anchor.price, actualXEnd, targetY);
+                                angleRay.Color = rayColor.WithAlpha(rayAlpha);
+                                angleRay.LineWidth = ac.width;
+                                angleRay.LinePattern = ac.pattern;
 
-                                    var angleRay = plot.Add.Line(xStart, anchor.price, actualXEnd, targetY);
-                                    angleRay.Color = rayColor.WithAlpha(rayAlpha);
-                                    angleRay.LineWidth = ac.width;
-                                    angleRay.LinePattern = ac.pattern;
-
-                                    // 射线末端角度标注 (为最新活跃波段或选中波段标注)
-                                    if (isLatestTrend || isChannelSelected)
-                                    {
-                                        string signStr = isBull ? "+" : "-";
-                                        string endLabel = $"{anchor.label} {signStr}{ac.deg:0.##}°";
-                                        var txtAngle = plot.Add.Text(endLabel, actualXEnd, targetY);
-                                        txtAngle.LabelFontName = chineseFont;
-                                        txtAngle.LabelFontSize = 7.5f;
-                                        txtAngle.LabelBold = is45;
-                                        txtAngle.LabelFontColor = rayColor;
-                                        txtAngle.LabelAlignment = isBull ? Alignment.LowerLeft : Alignment.UpperLeft;
-                                        txtAngle.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.85);
-                                    }
+                                // 射线末端角度标注 (为最新活跃波段、选中波段、基准45°或确立/极值点位标注)
+                                if (isLatestTrend || isChannelSelected || is45 || anchor.label == "确立" || anchor.label.Contains("顶") || anchor.label.Contains("底"))
+                                {
+                                    string signStr = isBull ? "+" : "-";
+                                    string endLabel = $"{anchor.label} {signStr}{ac.deg:0.##}°";
+                                    var txtAngle = plot.Add.Text(endLabel, actualXEnd, targetY);
+                                    txtAngle.LabelFontName = chineseFont;
+                                    txtAngle.LabelFontSize = 7.5f;
+                                    txtAngle.LabelBold = is45;
+                                    txtAngle.LabelFontColor = rayColor;
+                                    txtAngle.LabelAlignment = isBull ? Alignment.LowerLeft : Alignment.UpperLeft;
+                                    txtAngle.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.85);
                                 }
                             }
                         }
                     }
+                }
+            }
+
+            // 4.8 绘制基于最近 300 根小周期 K 线高低点的动态趋势线 (支持独立勾选控制与前向延伸)
+            if (showRecentTrendLines && recentTrendLineResult != null && recentTrendLineResult.SelectedLines.Count > 0)
+            {
+                // ① 绘制高低极值点标记 (波峰高点与波谷低点)
+                if (recentTrendLineResult.Peaks != null)
+                {
+                    foreach (var pk in recentTrendLineResult.Peaks)
+                    {
+                        double pkX = MapTimeToMacroX(pk.Time, completedBars, formingBar);
+                        if (pkX >= -5 && pkX <= totalDisplayCount + 15)
+                        {
+                            var m = plot.Add.Marker(pkX, (double)pk.Price);
+                            m.Shape = MarkerShape.FilledTriangleUp;
+                            m.Size = 4;
+                            m.Color = Color.FromHex("#fb923c").WithAlpha(180); // 珊瑚橙高点
+                        }
+                    }
+                }
+                if (recentTrendLineResult.Valleys != null)
+                {
+                    foreach (var vy in recentTrendLineResult.Valleys)
+                    {
+                        double vyX = MapTimeToMacroX(vy.Time, completedBars, formingBar);
+                        if (vyX >= -5 && vyX <= totalDisplayCount + 15)
+                        {
+                            var m = plot.Add.Marker(vyX, (double)vy.Price);
+                            m.Shape = MarkerShape.FilledTriangleDown;
+                            m.Size = 4;
+                            m.Color = Color.FromHex("#06b6d4").WithAlpha(180); // 亮青蓝低点
+                        }
+                    }
+                }
+
+                // ② 绘制精选动态趋势线 (基准实线段 + 虚线前向延伸 + 价格端点标记)
+                int forwardBars = Math.Max(8, channelExtensionBars);
+                double extMacroX = (totalDisplayCount - 1) + forwardBars;
+
+                var chIdxMap = recentTrendLineResult.ChannelRecords?.ToDictionary(r => r.ChannelId, r => r.ChannelIndex) ?? new Dictionary<int, int>();
+
+                foreach (var line in recentTrendLineResult.SelectedLines)
+                {
+                    double x1 = MapTimeToMacroX(line.Time1, completedBars, formingBar);
+                    double x2 = MapTimeToMacroX(line.Time2, completedBars, formingBar);
+                    double y1 = (double)line.Y1;
+                    double y2 = (double)line.Y2;
+
+                    double dx = x2 - x1;
+                    if (Math.Abs(dx) < 0.05) dx = 0.05;
+
+                    double slope = (y2 - y1) / dx;
+                    double targetExtX = Math.Max(x2 + 1.0, extMacroX);
+                    double yExt = y1 + slope * (targetExtX - x1);
+
+                    // 底部保护截断 (防止跌破零)
+                    double actualExtX = targetExtX;
+                    if (yExt <= 0 && y1 > 0 && slope < 0)
+                    {
+                        actualExtX = x1 - (y1 / slope);
+                        yExt = 0;
+                    }
+
+                    bool isRes = line.IsResistance;
+                    chIdxMap.TryGetValue(line.ChannelId, out int chIdx);
+                    string chTag = chIdx > 0 ? $"[#{chIdx}] " : "";
+
+                    // 按通道赋予鲜明美观的配色方案，清晰区分不同通道的保留趋势线
+                    Color lineColor;
+                    if (chIdx == 2)
+                    {
+                        lineColor = isRes ? Color.FromHex("#f43f5e") : Color.FromHex("#3b82f6"); // #2: 玫红阻力 / 皇家蓝支撑
+                    }
+                    else if (chIdx == 3)
+                    {
+                        lineColor = isRes ? Color.FromHex("#eab308") : Color.FromHex("#14b8a6"); // #3: 琥珀金阻力 / 湖青绿支撑
+                    }
+                    else if (chIdx >= 4)
+                    {
+                        lineColor = isRes ? Color.FromHex("#a855f7") : Color.FromHex("#10b981"); // #4+: 梦幻紫阻力 / 翡翠绿支撑
+                    }
+                    else
+                    {
+                        lineColor = isRes ? Color.FromHex("#fb923c") : Color.FromHex("#06b6d4"); // #1 / 默认: 珊瑚橙阻力 / 亮青蓝支撑
+                    }
+
+                    // 基准实线段 (连接两高点/两低点)
+                    var baseLine = plot.Add.Line(x1, y1, x2, y2);
+                    baseLine.Color = lineColor;
+                    baseLine.LineWidth = 1.8f;
+                    baseLine.LinePattern = LinePattern.Solid;
+
+                    // 两端锚点标记
+                    var m1 = plot.Add.Marker(x1, y1);
+                    m1.Shape = MarkerShape.FilledCircle;
+                    m1.Size = 4;
+                    m1.Color = lineColor;
+
+                    var m2 = plot.Add.Marker(x2, y2);
+                    m2.Shape = MarkerShape.FilledCircle;
+                    m2.Size = 4;
+                    m2.Color = lineColor;
+
+                    // 前向延伸虚线
+                    if (actualExtX > x2)
+                    {
+                        var extLine = plot.Add.Line(x2, y2, actualExtX, yExt);
+                        extLine.Color = lineColor.WithAlpha(170);
+                        extLine.LineWidth = 1.2f;
+                        extLine.LinePattern = LinePattern.Dashed;
+                    }
+
+                    // 延长线末端价格标签 (带通道归属序号标识)
+                    string tag = isRes ? $"{chTag}R: {yExt:F2}" : $"{chTag}S: {yExt:F2}";
+                    var txt = plot.Add.Text(tag, actualExtX, yExt);
+                    txt.LabelFontName = chineseFont;
+                    txt.LabelFontSize = 8.0f;
+                    txt.LabelBold = true;
+                    txt.LabelFontColor = lineColor;
+                    txt.LabelBackgroundColor = Color.FromHex("#0f172a").WithAlpha(0.90);
+                    txt.LabelBorderColor = lineColor;
+                    txt.LabelBorderWidth = 1f;
+                    txt.LabelAlignment = isRes ? Alignment.LowerLeft : Alignment.UpperLeft;
                 }
             }
 
@@ -750,7 +866,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                     decimal slopeK = tr.SlopeK;
                     decimal upperB = tr.UpperIntercept;
                     decimal lowerB = tr.LowerIntercept;
-                    int extEnd = eIdx + channelExtensionBars;
+                    int extEnd = Math.Max(totalDisplayCount - 1, eIdx) + channelExtensionBars;
 
                     double yUpStart = (double)(slopeK * sIdx + upperB);
                     double yUpEnd = (double)(slopeK * eIdx + upperB);
@@ -845,6 +961,151 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             float distX = p.X - projX;
             float distY = p.Y - projY;
             return Math.Sqrt(distX * distX + distY * distY);
+        }
+
+        /// <summary>
+        /// 将时间精确映射到宏观 K 线图表的 X 轴坐标 (支持连续内插与向外平滑外推)
+        /// </summary>
+        public static double MapTimeToMacroX(
+            DateTime targetTime,
+            IReadOnlyList<MacroKline>? completedBars,
+            FormingMacroKline? formingBar)
+        {
+            int completedCount = completedBars?.Count ?? 0;
+            bool hasForming = formingBar != null && formingBar.TicksProcessed > 0;
+            int totalCount = completedCount + (hasForming ? 1 : 0);
+            if (totalCount == 0) return 0;
+
+            if (completedBars != null && completedBars.Count > 0)
+            {
+                for (int i = 0; i < completedBars.Count; i++)
+                {
+                    var b = completedBars[i];
+                    if (targetTime >= b.OpenTime && targetTime <= b.CloseTime)
+                    {
+                        double totalSec = (b.CloseTime - b.OpenTime).TotalSeconds;
+                        double frac = totalSec > 0 ? (targetTime - b.OpenTime).TotalSeconds / totalSec : 0.5;
+                        return i + frac - 0.5;
+                    }
+                }
+
+                if (targetTime < completedBars[0].OpenTime)
+                {
+                    double barSec = (completedBars[0].CloseTime - completedBars[0].OpenTime).TotalSeconds;
+                    if (barSec <= 0) barSec = 1800;
+                    double diffSec = (targetTime - completedBars[0].OpenTime).TotalSeconds;
+                    return diffSec / barSec;
+                }
+            }
+
+            if (hasForming)
+            {
+                if (targetTime >= formingBar!.StartTime && targetTime <= formingBar.EndTime)
+                {
+                    double totalSec = (formingBar.EndTime - formingBar.StartTime).TotalSeconds;
+                    double frac = totalSec > 0 ? (targetTime - formingBar.StartTime).TotalSeconds / totalSec : 0.5;
+                    return completedCount + frac - 0.5;
+                }
+
+                double barSec = (formingBar!.EndTime - formingBar.StartTime).TotalSeconds;
+                if (barSec <= 0) barSec = 1800;
+                double diffSec = (targetTime - formingBar.EndTime).TotalSeconds;
+                return completedCount + (diffSec / barSec);
+            }
+            else if (completedCount > 0)
+            {
+                var lastBar = completedBars![completedCount - 1];
+                double barSec = (lastBar.CloseTime - lastBar.OpenTime).TotalSeconds;
+                if (barSec <= 0) barSec = 1800;
+                double diffSec = (targetTime - lastBar.CloseTime).TotalSeconds;
+                return (completedCount - 1) + (diffSec / barSec);
+            }
+
+            return 0;
+        }
+
+        /// <summary>
+        /// 提取通道的所有关键特征点位 (起点高低点、确立点高低点与现价、通道极值最高点、通道极值最低点、终点高低点) 并严谨去重
+        /// </summary>
+        public static List<(string label, double x, double price, bool isPrimary, bool isHigh)> GetChannelKeyAnchorPoints(
+            MacroConsecutiveTrendItem tr,
+            IReadOnlyList<MacroKline>? completedBars,
+            FormingMacroKline? formingBar,
+            int totalDisplayCount)
+        {
+            var candidatePoints = new List<(string label, double x, double price, bool isPrimary, bool isHigh)>();
+            bool isBull = tr.IsBullish;
+            int completedCount = completedBars?.Count ?? 0;
+            int sIdx = tr.StartIndex;
+            int eIdx = tr.EndIndex;
+
+            // 1. 起点高低点位 (Start Bar)
+            decimal firstHigh = tr.FirstBarHigh > 0 ? tr.FirstBarHigh : (sIdx < completedCount && completedBars != null ? completedBars[sIdx].High : (formingBar?.High ?? tr.StartPrice));
+            decimal firstLow = tr.FirstBarLow > 0 ? tr.FirstBarLow : (sIdx < completedCount && completedBars != null ? completedBars[sIdx].Low : (formingBar?.Low ?? tr.StartPrice));
+            candidatePoints.Add(("起L", sIdx, (double)firstLow, isPrimary: isBull, isHigh: false));
+            candidatePoints.Add(("起H", sIdx, (double)firstHigh, isPrimary: !isBull, isHigh: true));
+
+            // 2. 确立点点位 (Confirmed Bar)
+            int cIdx = tr.ConfirmedBarIndex;
+            if (cIdx >= sIdx && cIdx <= eIdx && cIdx < totalDisplayCount)
+            {
+                double cPrice = (double)(cIdx < completedCount && completedBars != null ? completedBars[cIdx].Close : (formingBar?.CurrentPrice ?? tr.EndPrice));
+                double cHigh = (double)(cIdx < completedCount && completedBars != null ? completedBars[cIdx].High : (formingBar?.High ?? tr.EndPrice));
+                double cLow = (double)(cIdx < completedCount && completedBars != null ? completedBars[cIdx].Low : (formingBar?.Low ?? tr.EndPrice));
+
+                candidatePoints.Add(("确立", cIdx, cPrice, isPrimary: true, isHigh: !isBull));
+                if (cIdx != sIdx && cIdx != eIdx)
+                {
+                    candidatePoints.Add(("确H", cIdx, cHigh, isPrimary: !isBull, isHigh: true));
+                    candidatePoints.Add(("确L", cIdx, cLow, isPrimary: isBull, isHigh: false));
+                }
+            }
+
+            // 3. 通道极值最高点 (Max High Peak)
+            int maxHIdx = tr.MaxHighIndex;
+            if (maxHIdx >= sIdx && maxHIdx <= eIdx && maxHIdx < totalDisplayCount)
+            {
+                candidatePoints.Add(("顶H", maxHIdx, (double)tr.MaxHigh, isPrimary: !isBull, isHigh: true));
+            }
+
+            // 4. 通道极值最低点 (Min Low Valley)
+            int minLIdx = tr.MinLowIndex;
+            if (minLIdx >= sIdx && minLIdx <= eIdx && minLIdx < totalDisplayCount)
+            {
+                candidatePoints.Add(("底L", minLIdx, (double)tr.MinLow, isPrimary: isBull, isHigh: false));
+            }
+
+            // 5. 终点高低点位 (End Bar)
+            if (eIdx > sIdx && eIdx < totalDisplayCount)
+            {
+                double eHigh = (double)(eIdx < completedCount && completedBars != null ? completedBars[eIdx].High : (formingBar?.High ?? tr.EndPrice));
+                double eLow = (double)(eIdx < completedCount && completedBars != null ? completedBars[eIdx].Low : (formingBar?.Low ?? tr.EndPrice));
+                candidatePoints.Add(("终H", eIdx, eHigh, isPrimary: !isBull, isHigh: true));
+                candidatePoints.Add(("终L", eIdx, eLow, isPrimary: isBull, isHigh: false));
+            }
+
+            // 6. 严谨去重：同一柱或价格极近的点位保留最具特征的命名
+            var anchorPoints = new List<(string label, double x, double price, bool isPrimary, bool isHigh)>();
+            foreach (var pt in candidatePoints)
+            {
+                if (pt.price <= 0 || pt.x < 0) continue;
+                int existIdx = anchorPoints.FindIndex(ex =>
+                    Math.Abs(ex.x - pt.x) < 0.25 &&
+                    Math.Abs(ex.price - pt.price) <= Math.Max(0.05, ex.price * 0.0003));
+                if (existIdx >= 0)
+                {
+                    if (pt.label.Contains("顶") || pt.label.Contains("底") || pt.label.Contains("确立"))
+                    {
+                        anchorPoints[existIdx] = pt;
+                    }
+                }
+                else
+                {
+                    anchorPoints.Add(pt);
+                }
+            }
+
+            return anchorPoints;
         }
     }
 }

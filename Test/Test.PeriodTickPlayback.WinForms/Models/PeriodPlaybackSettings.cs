@@ -47,6 +47,8 @@ namespace Test.PeriodTickPlayback.WinForms.Models
         public decimal TickConsecutiveMinPct { get; set; } = 0.8m; // 微观通道最低累计涨跌幅度百分比 (默认 0.8%)
         public bool ShowMacroAngleLines { get; set; } = true; // 大周期 K 线多角度趋势线开关 (默认开启)
         public bool ShowTickAngleLines { get; set; } = true; // 微观 Tick 窗口多角度趋势线开关 (默认开启)
+        public bool ShowMacroRecentTrendLines { get; set; } = true; // 大周期 K 线图动态 300 根趋势线开关 (默认开启)
+        public bool ShowTickRecentTrendLines { get; set; } = true;  // 微观 Tick 视窗动态 300 根趋势线开关 (默认开启)
         public string CustomAngles { get; set; } = "25, 45, 65"; // 自定义趋势线角度列表 (逗号/分号/空格隔开)
         public bool ShowAngleLines { get => ShowMacroAngleLines; set => ShowMacroAngleLines = value; } // 向后兼容别名
         public bool VerboseLog { get; set; } = false; // 详细定型日志开关 (默认关闭，避免高频刷屏)

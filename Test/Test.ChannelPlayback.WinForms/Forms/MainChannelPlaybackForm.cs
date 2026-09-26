@@ -102,6 +102,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
         private NumericUpDown numReversalPShort = null!;
         private NumericUpDown numReversalTickPullback = null!;
         private NumericUpDown numReversalLookbackTicks = null!;
+        private NumericUpDown numReversalMinTicksAfterPeak = null!;
         private NumericUpDown numReversalChannelZone = null!;
         private CheckBox chkShowReversalYellowLines = null!;
         private CheckBox chkShowObservationCycles = null!;
@@ -1383,7 +1384,24 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     _engine.TriggerCurrentFrame();
                 };
 
-                var lblRevChannelDivision = CreateLabel("📐 四等分观察线: 50%/75%/100%(涨) | 50%/25%/0%(跌)", 15, 959);
+                var lblRevMinTicksAfterPeak = CreateLabel("做空高点确认Tick数:", 15, 959);
+                numReversalMinTicksAfterPeak = new NumericUpDown
+                {
+                    Location = new Point(145, 956),
+                    Width = 170,
+                    Minimum = 1,
+                    Maximum = 100,
+                    Increment = 1,
+                    Value = 5
+                };
+                numReversalMinTicksAfterPeak.ValueChanged += (s, e) =>
+                {
+                    _engine.ReversalMinTicksAfterPeakForSell = (int)numReversalMinTicksAfterPeak.Value;
+                    SaveSettingsFromUi();
+                    _engine.TriggerCurrentFrame();
+                };
+
+                var lblRevChannelDivision = CreateLabel("📐 四等分观察线: 50%/75%/100%(涨) | 50%/25%/0%(跌)", 15, 989);
                 lblRevChannelDivision.Font = new Font("Microsoft YaHei", 8.5F, FontStyle.Regular);
                 lblRevChannelDivision.ForeColor = Color.FromArgb(52, 211, 153);
                 lblRevChannelDivision.AutoSize = true;
@@ -1394,7 +1412,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     Text = "🟡 在K线上绘制做单短黄线标记",
                     Font = new Font("Microsoft YaHei", 9F, FontStyle.Regular),
                     ForeColor = Color.FromArgb(250, 204, 21),
-                    Location = new Point(15, 989),
+                    Location = new Point(15, 1019),
                     AutoSize = true,
                     Checked = true
                 };
@@ -1410,7 +1428,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     Text = "⏱️ 在Tick窗口标记出观察周期",
                     Font = new Font("Microsoft YaHei", 9F, FontStyle.Regular),
                     ForeColor = Color.FromArgb(56, 189, 248),
-                    Location = new Point(15, 1015),
+                    Location = new Point(15, 1045),
                     AutoSize = true,
                     Checked = true
                 };
@@ -1441,6 +1459,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     lblRevPLong, numReversalPLong, lblRevPMed, numReversalPMedium, numReversalPShort,
                     lblRevPullback, numReversalTickPullback,
                     lblRevLookback, numReversalLookbackTicks,
+                    lblRevMinTicksAfterPeak, numReversalMinTicksAfterPeak,
                     lblRevChannelDivision, numReversalChannelZone,
                     chkShowReversalYellowLines,
                     chkShowObservationCycles
@@ -1806,6 +1825,8 @@ namespace Test.ChannelPlayback.WinForms.Forms
                 numReversalTickPullback.Value = Math.Clamp(pullbackVal, numReversalTickPullback.Minimum, numReversalTickPullback.Maximum);
                 int lookbackVal = s.ReversalLookbackTicks <= 0 ? 1000 : s.ReversalLookbackTicks;
                 numReversalLookbackTicks.Value = Math.Clamp(lookbackVal, numReversalLookbackTicks.Minimum, numReversalLookbackTicks.Maximum);
+                int minTicksPeakVal = s.ReversalMinTicksAfterPeakForSell <= 0 ? 5 : s.ReversalMinTicksAfterPeakForSell;
+                numReversalMinTicksAfterPeak.Value = Math.Clamp(minTicksPeakVal, numReversalMinTicksAfterPeak.Minimum, numReversalMinTicksAfterPeak.Maximum);
                 decimal channelZoneVal = s.ReversalChannelZonePct <= 0 ? 25.0m : s.ReversalChannelZonePct;
                 numReversalChannelZone.Value = Math.Clamp(channelZoneVal, numReversalChannelZone.Minimum, numReversalChannelZone.Maximum);
                 chkShowReversalYellowLines.Checked = s.ShowReversalYellowLines;
@@ -1851,6 +1872,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
                 _engine.ShowObservationCycles = chkShowObservationCycles.Checked;
                 _engine.ReversalNearLineTolerancePct = s.ReversalNearLineTolerancePct <= 0 ? 8.0m : s.ReversalNearLineTolerancePct;
                 _engine.ReversalMinTicksAfterNearLine = s.ReversalMinTicksAfterNearLine <= 0 ? 2 : s.ReversalMinTicksAfterNearLine;
+                _engine.ReversalMinTicksAfterPeakForSell = (int)numReversalMinTicksAfterPeak.Value;
 
                 // 恢复 Tick 查看周期设置
                 _tickPeriodMode = Math.Clamp(s.TickPeriodMode, 0, 4);
@@ -1929,6 +1951,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     ShowObservationCycles = chkShowObservationCycles.Checked,
                     ReversalNearLineTolerancePct = _engine.ReversalNearLineTolerancePct,
                     ReversalMinTicksAfterNearLine = _engine.ReversalMinTicksAfterNearLine,
+                    ReversalMinTicksAfterPeakForSell = _engine.ReversalMinTicksAfterPeakForSell,
                     TickPeriodMode = _tickPeriodMode,
                     CustomTickMinutes = (int)numCustomTickPeriod.Value
                 };
@@ -4857,45 +4880,26 @@ namespace Test.ChannelPlayback.WinForms.Forms
 
                     if (!isInScope) continue;
 
-                    // 方案 3：优先在当前观察期窗口 [sig.ObservationStartTime, sig.ObservationEndTime] 内定位开仓极值 Tick (X 轴)
+                    // 方案 3：优先在当前观察期窗口 [sig.ObservationStartTime, sig.ObservationEndTime] 内定位实际触发开仓信号的 Tick (X 轴)
                     int targetTickIdx = -1;
                     long minDiff = long.MaxValue;
 
                     for (int ti = 0; ti < totalTicks; ti++)
                     {
                         var t = ticks[ti];
+                        if (sig.TriggerTick.HasValue && t.TradeId > 0 && t.TradeId == sig.TriggerTick.Value.TradeId)
+                        {
+                            targetTickIdx = ti;
+                            break;
+                        }
                         if (t.Time >= sig.ObservationStartTime && t.Time <= sig.ObservationEndTime)
                         {
                             long diff = Math.Abs(t.Time - sig.TriggerTime);
-                            if (diff < minDiff)
+                            if (diff < minDiff || (diff == minDiff && t.Price == sig.Price))
                             {
                                 minDiff = diff;
                                 targetTickIdx = ti;
                             }
-                        }
-                    }
-
-                    // 若在该观察期周期内存在与开仓极值价格严格相等的 Tick，优先精确定位到该观察期内的极值 Tick
-                    if (targetTickIdx >= 0)
-                    {
-                        long bestPeakDiff = long.MaxValue;
-                        int bestPeakIdx = -1;
-                        for (int ti = 0; ti < totalTicks; ti++)
-                        {
-                            var t = ticks[ti];
-                            if (t.Time >= sig.ObservationStartTime && t.Time <= sig.ObservationEndTime && t.Price == sig.Price)
-                            {
-                                long diff = Math.Abs(t.Time - sig.TriggerTime);
-                                if (diff < bestPeakDiff)
-                                {
-                                    bestPeakDiff = diff;
-                                    bestPeakIdx = ti;
-                                }
-                            }
-                        }
-                        if (bestPeakIdx >= 0)
-                        {
-                            targetTickIdx = bestPeakIdx;
                         }
                     }
 
@@ -4905,7 +4909,7 @@ namespace Test.ChannelPlayback.WinForms.Forms
                         for (int ti = 0; ti < totalTicks; ti++)
                         {
                             long diff = Math.Abs(ticks[ti].Time - sig.TriggerTime);
-                            if (diff < minDiff)
+                            if (diff < minDiff || (diff == minDiff && ticks[ti].Price == sig.Price))
                             {
                                 minDiff = diff;
                                 targetTickIdx = ti;
@@ -4951,10 +4955,10 @@ namespace Test.ChannelPlayback.WinForms.Forms
                         : (sig.Direction == OrderSignalDirection.Sell ? "高点做空" : "低点做多");
                     string pbWord = sig.Direction == OrderSignalDirection.Sell ? "回落" : "反弹";
                     string tickDetail = sig.IsTickStreamTriggered 
-                        ? $" (极值开仓, {pbWord}:{sig.PullbackPct:F2}%, 止损:{sig.StopLossPrice:F2})" 
+                        ? $" (触发Tick开仓, {pbWord}:{sig.PullbackPct:F2}%, 极值:{sig.PeakTroughPrice:F2}, 止损:{sig.StopLossPrice:F2})" 
                         : (sig.PeakTroughPrice > 0 && Math.Abs(sig.Price - sig.PeakTroughPrice) > 0.01m 
-                            ? $" (极值:{sig.PeakTroughPrice:F2}, 止损:{sig.StopLossPrice:F2})" 
-                            : $" (极值开仓, 止损:{sig.StopLossPrice:F2})");
+                            ? $" (开仓, 极值:{sig.PeakTroughPrice:F2}, 止损:{sig.StopLossPrice:F2})" 
+                            : $" (开仓, 止损:{sig.StopLossPrice:F2})");
                     string labelText = $"⚡{sigDirStr} @ {sig.Price:F2}{tickDetail} [#{sig.Pattern.PatternId} C{sig.ObservationCycleIndex}]";
                     double spanEst = (double)(overallHigh - overallLow);
                     if (spanEst <= 0) spanEst = 10.0;
@@ -4971,12 +4975,26 @@ namespace Test.ChannelPlayback.WinForms.Forms
                     {
                         double pY = (double)sig.PeakTroughPrice;
                         int pIdx = -1;
+                        long bestPeakDiff = long.MaxValue;
                         for (int pi = 0; pi < totalTicks; pi++)
                         {
-                            if (ticks[pi].Price == sig.PeakTroughPrice && Math.Abs(ticks[pi].Time - sig.TriggerTime) <= 180_000L)
+                            var t = ticks[pi];
+                            if (t.Price == sig.PeakTroughPrice)
                             {
-                                pIdx = pi;
-                                break;
+                                long diff = sig.PeakTroughTime > 0 ? Math.Abs(t.Time - sig.PeakTroughTime) : Math.Abs(t.Time - sig.TriggerTime);
+                                if (t.Time >= sig.ObservationStartTime && t.Time <= sig.ObservationEndTime)
+                                {
+                                    if (diff < bestPeakDiff)
+                                    {
+                                        bestPeakDiff = diff;
+                                        pIdx = pi;
+                                    }
+                                }
+                                else if (pIdx < 0 && diff < bestPeakDiff)
+                                {
+                                    bestPeakDiff = diff;
+                                    pIdx = pi;
+                                }
                             }
                         }
                         if (pIdx >= 0)
@@ -4986,6 +5004,9 @@ namespace Test.ChannelPlayback.WinForms.Forms
                             peakM.Size = 8;
                             peakM.Color = yellowCol;
                             peakM.LegendText = sig.Direction == OrderSignalDirection.Sell ? $"波峰高点 ({pY:F2})" : $"波谷低点 ({pY:F2})";
+
+                            if (pY < (double)overallLow) overallLow = (decimal)pY;
+                            if (pY > (double)overallHigh) overallHigh = (decimal)pY;
                         }
                     }
 
