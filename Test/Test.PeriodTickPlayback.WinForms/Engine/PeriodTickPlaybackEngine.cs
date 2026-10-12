@@ -73,6 +73,11 @@ namespace Test.PeriodTickPlayback.WinForms.Engine
         /// </summary>
         public event Action<string, System.Drawing.Color>? OnLogMessage;
 
+        /// <summary>
+        /// 回放重置通知 (重置回起点时触发)
+        /// </summary>
+        public event Action? OnPlaybackReset;
+
         #endregion
 
         #region 公开属性
@@ -100,6 +105,48 @@ namespace Test.PeriodTickPlayback.WinForms.Engine
             lock (_lock)
             {
                 return _completedMacroBars.ToArray();
+            }
+        }
+
+        /// <summary>
+        /// 获取当前播放进度之前最近的 N 笔已派发/已完成的历史 Tick 数据 (向前追溯，严格无未来函数)
+        /// 用于通道确立进入观察期时回溯聚合 6 秒柱作为基准参考
+        /// </summary>
+        public List<RawTick> GetRecentPlayedTicks(int maxCount = 10000)
+        {
+            if (maxCount <= 0) return new List<RawTick>();
+
+            lock (_lock)
+            {
+                var collected = new List<RawTick>(Math.Min(maxCount, 10000));
+
+                // 倒序收集以保证最贴近当前时刻，最后再反转回升序
+                // 1. 当前桶已派发部分 (从 _currentTickIndex - 1 倒退至 0)
+                if (_currentBucketIndex >= 0 && _currentBucketIndex < _buckets.Count)
+                {
+                    var curBucket = _buckets[_currentBucketIndex];
+                    int curLimit = Math.Min(_currentTickIndex, curBucket.Ticks.Count);
+                    for (int i = curLimit - 1; i >= 0 && collected.Count < maxCount; i--)
+                    {
+                        collected.Add(curBucket.Ticks[i]);
+                    }
+                }
+
+                // 2. 向前遍历历史桶 (从 _currentBucketIndex - 1 倒退)
+                int bIdx = _currentBucketIndex - 1;
+                while (collected.Count < maxCount && bIdx >= 0)
+                {
+                    var prevBucket = _buckets[bIdx];
+                    for (int i = prevBucket.Ticks.Count - 1; i >= 0 && collected.Count < maxCount; i--)
+                    {
+                        collected.Add(prevBucket.Ticks[i]);
+                    }
+                    bIdx--;
+                }
+
+                // 反转回正序 (按时间升序)
+                collected.Reverse();
+                return collected;
             }
         }
 
@@ -247,13 +294,15 @@ namespace Test.PeriodTickPlayback.WinForms.Engine
                 if (_currentBucketIndex >= _buckets.Count) return;
                 var bucket = _buckets[_currentBucketIndex];
 
-                // 快速把当前桶内剩余的 Tick 全部吸纳
+                // 快速把当前桶内剩余的 Tick 全部吸纳并派发
                 while (_currentTickIndex < bucket.Ticks.Count)
                 {
                     var tick = bucket.Ticks[_currentTickIndex];
                     UpdateFormingBar(tick);
                     _currentTickIndex++;
                     _totalTicksPlayed++;
+
+                    OnTickDispatched?.Invoke(tick, _formingBar, _currentTickIndex, bucket.Ticks.Count);
                 }
 
                 // 触发周期定型输出
@@ -523,6 +572,7 @@ namespace Test.PeriodTickPlayback.WinForms.Engine
             _currentTickIndex = 0;
             _totalTicksPlayed = 0;
             InitCurrentBucket();
+            OnPlaybackReset?.Invoke();
         }
 
         private void UpdateTps()

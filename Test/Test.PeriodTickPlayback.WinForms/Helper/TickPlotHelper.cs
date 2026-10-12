@@ -80,11 +80,13 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             bool showTickChannel = true,
             int tickConsecutiveMinBars = 5,
             decimal tickConsecutiveMinPct = 0.8m,
-            bool showRecentTrendLines = true,
-            RecentSubPeriodTrendLineResult? recentTrendLineResult = null,
             int? selectedMicroBarStartIndex = null,
             int? selectedMicroBarEndIndex = null,
-            bool autoFollow = true)
+            bool autoFollow = true,
+            IReadOnlyList<ChannelSignalItem>? channelSignals = null,
+            bool showChannelSignals = true,
+            bool showPriceLines = true,
+            string? customPriceLines = null)
         {
             if (plot == null) return;
 
@@ -129,11 +131,13 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                     showTickChannel: showTickChannel,
                     tickConsecutiveMinBars: tickConsecutiveMinBars,
                     tickConsecutiveMinPct: tickConsecutiveMinPct,
-                    showRecentTrendLines: showRecentTrendLines,
-                    recentTrendLineResult: recentTrendLineResult,
                     selectedMicroBarStartIndex: selectedMicroBarStartIndex,
                     selectedMicroBarEndIndex: selectedMicroBarEndIndex,
-                    autoFollow: autoFollow);
+                    autoFollow: autoFollow,
+                    channelSignals: channelSignals,
+                    showChannelSignals: showChannelSignals,
+                    showPriceLines: showPriceLines,
+                    customPriceLines: customPriceLines);
                 return;
             }
 
@@ -162,8 +166,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             plot.DataBackground.Color = Color.FromHex("#0f172a");
 
             plot.Axes.Color(Color.FromHex("#94a3b8"));
-            plot.Grid.MajorLineColor = Color.FromHex("#1e293b").WithAlpha(160);
-            plot.Grid.MinorLineColor = Color.FromHex("#1e293b").WithAlpha(60);
+            plot.HideGrid(); // 遵从用户要求：去除微观 Tick 折线图表背景网格线
 
             int totalAvailable = ticks?.Count ?? 0;
             int renderCount = Math.Min(totalAvailable, currentTickCursor);
@@ -220,6 +223,36 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                     if (idx >= 0 && idx < renderCount)
                     {
                         sampledIndices.Add(idx);
+                    }
+                }
+
+                // 强制将当前绘制周期内的所有信号触发点加入抽样点集！
+                // 如果信号点不在 sampledIndices 中，ScottPlot 折线就会跳过该点，直接连线其两侧抽样点！
+                // 导致小十字架标记看起来漂浮在折线上方/下方，没有正好落在折线对应真实 Tick 点位上！
+                if (showChannelSignals && channelSignals != null && channelSignals.Count > 0)
+                {
+                    long bStartMs = ((DateTimeOffset)bucketStart).ToUnixTimeMilliseconds();
+                    long bEndMs = ((DateTimeOffset)bucketEnd).ToUnixTimeMilliseconds();
+
+                    var matchedSignals = channelSignals.Where(sig =>
+                    {
+                        bool matchesBucket = selectedBarStartIndex.HasValue && selectedBarEndIndex.HasValue
+                            ? (sig.MacroBarIndex >= selectedBarStartIndex.Value && sig.MacroBarIndex <= selectedBarEndIndex.Value)
+                            : false;
+
+                        bool inTimeRange = (sig.TriggerTime >= bucketStart && sig.TriggerTime <= bucketEnd) ||
+                                           (sig.TriggerTimeMs > 0 && sig.TriggerTimeMs >= bStartMs && sig.TriggerTimeMs <= bEndMs);
+
+                        return matchesBucket || inTimeRange;
+                    });
+
+                    foreach (var sig in matchedSignals)
+                    {
+                        int sTickIdx = FindExactTickIndex(sig, ticks, renderCount, selectedBarStartIndex, selectedBarEndIndex, boundaryTickIndices);
+                        if (sTickIdx >= 0 && sTickIdx < renderCount)
+                        {
+                            sampledIndices.Add(sTickIdx);
+                        }
                     }
                 }
 
@@ -533,81 +566,6 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 }
             }
 
-            // 2.7 绘制基于最近 300 根小周期 K 线高低点的动态趋势线 (支持独立勾选控制与前向延伸)
-            if (showRecentTrendLines && recentTrendLineResult != null && recentTrendLineResult.SelectedLines.Count > 0 && renderCount >= 1)
-            {
-                double extTickX = (renderCount - 1) + Math.Max(20.0, renderCount * 0.12);
-                var chIdxMap = recentTrendLineResult.ChannelRecords?.ToDictionary(r => r.ChannelId, r => r.ChannelIndex) ?? new Dictionary<int, int>();
-
-                foreach (var line in recentTrendLineResult.SelectedLines)
-                {
-                    double x1 = MapTimeToTickX(line.Time1, ticks, renderCount);
-                    double x2 = MapTimeToTickX(line.Time2, ticks, renderCount);
-                    double y1 = (double)line.Y1;
-                    double y2 = (double)line.Y2;
-
-                    double dx = x2 - x1;
-                    if (Math.Abs(dx) < 1.0) dx = 1.0;
-
-                    double slope = (y2 - y1) / dx;
-                    double targetExtX = Math.Max(x2 + 10.0, extTickX);
-                    double yExt = y1 + slope * (targetExtX - x1);
-
-                    double actualExtX = targetExtX;
-                    if (yExt <= 0 && y1 > 0 && slope < 0)
-                    {
-                        actualExtX = x1 - (y1 / slope);
-                        yExt = 0;
-                    }
-
-                    bool isRes = line.IsResistance;
-                    chIdxMap.TryGetValue(line.ChannelId, out int chIdx);
-                    string chTag = chIdx > 0 ? $"[#{chIdx}] " : "";
-
-                    Color lineColor;
-                    if (chIdx == 2)
-                    {
-                        lineColor = isRes ? Color.FromHex("#f43f5e") : Color.FromHex("#3b82f6");
-                    }
-                    else if (chIdx == 3)
-                    {
-                        lineColor = isRes ? Color.FromHex("#eab308") : Color.FromHex("#14b8a6");
-                    }
-                    else if (chIdx >= 4)
-                    {
-                        lineColor = isRes ? Color.FromHex("#a855f7") : Color.FromHex("#10b981");
-                    }
-                    else
-                    {
-                        lineColor = isRes ? Color.FromHex("#fb923c") : Color.FromHex("#06b6d4");
-                    }
-
-                    var baseLine = plot.Add.Line(x1, y1, x2, y2);
-                    baseLine.Color = lineColor;
-                    baseLine.LineWidth = 1.8f;
-                    baseLine.LinePattern = LinePattern.Solid;
-
-                    if (actualExtX > x2)
-                    {
-                        var extLine = plot.Add.Line(x2, y2, actualExtX, yExt);
-                        extLine.Color = lineColor.WithAlpha(170);
-                        extLine.LineWidth = 1.2f;
-                        extLine.LinePattern = LinePattern.Dashed;
-                    }
-
-                    string tag = isRes ? $"{chTag}R: {yExt:F2}" : $"{chTag}S: {yExt:F2}";
-                    var txt = plot.Add.Text(tag, actualExtX, yExt);
-                    txt.LabelFontName = chineseFont;
-                    txt.LabelFontSize = 8.0f;
-                    txt.LabelBold = true;
-                    txt.LabelFontColor = lineColor;
-                    txt.LabelBackgroundColor = Color.FromHex("#0f172a").WithAlpha(0.90);
-                    txt.LabelBorderColor = lineColor;
-                    txt.LabelBorderWidth = 1f;
-                    txt.LabelAlignment = isRes ? Alignment.LowerLeft : Alignment.UpperLeft;
-                }
-            }
-
             // 3. 绘制副图与多空比值多折线 (统一使用单一内建右轴 plot.Axes.Right，绝不动态添加新轴，确保仅有唯一的图表视窗)
             var (ratioXs, tickRatios, volRatios) = TickLongShortStats.CalculateRatioSeries(ticks, renderCount, targetSamplePoints: 1500);
 
@@ -757,6 +715,65 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             tCur.LabelBackgroundColor = Color.FromHex("#1e293b").WithAlpha(0.9);
             tCur.LabelBorderColor = mainThemeColor;
 
+            // 5.1 绘制通道顶底交易信号黄色小十字架与多空提示标记 (严格打点于触发信号的实时真实 Tick 点位)
+            if (showChannelSignals && channelSignals != null && channelSignals.Count > 0 && renderCount > 0)
+            {
+                long bStartMs = ((DateTimeOffset)bucketStart).ToUnixTimeMilliseconds();
+                long bEndMs = ((DateTimeOffset)bucketEnd).ToUnixTimeMilliseconds();
+
+                double ySpan = (double)(maxVal > minVal ? (maxVal - minVal) : 10m);
+                double yPad = Math.Max(ySpan * 0.035, (double)minVal * 0.0006);
+
+                var matchedSignals = channelSignals.Where(sig =>
+                {
+                    bool matchesBucket = selectedBarStartIndex.HasValue && selectedBarEndIndex.HasValue
+                        ? (sig.MacroBarIndex >= selectedBarStartIndex.Value && sig.MacroBarIndex <= selectedBarEndIndex.Value)
+                        : false;
+
+                    bool inTimeRange = (sig.TriggerTime >= bucketStart && sig.TriggerTime <= bucketEnd) ||
+                                       (sig.TriggerTimeMs > 0 && sig.TriggerTimeMs >= bStartMs && sig.TriggerTimeMs <= bEndMs);
+
+                    return matchesBucket || inTimeRange;
+                }).ToList();
+
+                var renderedTickIndices = new HashSet<int>();
+                foreach (var sig in matchedSignals)
+                {
+                    int xIdx = FindExactTickIndex(sig, ticks, renderCount, selectedBarStartIndex, selectedBarEndIndex, boundaryTickIndices);
+
+                    if (xIdx >= 0 && xIdx < renderCount)
+                    {
+                        // 避免在同一笔完全相同的 Tick 上重叠重复绘制
+                        if (!renderedTickIndices.Add(xIdx)) continue;
+
+                        double xPos = xIdx;
+                        double yPos = (double)ticks[xIdx].Price;
+
+                        // ① 黄色小十字架标记 (Cross，大小为 9，线条粗细 2.0f，严格精准打在触发信号的真实 Tick 坐标上)
+                        var crossMarker = plot.Add.Marker(xPos, yPos);
+                        crossMarker.Shape = MarkerShape.Cross;
+                        crossMarker.Size = 9;
+                        crossMarker.Color = Color.FromHex("#facc15");
+                        crossMarker.LineWidth = 2.0f;
+
+                        // ② 清晰指示做空 / 做多方向标签 (带适度纵向偏移，做空向上外置，做多向下外置，绝不遮挡小十字架与 Tick 折线)
+                        bool isShort = sig.IsShort;
+                        string sigLabel = isShort ? "▼做空" : "▲做多";
+                        double yLabelPos = isShort ? (yPos + yPad) : (yPos - yPad);
+
+                        var txtSig = plot.Add.Text(sigLabel, xPos, yLabelPos);
+                        txtSig.LabelFontName = chineseFont;
+                        txtSig.LabelFontSize = 8.0f;
+                        txtSig.LabelBold = true;
+                        txtSig.LabelFontColor = isShort ? Color.FromHex("#f87171") : Color.FromHex("#4ade80");
+                        txtSig.LabelAlignment = isShort ? Alignment.LowerCenter : Alignment.UpperCenter;
+                        txtSig.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.85);
+                        txtSig.LabelBorderColor = isShort ? Color.FromHex("#ef4444").WithAlpha(180) : Color.FromHex("#22c55e").WithAlpha(180);
+                        txtSig.LabelBorderWidth = 0.8f;
+                    }
+                }
+            }
+
             // 5.2 绘制多空盘口与折线图例 HUD 信息框
             var stats = precomputedStats ?? TickLongShortStats.Calculate(ticks, renderCount);
             string proxStatus = ratioProximity ? "已开启" : "已关闭";
@@ -803,6 +820,22 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 }
             }
 
+            // 5.8 绘制多水平价格线 (可根据输入价格分布或固定步长等距分布)
+            if (showPriceLines && !string.IsNullOrWhiteSpace(customPriceLines))
+            {
+                if (minVal <= maxVal && minVal > 0)
+                {
+                    var priceLevels = PeriodPlaybackSettings.ParsePriceLevels(customPriceLines, minVal, maxVal);
+                    foreach (var price in priceLevels)
+                    {
+                        var hLine = plot.Add.HorizontalLine((double)price);
+                        hLine.Color = Color.FromHex("#38bdf8").WithAlpha(90);
+                        hLine.LinePattern = LinePattern.Dashed;
+                        hLine.LineWidth = 1.0f;
+                    }
+                }
+            }
+
             // 6. 坐标轴自适应 (左侧主价格坐标轴)
             if (minVal <= maxVal && minVal > 0)
             {
@@ -839,7 +872,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             // 附着鼠标悬停交互指示器 (十字准星 + 走势吸附标记 + 悬浮详情卡片)
             if (hoverIndicator != null)
             {
-                hoverIndicator.Attach(plot, chineseFont, ticks, renderCount, sBarIdx, eBarIdx);
+                hoverIndicator.Attach(plot, chineseFont, ticks, renderCount, sBarIdx, eBarIdx, channelSignals);
             }
         }
 
@@ -874,11 +907,13 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             bool showTickChannel = true,
             int tickConsecutiveMinBars = 5,
             decimal tickConsecutiveMinPct = 0.8m,
-            bool showRecentTrendLines = true,
-            RecentSubPeriodTrendLineResult? recentTrendLineResult = null,
             int? selectedMicroBarStartIndex = null,
             int? selectedMicroBarEndIndex = null,
-            bool autoFollow = true)
+            bool autoFollow = true,
+            IReadOnlyList<ChannelSignalItem>? channelSignals = null,
+            bool showChannelSignals = true,
+            bool showPriceLines = true,
+            string? customPriceLines = null)
         {
             if (plot == null) return;
 
@@ -906,8 +941,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             plot.DataBackground.Color = Color.FromHex("#0f172a");
 
             plot.Axes.Color(Color.FromHex("#94a3b8"));
-            plot.Grid.MajorLineColor = Color.FromHex("#1e293b").WithAlpha(160);
-            plot.Grid.MinorLineColor = Color.FromHex("#1e293b").WithAlpha(60);
+            plot.HideGrid(); // 遵从用户要求：去除微观 Tick K线图表背景网格线
 
             int totalAvailable = ticks?.Count ?? 0;
             int renderCount = Math.Min(totalAvailable, currentTickCursor);
@@ -1208,122 +1242,6 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 }
             }
 
-            // 绘制基于最近 300 根小周期 K 线高低点的动态趋势线 (支持独立勾选控制与前向延伸)
-            if (showRecentTrendLines && recentTrendLineResult != null && recentTrendLineResult.SelectedLines.Count > 0 && M >= 1)
-            {
-                // ① 极值高低点标记
-                if (recentTrendLineResult.Peaks != null)
-                {
-                    foreach (var pk in recentTrendLineResult.Peaks)
-                    {
-                        double pkX = MapTimeToSubBucketX(pk.Time, subBuckets);
-                        if (pkX >= -5 && pkX <= M + 15)
-                        {
-                            var m = plot.Add.Marker(pkX, (double)pk.Price);
-                            m.Shape = MarkerShape.FilledTriangleUp;
-                            m.Size = 4;
-                            m.Color = Color.FromHex("#fb923c").WithAlpha(180);
-                        }
-                    }
-                }
-                if (recentTrendLineResult.Valleys != null)
-                {
-                    foreach (var vy in recentTrendLineResult.Valleys)
-                    {
-                        double vyX = MapTimeToSubBucketX(vy.Time, subBuckets);
-                        if (vyX >= -5 && vyX <= M + 15)
-                        {
-                            var m = plot.Add.Marker(vyX, (double)vy.Price);
-                            m.Shape = MarkerShape.FilledTriangleDown;
-                            m.Size = 4;
-                            m.Color = Color.FromHex("#06b6d4").WithAlpha(180);
-                        }
-                    }
-                }
-
-                // ② 绘制精选动态趋势线
-                double extSubX = (M - 1) + 12;
-                var chIdxMap = recentTrendLineResult.ChannelRecords?.ToDictionary(r => r.ChannelId, r => r.ChannelIndex) ?? new Dictionary<int, int>();
-
-                foreach (var line in recentTrendLineResult.SelectedLines)
-                {
-                    double x1 = MapTimeToSubBucketX(line.Time1, subBuckets);
-                    double x2 = MapTimeToSubBucketX(line.Time2, subBuckets);
-                    double y1 = (double)line.Y1;
-                    double y2 = (double)line.Y2;
-
-                    double dx = x2 - x1;
-                    if (Math.Abs(dx) < 0.05) dx = 0.05;
-
-                    double slope = (y2 - y1) / dx;
-                    double targetExtX = Math.Max(x2 + 1.0, extSubX);
-                    double yExt = y1 + slope * (targetExtX - x1);
-
-                    double actualExtX = targetExtX;
-                    if (yExt <= 0 && y1 > 0 && slope < 0)
-                    {
-                        actualExtX = x1 - (y1 / slope);
-                        yExt = 0;
-                    }
-
-                    bool isRes = line.IsResistance;
-                    chIdxMap.TryGetValue(line.ChannelId, out int chIdx);
-                    string chTag = chIdx > 0 ? $"[#{chIdx}] " : "";
-
-                    Color lineColor;
-                    if (chIdx == 2)
-                    {
-                        lineColor = isRes ? Color.FromHex("#f43f5e") : Color.FromHex("#3b82f6");
-                    }
-                    else if (chIdx == 3)
-                    {
-                        lineColor = isRes ? Color.FromHex("#eab308") : Color.FromHex("#14b8a6");
-                    }
-                    else if (chIdx >= 4)
-                    {
-                        lineColor = isRes ? Color.FromHex("#a855f7") : Color.FromHex("#10b981");
-                    }
-                    else
-                    {
-                        lineColor = isRes ? Color.FromHex("#fb923c") : Color.FromHex("#06b6d4");
-                    }
-
-                    var baseLine = plot.Add.Line(x1, y1, x2, y2);
-                    baseLine.Color = lineColor;
-                    baseLine.LineWidth = 1.8f;
-                    baseLine.LinePattern = LinePattern.Solid;
-
-                    var m1 = plot.Add.Marker(x1, y1);
-                    m1.Shape = MarkerShape.FilledCircle;
-                    m1.Size = 4;
-                    m1.Color = lineColor;
-
-                    var m2 = plot.Add.Marker(x2, y2);
-                    m2.Shape = MarkerShape.FilledCircle;
-                    m2.Size = 4;
-                    m2.Color = lineColor;
-
-                    if (actualExtX > x2)
-                    {
-                        var extLine = plot.Add.Line(x2, y2, actualExtX, yExt);
-                        extLine.Color = lineColor.WithAlpha(170);
-                        extLine.LineWidth = 1.2f;
-                        extLine.LinePattern = LinePattern.Dashed;
-                    }
-
-                    string tag = isRes ? $"{chTag}R: {yExt:F2}" : $"{chTag}S: {yExt:F2}";
-                    var txt = plot.Add.Text(tag, actualExtX, yExt);
-                    txt.LabelFontName = chineseFont;
-                    txt.LabelFontSize = 8.0f;
-                    txt.LabelBold = true;
-                    txt.LabelFontColor = lineColor;
-                    txt.LabelBackgroundColor = Color.FromHex("#0f172a").WithAlpha(0.90);
-                    txt.LabelBorderColor = lineColor;
-                    txt.LabelBorderWidth = 1f;
-                    txt.LabelAlignment = isRes ? Alignment.LowerLeft : Alignment.UpperLeft;
-                }
-            }
-
             // 绘制底部成交量柱
             decimal priceRange = maxPrice - minPrice;
             if (priceRange <= 0) priceRange = 1m;
@@ -1517,6 +1435,101 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 }
             }
 
+            // 绘制通道顶底交易信号黄色短十字架标记 (严格打点于触发信号的实时 Tick)
+            if (showChannelSignals && channelSignals != null && channelSignals.Count > 0 && subBuckets.Count > 0)
+            {
+                long bStartMs = ((DateTimeOffset)bucketStart).ToUnixTimeMilliseconds();
+                long bEndMs = ((DateTimeOffset)bucketEnd).ToUnixTimeMilliseconds();
+
+                var matchedSignals = channelSignals.Where(sig =>
+                {
+                    bool matchesBucket = selectedBarStartIndex.HasValue && selectedBarEndIndex.HasValue
+                        ? (sig.MacroBarIndex >= selectedBarStartIndex.Value && sig.MacroBarIndex <= selectedBarEndIndex.Value)
+                        : false;
+
+                    bool inTimeRange = (sig.TriggerTime >= bucketStart && sig.TriggerTime <= bucketEnd) ||
+                                       (sig.TriggerTimeMs > 0 && sig.TriggerTimeMs >= bStartMs && sig.TriggerTimeMs <= bEndMs);
+
+                    return matchesBucket || inTimeRange;
+                }).ToList();
+
+                var renderedSubBucketIndices = new HashSet<int>();
+                foreach (var sig in matchedSignals)
+                {
+                    long tMs = sig.TriggerTimeMs > 0 ? sig.TriggerTimeMs : ((DateTimeOffset)sig.TriggerTime).ToUnixTimeMilliseconds();
+                        int targetMicroIdx = -1;
+                        for (int k = 0; k < subBuckets.Count; k++)
+                        {
+                            long sStartMs = ((DateTimeOffset)subBuckets[k].StartTime).ToUnixTimeMilliseconds();
+                            long sEndMs = ((DateTimeOffset)subBuckets[k].EndTime).ToUnixTimeMilliseconds();
+                            if (tMs >= sStartMs && tMs <= sEndMs)
+                            {
+                                targetMicroIdx = k;
+                                break;
+                            }
+                        }
+                        if (targetMicroIdx < 0 && subBuckets.Count > 0)
+                        {
+                            long lastStartMs = ((DateTimeOffset)subBuckets[^1].StartTime).ToUnixTimeMilliseconds();
+                            if (tMs >= lastStartMs)
+                            {
+                                targetMicroIdx = subBuckets.Count - 1;
+                            }
+                        }
+
+                        if (targetMicroIdx >= 0 && targetMicroIdx < subBuckets.Count)
+                        {
+                            if (!renderedSubBucketIndices.Add(targetMicroIdx)) continue;
+
+                            double mX = targetMicroIdx;
+                            double mY = (double)sig.TriggerPrice;
+
+                            // ① 黄色小十字架标记 (Cross，大小为 9，线条粗细 2.0f，紧密打点于触发信号所属子周期 K 线价格)
+                            var crossMarker = plot.Add.Marker(mX, mY);
+                            crossMarker.Shape = MarkerShape.Cross;
+                            crossMarker.Size = 9;
+                            crossMarker.Color = Color.FromHex("#facc15");
+                            crossMarker.LineWidth = 2.0f;
+
+                            // ② 清晰指示做空 / 做多方向标签
+                            double ySpan = (double)(yMaxPrice > yMinPrice ? (yMaxPrice - yMinPrice) : 10m);
+                            double yPad = Math.Max(ySpan * 0.035, (double)yMinPrice * 0.0006);
+
+                            bool isShort = sig.IsShort;
+                            string sigLabel = isShort ? "▼做空" : "▲做多";
+                            double yLabelPos = isShort ? (mY + yPad) : (mY - yPad);
+
+                            var txtSig = plot.Add.Text(sigLabel, mX, yLabelPos);
+                            txtSig.LabelFontName = chineseFont;
+                            txtSig.LabelFontSize = 8.0f;
+                            txtSig.LabelBold = true;
+                            txtSig.LabelFontColor = isShort ? Color.FromHex("#f87171") : Color.FromHex("#4ade80");
+                            txtSig.LabelAlignment = isShort ? Alignment.LowerCenter : Alignment.UpperCenter;
+                            txtSig.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.85);
+                            txtSig.LabelBorderColor = isShort ? Color.FromHex("#ef4444").WithAlpha(180) : Color.FromHex("#22c55e").WithAlpha(180);
+                            txtSig.LabelBorderWidth = 0.8f;
+                        }
+                    }
+                }
+
+            // 绘制多水平价格线 (可根据输入价格分布或固定步长等距分布)
+            if (showPriceLines && !string.IsNullOrWhiteSpace(customPriceLines))
+            {
+                decimal pMin = minPrice > 0 ? minPrice : (yMinPrice > 0 ? yMinPrice : 0);
+                decimal pMax = maxPrice > 0 ? maxPrice : (yMaxPrice > 0 ? yMaxPrice : 0);
+                if (pMin <= pMax && pMin > 0)
+                {
+                    var priceLevels = PeriodPlaybackSettings.ParsePriceLevels(customPriceLines, pMin, pMax);
+                    foreach (var price in priceLevels)
+                    {
+                        var hLine = plot.Add.HorizontalLine((double)price);
+                        hLine.Color = Color.FromHex("#38bdf8").WithAlpha(90);
+                        hLine.LinePattern = LinePattern.Dashed;
+                        hLine.LineWidth = 1.0f;
+                    }
+                }
+            }
+
             // X 轴时间刻度标签与坐标范围 (若存在大通道投影或多角度趋势线，右侧预留适当空间供标签呼吸)
             if (autoFollow || !(oldLimits.Right > oldLimits.Left && oldLimits.Top > oldLimits.Bottom))
             {
@@ -1595,7 +1608,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             // 附着鼠标悬停交互指示器 (子周期 K 线模式)
             if (hoverIndicator != null)
             {
-                hoverIndicator.AttachSubPeriod(plot, chineseFont, subBuckets, periodTitle);
+                hoverIndicator.AttachSubPeriod(plot, chineseFont, subBuckets, periodTitle, channelSignals);
             }
         }
 
@@ -1931,9 +1944,16 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
         /// </summary>
         public static double MapTimeToTickX(DateTime targetTime, IReadOnlyList<RawTick>? ticks, int cursor)
         {
-            if (ticks == null || ticks.Count == 0 || cursor <= 0) return 0;
-            int count = Math.Min(cursor, ticks.Count);
             long targetMs = ((DateTimeOffset)targetTime).ToUnixTimeMilliseconds();
+            return MapTimeToTickX(targetMs, ticks, cursor);
+        }
+
+        public static double MapTimeToTickX(long targetMs, IReadOnlyList<RawTick>? ticks, int cursor)
+        {
+            if (ticks == null || ticks.Count == 0 || cursor <= 0) return -1;
+            int count = Math.Min(cursor, ticks.Count);
+
+            if (targetMs < ticks[0].Time || targetMs > ticks[count - 1].Time) return -1;
 
             int low = 0, high = count - 1;
             while (low <= high)
@@ -1944,6 +1964,254 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 else high = mid - 1;
             }
             return Math.Clamp(low, 0, count - 1);
+        }
+
+        /// <summary>
+        /// 校验某笔 Tick 是否与触发信号的原始实时 Tick 100% 绝对一致
+        /// </summary>
+        private static bool IsExactTickMatch(in RawTick t, ChannelSignalItem sig, long tradeId, long targetMs, decimal targetPrice)
+        {
+            // 1. 若存在全局唯一的交易成交 ID (TradeId > 0)，以此作为绝对判定准则
+            if (tradeId > 0 && t.TradeId > 0)
+            {
+                return t.TradeId == tradeId;
+            }
+
+            // 2. 若 TradeId 不可用，进行毫秒时间戳 + 触发价格 + 成交量 + 买卖方向 100% 全属性精确匹配
+            if (targetMs > 0 && t.Time == targetMs && t.Price == targetPrice)
+            {
+                if (sig.TriggerTick.Qty > 0)
+                {
+                    return t.Qty == sig.TriggerTick.Qty && t.IsBuyerMaker == sig.TriggerTick.IsBuyerMaker;
+                }
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// 精确查找触发信号的 Tick 在当前渲染列表中的精确下标 X
+        /// 确保黄色十字架标记严格、毫无偏差地打点于真实 Tick 曲线上的对应点位 (杜绝相邻点偏移与抽样跳点漂浮)
+        /// </summary>
+        public static int FindExactTickIndex(
+            ChannelSignalItem sig,
+            IReadOnlyList<RawTick>? ticks,
+            int renderCount,
+            int? selectedBarStartIndex = null,
+            int? selectedBarEndIndex = null,
+            IReadOnlyList<int>? boundaryTickIndices = null)
+        {
+            if (ticks == null || renderCount <= 0 || sig == null) return -1;
+            renderCount = Math.Min(renderCount, ticks.Count);
+            if (renderCount <= 0) return -1;
+
+            long tradeId = sig.TriggerTick.TradeId;
+            long targetMs = sig.TriggerTimeMs > 0 ? sig.TriggerTimeMs : ((DateTimeOffset)sig.TriggerTime).ToUnixTimeMilliseconds();
+            decimal targetPrice = sig.TriggerPrice;
+
+            // 1. 优先尝试桶索引与界标推导的预估下标
+            int candidateIdx = -1;
+            if (selectedBarStartIndex.HasValue && selectedBarEndIndex.HasValue)
+            {
+                int sIdx = selectedBarStartIndex.Value;
+                int eIdx = selectedBarEndIndex.Value;
+
+                if (sig.MacroBarIndex >= sIdx && sig.MacroBarIndex <= eIdx)
+                {
+                    if (sIdx == eIdx)
+                    {
+                        candidateIdx = sig.TickIndexInBucket;
+                    }
+                    else if (boundaryTickIndices != null)
+                    {
+                        int bucketOffset = (sig.MacroBarIndex == sIdx)
+                            ? 0
+                            : ((sig.MacroBarIndex - sIdx - 1 < boundaryTickIndices.Count)
+                                ? boundaryTickIndices[sig.MacroBarIndex - sIdx - 1]
+                                : -1);
+
+                        if (bucketOffset >= 0)
+                        {
+                            candidateIdx = bucketOffset + sig.TickIndexInBucket;
+                        }
+                    }
+                }
+            }
+
+            // 2. 若候选下标有效，优先在候选下标处及其邻域两翼中心辐射扫描 (Radiating Outward Search)
+            //    杜绝从单侧线性向前扫导致的假同价早期 Tick 误命中
+            if (candidateIdx >= 0 && candidateIdx < renderCount)
+            {
+                // 2.1 第一轮：候选点本身及辐射 ±200 范围内 100% 完美全属性匹配
+                if (IsExactTickMatch(ticks[candidateIdx], sig, tradeId, targetMs, targetPrice))
+                {
+                    return candidateIdx;
+                }
+
+                int maxRadius = Math.Min(200, Math.Max(candidateIdx, renderCount - 1 - candidateIdx));
+                for (int delta = 1; delta <= maxRadius; delta++)
+                {
+                    int right = candidateIdx + delta;
+                    if (right < renderCount && IsExactTickMatch(ticks[right], sig, tradeId, targetMs, targetPrice))
+                    {
+                        return right;
+                    }
+
+                    int left = candidateIdx - delta;
+                    if (left >= 0 && IsExactTickMatch(ticks[left], sig, tradeId, targetMs, targetPrice))
+                    {
+                        return left;
+                    }
+                }
+
+                // 2.2 第二轮：同毫秒 + 同价格匹配 (TradeId 缺失或不同批次合并时)
+                if (targetMs > 0)
+                {
+                    if (ticks[candidateIdx].Price == targetPrice && ticks[candidateIdx].Time == targetMs)
+                    {
+                        return candidateIdx;
+                    }
+
+                    for (int delta = 1; delta <= maxRadius; delta++)
+                    {
+                        int right = candidateIdx + delta;
+                        if (right < renderCount && ticks[right].Price == targetPrice && ticks[right].Time == targetMs)
+                        {
+                            return right;
+                        }
+
+                        int left = candidateIdx - delta;
+                        if (left >= 0 && ticks[left].Price == targetPrice && ticks[left].Time == targetMs)
+                        {
+                            return left;
+                        }
+                    }
+                }
+
+                // 2.3 第三轮：同价格且时间差在 1000ms (1秒) 以内
+                if (ticks[candidateIdx].Price == targetPrice && (targetMs <= 0 || Math.Abs(ticks[candidateIdx].Time - targetMs) <= 1000))
+                {
+                    return candidateIdx;
+                }
+
+                for (int delta = 1; delta <= maxRadius; delta++)
+                {
+                    int right = candidateIdx + delta;
+                    if (right < renderCount && ticks[right].Price == targetPrice && (targetMs <= 0 || Math.Abs(ticks[right].Time - targetMs) <= 1000))
+                    {
+                        return right;
+                    }
+
+                    int left = candidateIdx - delta;
+                    if (left >= 0 && ticks[left].Price == targetPrice && (targetMs <= 0 || Math.Abs(ticks[left].Time - targetMs) <= 1000))
+                    {
+                        return left;
+                    }
+                }
+            }
+
+            // 3. 全局 / 跨视窗二分法快速定位时间戳窗口
+            int low = 0, high = renderCount - 1;
+            int pivot = -1;
+            while (low <= high)
+            {
+                int mid = (low + high) / 2;
+                long midTime = ticks[mid].Time;
+                if (midTime == targetMs)
+                {
+                    pivot = mid;
+                    break;
+                }
+                if (midTime < targetMs) low = mid + 1;
+                else high = mid - 1;
+            }
+
+            if (pivot < 0) pivot = Math.Clamp(low, 0, renderCount - 1);
+
+            // 4. 在时间戳中心辐射扫描 (优先 TradeId/全属性，其次同毫秒同价，再次 1秒内同价，严禁盲目全量同价查找)
+            int scanRadius = Math.Min(500, Math.Max(pivot, renderCount - 1 - pivot));
+
+            // 4.1 全局辐射扫描轮次 1：100% 绝对一致匹配
+            if (IsExactTickMatch(ticks[pivot], sig, tradeId, targetMs, targetPrice))
+            {
+                return pivot;
+            }
+            for (int delta = 1; delta <= scanRadius; delta++)
+            {
+                int right = pivot + delta;
+                if (right < renderCount && IsExactTickMatch(ticks[right], sig, tradeId, targetMs, targetPrice))
+                {
+                    return right;
+                }
+                int left = pivot - delta;
+                if (left >= 0 && IsExactTickMatch(ticks[left], sig, tradeId, targetMs, targetPrice))
+                {
+                    return left;
+                }
+            }
+
+            // 4.2 全局辐射扫描轮次 2：同毫秒 + 同价格
+            if (targetMs > 0)
+            {
+                if (ticks[pivot].Price == targetPrice && ticks[pivot].Time == targetMs)
+                {
+                    return pivot;
+                }
+                for (int delta = 1; delta <= scanRadius; delta++)
+                {
+                    int right = pivot + delta;
+                    if (right < renderCount && ticks[right].Price == targetPrice && ticks[right].Time == targetMs)
+                    {
+                        return right;
+                    }
+                    int left = pivot - delta;
+                    if (left >= 0 && ticks[left].Price == targetPrice && ticks[left].Time == targetMs)
+                    {
+                        return left;
+                    }
+                }
+            }
+
+            // 4.3 全局辐射扫描轮次 3：同价格且时间差在 3000ms (3秒) 以内
+            int bestTimeMatch = -1;
+            long minTimeDiff = long.MaxValue;
+            for (int delta = 0; delta <= scanRadius; delta++)
+            {
+                int right = pivot + delta;
+                if (right < renderCount && ticks[right].Price == targetPrice)
+                {
+                    long diff = Math.Abs(ticks[right].Time - targetMs);
+                    if (diff <= 3000 && diff < minTimeDiff)
+                    {
+                        minTimeDiff = diff;
+                        bestTimeMatch = right;
+                    }
+                }
+                if (delta > 0)
+                {
+                    int left = pivot - delta;
+                    if (left >= 0 && ticks[left].Price == targetPrice)
+                    {
+                        long diff = Math.Abs(ticks[left].Time - targetMs);
+                        if (diff <= 3000 && diff < minTimeDiff)
+                        {
+                            minTimeDiff = diff;
+                            bestTimeMatch = left;
+                        }
+                    }
+                }
+            }
+
+            if (bestTimeMatch >= 0) return bestTimeMatch;
+
+            // 兜底：若 candidateIdx 在时间合理范围 (3秒内) 则使用 candidateIdx，否则返回 -1 (杜绝误打点)
+            if (candidateIdx >= 0 && candidateIdx < renderCount && (targetMs <= 0 || Math.Abs(ticks[candidateIdx].Time - targetMs) <= 3000))
+            {
+                return candidateIdx;
+            }
+
+            return -1;
         }
     }
 
@@ -1960,6 +2228,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
         public IReadOnlyList<RawTick>? ActiveTicks { get; private set; }
         public int ActiveRenderCount { get; private set; }
         public IReadOnlyList<PeriodBucket>? ActiveSubBuckets { get; private set; }
+        public IReadOnlyList<ChannelSignalItem>? ActiveSignals { get; private set; }
         public bool IsSubPeriodMode { get; private set; }
         public string PeriodTitle { get; private set; } = "";
         public int? SelectedBarStartIndex { get; private set; }
@@ -1973,13 +2242,15 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             IReadOnlyList<RawTick>? ticks,
             int renderCount,
             int? selectedBarStartIndex = null,
-            int? selectedBarEndIndex = null)
+            int? selectedBarEndIndex = null,
+            IReadOnlyList<ChannelSignalItem>? channelSignals = null)
         {
             if (plot == null) return;
 
             ActiveTicks = ticks;
             ActiveRenderCount = renderCount;
             ActiveSubBuckets = null;
+            ActiveSignals = channelSignals;
             IsSubPeriodMode = false;
             PeriodTitle = "";
             SelectedBarStartIndex = selectedBarStartIndex;
@@ -2011,13 +2282,15 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             Plot plot,
             string chineseFont,
             IReadOnlyList<PeriodBucket>? subBuckets,
-            string periodTitle)
+            string periodTitle,
+            IReadOnlyList<ChannelSignalItem>? channelSignals = null)
         {
             if (plot == null) return;
 
             ActiveTicks = null;
             ActiveRenderCount = 0;
             ActiveSubBuckets = subBuckets;
+            ActiveSignals = channelSignals;
             IsSubPeriodMode = true;
             PeriodTitle = periodTitle;
             SelectedBarStartIndex = null;
@@ -2085,14 +2358,27 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 string barChgStr = (barChg >= 0 ? "+" : "") + $"{barChg:F2}%";
                 string dirStr = isBarUp ? "🟢阳线" : "🔴阴线";
 
-                badgeColor = isBarUp
-                    ? System.Drawing.Color.FromArgb(74, 222, 128)
-                    : System.Drawing.Color.FromArgb(248, 113, 113);
+                var sig = ActiveSignals?.FirstOrDefault(s =>
+                {
+                    long tMs = s.TriggerTimeMs > 0 ? s.TriggerTimeMs : ((DateTimeOffset)s.TriggerTime).ToUnixTimeMilliseconds();
+                    long bStartMs = ((DateTimeOffset)b.StartTime).ToUnixTimeMilliseconds();
+                    long bEndMs = ((DateTimeOffset)b.EndTime).ToUnixTimeMilliseconds();
+                    return tMs >= bStartMs && tMs <= bEndMs;
+                });
+
+                bool isSignalBar = sig != null;
+                string sigPrefix = isSignalBar ? (sig!.IsShort ? "⚡【做空信号 ▼】 " : "⚡【做多信号 ▲】 ") : "";
+
+                badgeColor = isSignalBar
+                    ? System.Drawing.Color.FromArgb(250, 204, 21) // 醒目金黄
+                    : (isBarUp ? System.Drawing.Color.FromArgb(74, 222, 128) : System.Drawing.Color.FromArgb(248, 113, 113));
+
                 string subTimeFmt = (ActiveSubBuckets.Count > 0 && (ActiveSubBuckets[0].EndTime - ActiveSubBuckets[0].StartTime).TotalSeconds < 60) ? "HH:mm:ss" : "HH:mm";
-                headerBadgeText = $"[Bar #{barIdx + 1}/{ActiveSubBuckets.Count}] {b.StartTime.ToString(subTimeFmt)}~{b.EndTime.ToString(subTimeFmt)} | 开:{o:F2} 高:{h:F2} 低:{l:F2} 收:{c:F2} ({barChgStr} {dirStr}) | 量:{v:N2} | {tCount:N0} Ticks";
+                headerBadgeText = $"{sigPrefix}[Bar #{barIdx + 1}/{ActiveSubBuckets.Count}] {b.StartTime.ToString(subTimeFmt)}~{b.EndTime.ToString(subTimeFmt)} | 开:{o:F2} 高:{h:F2} 低:{l:F2} 收:{c:F2} ({barChgStr} {dirStr}) | 量:{v:N2} | {tCount:N0} Ticks";
 
                 string cardText =
                     $"⭐【微观 K 线巡检】 Bar #{barIdx + 1}/{ActiveSubBuckets.Count} ({PeriodTitle})\n" +
+                    (isSignalBar ? $"• ⚡交易信号: {(sig!.IsShort ? "【做空信号 ▼】(触碰通道顶部)" : "【做多信号 ▲】(触碰通道底部)")} @ 触发价:{sig.TriggerPrice:F2}\n" : "") +
                     $"• 时段范围: {b.StartTime:HH:mm:ss} ~ {b.EndTime:HH:mm:ss}\n" +
                     $"• 价格OHLC: 开 {o:F2} | 高 {h:F2} | 低 {l:F2} | 收 {c:F2}\n" +
                     $"• 波段涨跌: {barChgStr} ({dirStr}) | 振幅: {(h - l):F2} USDT\n" +
@@ -2100,15 +2386,15 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
 
                 HoverCard!.LabelFontName = chineseFont;
                 HoverCard.Text = cardText;
-                HoverCard.LabelBorderColor = isBarUp ? Color.FromHex("#10b981") : Color.FromHex("#ef4444");
+                HoverCard.LabelBorderColor = isSignalBar ? Color.FromHex("#facc15") : (isBarUp ? Color.FromHex("#10b981") : Color.FromHex("#ef4444"));
                 HoverCard.IsVisible = true;
 
                 Crosshair!.Position = new Coordinates(barIdx, (double)c);
-                Crosshair.LineColor = (isBarUp ? Color.FromHex("#10b981") : Color.FromHex("#ef4444")).WithAlpha(0.65);
+                Crosshair.LineColor = (isSignalBar ? Color.FromHex("#facc15") : (isBarUp ? Color.FromHex("#10b981") : Color.FromHex("#ef4444"))).WithAlpha(0.65);
                 Crosshair.IsVisible = true;
 
                 SnapMarker!.Coordinates = new Coordinates(barIdx, (double)c);
-                SnapMarker.Color = isBarUp ? Color.FromHex("#22c55e") : Color.FromHex("#ef4444");
+                SnapMarker.Color = isSignalBar ? Color.FromHex("#facc15") : (isBarUp ? Color.FromHex("#22c55e") : Color.FromHex("#ef4444"));
                 SnapMarker.IsVisible = true;
 
                 return true;
@@ -2133,10 +2419,21 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 decimal diff = firstPrice > 0 ? (price - firstPrice) / firstPrice * 100m : 0m;
                 string diffStr = (diff >= 0 ? "+" : "") + $"{diff:F2}%";
 
-                badgeColor = isBuy
-                    ? System.Drawing.Color.FromArgb(74, 222, 128)
-                    : System.Drawing.Color.FromArgb(248, 113, 113);
-                headerBadgeText = $"[#{tickIdx + 1}/{ActiveRenderCount}] {shortTime} | 价格: {price:F2} ({diffStr}) | 量: {qty:F4} | {sideName} | 额: {quote:F2} USDT";
+                var sig = ActiveSignals?.FirstOrDefault(s =>
+                    (SelectedBarStartIndex.HasValue && SelectedBarStartIndex == SelectedBarEndIndex && s.MacroBarIndex == SelectedBarStartIndex.Value && s.TickIndexInBucket == tickIdx) ||
+                    (s.TriggerTick.TradeId > 0 && tick.TradeId > 0 && s.TriggerTick.TradeId == tick.TradeId) ||
+                    (s.TriggerTimeMs == tick.Time && s.TriggerPrice == tick.Price && s.TriggerTick.Qty == tick.Qty && s.TriggerTick.IsBuyerMaker == tick.IsBuyerMaker))
+                    ?? ActiveSignals?.FirstOrDefault(s => Math.Abs(s.TriggerTimeMs - tick.Time) <= 50 && s.TriggerPrice == tick.Price)
+                    ?? ActiveSignals?.FirstOrDefault(s => s.TriggerTimeMs == tick.Time && s.TriggerPrice == tick.Price);
+
+                bool isSignalTick = sig != null;
+                string sigPrefix = isSignalTick ? (sig!.IsShort ? "⚡【做空信号 ▼】 " : "⚡【做多信号 ▲】 ") : "";
+
+                badgeColor = isSignalTick
+                    ? System.Drawing.Color.FromArgb(250, 204, 21) // 醒目金黄
+                    : (isBuy ? System.Drawing.Color.FromArgb(74, 222, 128) : System.Drawing.Color.FromArgb(248, 113, 113));
+
+                headerBadgeText = $"{sigPrefix}[#{tickIdx + 1}/{ActiveRenderCount}] {shortTime} | 价格: {price:F2} ({diffStr}) | 量: {qty:F4} | {sideName} | 额: {quote:F2} USDT";
 
                 string barContext = (SelectedBarStartIndex.HasValue && SelectedBarEndIndex.HasValue)
                     ? (SelectedBarStartIndex == SelectedBarEndIndex ? $"Bar #{SelectedBarStartIndex} 内部" : $"选区 Bar #{SelectedBarStartIndex}~#{SelectedBarEndIndex}")
@@ -2145,6 +2442,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
 
                 string cardText =
                     $"⭐【逐笔 Tick 巡检】 #{tickIdx + 1}/{ActiveRenderCount}{contextLine}\n" +
+                    (isSignalTick ? $"• ⚡交易信号: {(sig!.IsShort ? "【做空信号 ▼】(触碰通道顶部)" : "【做多信号 ▲】(触碰通道底部)")}\n" : "") +
                     $"• 时间戳: {timeStr}\n" +
                     $"• 成交价: {price:F2} USDT  ({diffStr})\n" +
                     $"• 成交量: {qty:F4}  |  成交额: {quote:F2} USDT\n" +
@@ -2152,15 +2450,15 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
 
                 HoverCard!.LabelFontName = chineseFont;
                 HoverCard.Text = cardText;
-                HoverCard.LabelBorderColor = isBuy ? Color.FromHex("#10b981") : Color.FromHex("#ef4444");
+                HoverCard.LabelBorderColor = isSignalTick ? Color.FromHex("#facc15") : (isBuy ? Color.FromHex("#10b981") : Color.FromHex("#ef4444"));
                 HoverCard.IsVisible = true;
 
                 Crosshair!.Position = new Coordinates(tickIdx, (double)price);
-                Crosshair.LineColor = (isBuy ? Color.FromHex("#10b981") : Color.FromHex("#ef4444")).WithAlpha(0.65);
+                Crosshair.LineColor = (isSignalTick ? Color.FromHex("#facc15") : (isBuy ? Color.FromHex("#10b981") : Color.FromHex("#ef4444"))).WithAlpha(0.65);
                 Crosshair.IsVisible = true;
 
                 SnapMarker!.Coordinates = new Coordinates(tickIdx, (double)price);
-                SnapMarker.Color = isBuy ? Color.FromHex("#22c55e") : Color.FromHex("#ef4444");
+                SnapMarker.Color = isSignalTick ? Color.FromHex("#facc15") : (isBuy ? Color.FromHex("#22c55e") : Color.FromHex("#ef4444"));
                 SnapMarker.IsVisible = true;
 
                 return true;

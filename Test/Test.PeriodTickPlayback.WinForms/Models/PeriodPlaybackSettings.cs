@@ -26,8 +26,8 @@ namespace Test.PeriodTickPlayback.WinForms.Models
 
         // 连续涨跌波段标记配置
         public bool ShowConsecutiveTrend { get; set; } = true; // 连续涨跌标记开关 (默认开启)
-        public int ConsecutiveMinBars { get; set; } = 5; // 最少连续 K 线根数 (默认 5 根)
-        public decimal ConsecutiveMinPct { get; set; } = 2.5m; // 最低累计涨跌幅度百分比 (默认 2.5%)
+        public int ConsecutiveMinBars { get; set; } = 2; // 最少连续 K 线根数 (默认 2 根)
+        public decimal ConsecutiveMinPct { get; set; } = 0.1m; // 最低累计涨跌幅度百分比 (默认 0.1%)
 
         // 微观 Tick 图表价格与多空比值曲线凑近对齐配置
         public bool RatioProximity { get; set; } = true; // 价格与多空比值折线智能对齐凑近 (默认开启)
@@ -47,11 +47,147 @@ namespace Test.PeriodTickPlayback.WinForms.Models
         public decimal TickConsecutiveMinPct { get; set; } = 0.8m; // 微观通道最低累计涨跌幅度百分比 (默认 0.8%)
         public bool ShowMacroAngleLines { get; set; } = true; // 大周期 K 线多角度趋势线开关 (默认开启)
         public bool ShowTickAngleLines { get; set; } = true; // 微观 Tick 窗口多角度趋势线开关 (默认开启)
-        public bool ShowMacroRecentTrendLines { get; set; } = true; // 大周期 K 线图动态 300 根趋势线开关 (默认开启)
-        public bool ShowTickRecentTrendLines { get; set; } = true;  // 微观 Tick 视窗动态 300 根趋势线开关 (默认开启)
         public string CustomAngles { get; set; } = "25, 45, 65"; // 自定义趋势线角度列表 (逗号/分号/空格隔开)
         public bool ShowAngleLines { get => ShowMacroAngleLines; set => ShowMacroAngleLines = value; } // 向后兼容别名
+        public bool ShowChannelSignals { get; set; } = true; // 通道顶底信号与黄色十字标记开关 (默认开启)
+        public int ChannelSignalAggregationSeconds { get; set; } = 6; // 微观聚合秒数 (默认 6 秒)
+        public int ChannelSignalLookbackTicks { get; set; } = 10000; // 观察期向前提取回溯历史 Tick 数 (默认 10000 笔)
         public bool VerboseLog { get; set; } = false; // 详细定型日志开关 (默认关闭，避免高频刷屏)
+
+        // 连续上涨/连续下跌形态反转做空/做多交易策略配置
+        public bool ShowConsecutiveReversalSignals { get; set; } = true; // 连阳/连阴反转交易信号开关 (默认开启)
+        public int ConsecutiveBullishBars { get; set; } = 4; // 连续大周期 K 线根数 (默认 4 根)
+        public int ConsecutiveTrendBars { get => ConsecutiveBullishBars; set => ConsecutiveBullishBars = value; }
+        public int ReversalSubPeriodMinutes { get; set; } = 3; // 反转确认与探顶/探底小周期分钟数 (默认 3 分钟)
+        public decimal ReversalHighTolerancePct { get; set; } = 0.2m; // 探顶高点/探底低点容差百分比 (默认 0.2%)
+        public decimal ReversalTolerancePct { get => ReversalHighTolerancePct; set => ReversalHighTolerancePct = value; }
+        public decimal ReversalPullbackPct { get; set; } = 0.05m; // 冲高回落/探底回升幅度百分比 (默认 0.05%)
+        public int MaxObservationPeriods { get; set; } = 5; // 无明显信号时最大允许顺延观察期轮数 (默认 5 轮)
+        public decimal DojiBodyRatioMax { get; set; } = 0.25m; // 小十字星实体占全振幅比例上限 (默认 25%)
+        public decimal DojiMaxChangePct { get; set; } = 0.15m; // 小十字星实体最大涨跌幅百分比 (默认 0.15%)
+        public decimal ConsecutiveMaxDojiRatio { get; set; } = 0.5m; // 连续K线中十字星允许占的最大比例上限 (默认 50%，十字星不能占大部分)
+
+        // 水平价格线配置
+        public bool ShowMacroPriceLines { get; set; } = true; // K线窗口水平价格线开关 (默认开启)
+        public bool ShowTickPriceLines { get; set; } = true; // 微观 Tick 窗口水平价格线开关 (默认开启)
+        public string CustomPriceLines { get; set; } = "step: 100"; // 水平价格线配置 (支持具体价格如 60000, 62000 或步长如 step: 100 / 间隔 100)
+
+        // 图表背景颜色配置 (支持独立自定义)
+        public string MacroBackgroundColor { get; set; } = "#0b0f19"; // 大周期 K 线图表背景颜色 (默认极深黑蓝)
+        public string TickBackgroundColor { get; set; } = "#0b0f19";  // 微观 Tick 图表背景颜色 (默认极深黑蓝)
+
+        /// <summary>
+        /// 解析十六进制颜色字符串为 System.Drawing.Color，若失败则返回回退默认颜色
+        /// </summary>
+        public static System.Drawing.Color ParseColor(string? hex, System.Drawing.Color defaultColor)
+        {
+            if (string.IsNullOrWhiteSpace(hex)) return defaultColor;
+            try
+            {
+                string clean = hex.Trim();
+                if (!clean.StartsWith("#")) clean = "#" + clean;
+                return System.Drawing.ColorTranslator.FromHtml(clean);
+            }
+            catch
+            {
+                return defaultColor;
+            }
+        }
+
+        /// <summary>
+        /// 解析用户自定义价格水平线输入。
+        /// 支持具体价格列表（逗号/分号/空格隔开，如 "60000, 61000, 62000"）
+        /// 或步长模式（如 "step: 100", "step 100", "间隔 100", 或单一数值 "100" 且小于 (maxPrice - minPrice)）
+        /// </summary>
+        public static System.Collections.Generic.List<decimal> ParsePriceLevels(string? input, decimal minPrice, decimal maxPrice)
+        {
+            var result = new System.Collections.Generic.List<decimal>();
+            if (string.IsNullOrWhiteSpace(input) || minPrice > maxPrice || maxPrice <= 0) return result;
+
+            string text = input.Trim();
+
+            // 1. 正则匹配步长模式: step[:= ]?([0-9.]+), 间隔[:= ]?([0-9.]+), 步长[:= ]?([0-9.]+)
+            decimal step = 0;
+            var stepMatch = System.Text.RegularExpressions.Regex.Match(
+                text,
+                @"(?:step|步长|间隔)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            if (stepMatch.Success && decimal.TryParse(stepMatch.Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out decimal matchedStep) && matchedStep > 0)
+            {
+                step = matchedStep;
+            }
+            else
+            {
+                // 尝试解析逗号/分号/空格分割的数值列表
+                var parts = text.Split(new[] { ',', ';', ' ', '，', '；', '、', '|' }, StringSplitOptions.RemoveEmptyEntries);
+                var numbers = new System.Collections.Generic.List<decimal>();
+                foreach (var p in parts)
+                {
+                    if (decimal.TryParse(p.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out decimal val) ||
+                        decimal.TryParse(p.Trim(), out val))
+                    {
+                        if (val > 0) numbers.Add(val);
+                    }
+                }
+
+                // 如果只输入了一个单一数字
+                if (numbers.Count == 1)
+                {
+                    decimal singleVal = numbers[0];
+                    // 判断是否为步长 (例如数值较小且小于极值的一半，或者在价格跨度范围内)
+                    if (singleVal < minPrice * 0.5m || (singleVal <= (maxPrice - minPrice) && singleVal < minPrice))
+                    {
+                        step = singleVal;
+                    }
+                    else
+                    {
+                        // 单一目标具体价格
+                        if (singleVal >= minPrice * 0.8m && singleVal <= maxPrice * 1.2m)
+                        {
+                            result.Add(Math.Round(singleVal, 4));
+                        }
+                        return result;
+                    }
+                }
+                else if (numbers.Count > 1)
+                {
+                    // 多个具体价格，直接返回在可视范围或合理范围内的价格
+                    foreach (var num in numbers)
+                    {
+                        result.Add(Math.Round(num, 4));
+                    }
+                    result.Sort();
+                    return System.Linq.Enumerable.ToList(System.Linq.Enumerable.Distinct(result));
+                }
+            }
+
+            // 若识别为步长模式
+            if (step > 0)
+            {
+                decimal range = maxPrice - minPrice;
+                if (range <= 0) return result;
+
+                // 防止步长过小导致生成过多线条卡死 UI，最多限制生成 100 条
+                if (range / step > 100)
+                {
+                    step = range / 50; // 自动调优为合理密度
+                }
+
+                decimal start = Math.Floor(minPrice / step) * step;
+                decimal end = Math.Ceiling(maxPrice / step) * step;
+
+                for (decimal p = start; p <= end; p += step)
+                {
+                    if (p >= minPrice && p <= maxPrice)
+                    {
+                        result.Add(Math.Round(p, 4));
+                    }
+                }
+            }
+
+            return result;
+        }
 
         /// <summary>
         /// 解析用户自定义角度字符串为升序去重的正浮点度数列表 (0 < deg < 90)

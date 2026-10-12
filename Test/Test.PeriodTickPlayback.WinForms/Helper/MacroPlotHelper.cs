@@ -69,8 +69,10 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             int channelExtensionBars = 15,
             bool showAngleLines = true,
             IReadOnlyList<double>? customAngles = null,
-            bool showRecentTrendLines = true,
-            RecentSubPeriodTrendLineResult? recentTrendLineResult = null,
+            IReadOnlyList<ChannelSignalItem>? channelSignals = null,
+            bool showChannelSignals = true,
+            bool showPriceLines = true,
+            string? customPriceLines = null,
             double canvasWidth = 1200,
             double canvasHeight = 450)
         {
@@ -87,8 +89,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             plot.DataBackground.Color = Color.FromHex("#0f172a");   // 主背景 Slate 900
 
             plot.Axes.Color(Color.FromHex("#94a3b8"));
-            plot.Grid.MajorLineColor = Color.FromHex("#1e293b").WithAlpha(180);
-            plot.Grid.MinorLineColor = Color.FromHex("#1e293b").WithAlpha(80);
+            plot.HideGrid(); // 遵从用户要求：去除大周期 K 线图表背景网格线
 
             int completedCount = completedBars?.Count ?? 0;
             bool hasForming = formingBar != null && formingBar.TicksProcessed > 0;
@@ -298,14 +299,18 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             if (LastSlope45 <= 0) LastSlope45 = fallbackSlope45;
 
             // 4.5 绘制连续上涨 / 连续下跌波段标记与多角度趋势线 (满足门槛：连续 N 根及以上且累计幅度 >= X%)
-            if ((showConsecutiveTrend || showAngleLines) && totalDisplayCount >= consecutiveMinBars)
+            List<MacroConsecutiveTrendItem>? trends = null;
+            if ((showConsecutiveTrend || showAngleLines || showChannelSignals) && totalDisplayCount >= consecutiveMinBars)
             {
-                var trends = MacroConsecutiveTrendDetector.ScanTrends(
+                trends = MacroConsecutiveTrendDetector.ScanTrends(
                     completedBars,
                     formingBar,
                     consecutiveMinBars,
                     consecutiveMinPct);
+            }
 
+            if ((showConsecutiveTrend || showAngleLines) && trends != null && trends.Count > 0)
+            {
                 for (int tIdx = 0; tIdx < trends.Count; tIdx++)
                 {
                     var tr = trends[tIdx];
@@ -601,130 +606,6 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 }
             }
 
-            // 4.8 绘制基于最近 300 根小周期 K 线高低点的动态趋势线 (支持独立勾选控制与前向延伸)
-            if (showRecentTrendLines && recentTrendLineResult != null && recentTrendLineResult.SelectedLines.Count > 0)
-            {
-                // ① 绘制高低极值点标记 (波峰高点与波谷低点)
-                if (recentTrendLineResult.Peaks != null)
-                {
-                    foreach (var pk in recentTrendLineResult.Peaks)
-                    {
-                        double pkX = MapTimeToMacroX(pk.Time, completedBars, formingBar);
-                        if (pkX >= -5 && pkX <= totalDisplayCount + 15)
-                        {
-                            var m = plot.Add.Marker(pkX, (double)pk.Price);
-                            m.Shape = MarkerShape.FilledTriangleUp;
-                            m.Size = 4;
-                            m.Color = Color.FromHex("#fb923c").WithAlpha(180); // 珊瑚橙高点
-                        }
-                    }
-                }
-                if (recentTrendLineResult.Valleys != null)
-                {
-                    foreach (var vy in recentTrendLineResult.Valleys)
-                    {
-                        double vyX = MapTimeToMacroX(vy.Time, completedBars, formingBar);
-                        if (vyX >= -5 && vyX <= totalDisplayCount + 15)
-                        {
-                            var m = plot.Add.Marker(vyX, (double)vy.Price);
-                            m.Shape = MarkerShape.FilledTriangleDown;
-                            m.Size = 4;
-                            m.Color = Color.FromHex("#06b6d4").WithAlpha(180); // 亮青蓝低点
-                        }
-                    }
-                }
-
-                // ② 绘制精选动态趋势线 (基准实线段 + 虚线前向延伸 + 价格端点标记)
-                int forwardBars = Math.Max(8, channelExtensionBars);
-                double extMacroX = (totalDisplayCount - 1) + forwardBars;
-
-                var chIdxMap = recentTrendLineResult.ChannelRecords?.ToDictionary(r => r.ChannelId, r => r.ChannelIndex) ?? new Dictionary<int, int>();
-
-                foreach (var line in recentTrendLineResult.SelectedLines)
-                {
-                    double x1 = MapTimeToMacroX(line.Time1, completedBars, formingBar);
-                    double x2 = MapTimeToMacroX(line.Time2, completedBars, formingBar);
-                    double y1 = (double)line.Y1;
-                    double y2 = (double)line.Y2;
-
-                    double dx = x2 - x1;
-                    if (Math.Abs(dx) < 0.05) dx = 0.05;
-
-                    double slope = (y2 - y1) / dx;
-                    double targetExtX = Math.Max(x2 + 1.0, extMacroX);
-                    double yExt = y1 + slope * (targetExtX - x1);
-
-                    // 底部保护截断 (防止跌破零)
-                    double actualExtX = targetExtX;
-                    if (yExt <= 0 && y1 > 0 && slope < 0)
-                    {
-                        actualExtX = x1 - (y1 / slope);
-                        yExt = 0;
-                    }
-
-                    bool isRes = line.IsResistance;
-                    chIdxMap.TryGetValue(line.ChannelId, out int chIdx);
-                    string chTag = chIdx > 0 ? $"[#{chIdx}] " : "";
-
-                    // 按通道赋予鲜明美观的配色方案，清晰区分不同通道的保留趋势线
-                    Color lineColor;
-                    if (chIdx == 2)
-                    {
-                        lineColor = isRes ? Color.FromHex("#f43f5e") : Color.FromHex("#3b82f6"); // #2: 玫红阻力 / 皇家蓝支撑
-                    }
-                    else if (chIdx == 3)
-                    {
-                        lineColor = isRes ? Color.FromHex("#eab308") : Color.FromHex("#14b8a6"); // #3: 琥珀金阻力 / 湖青绿支撑
-                    }
-                    else if (chIdx >= 4)
-                    {
-                        lineColor = isRes ? Color.FromHex("#a855f7") : Color.FromHex("#10b981"); // #4+: 梦幻紫阻力 / 翡翠绿支撑
-                    }
-                    else
-                    {
-                        lineColor = isRes ? Color.FromHex("#fb923c") : Color.FromHex("#06b6d4"); // #1 / 默认: 珊瑚橙阻力 / 亮青蓝支撑
-                    }
-
-                    // 基准实线段 (连接两高点/两低点)
-                    var baseLine = plot.Add.Line(x1, y1, x2, y2);
-                    baseLine.Color = lineColor;
-                    baseLine.LineWidth = 1.8f;
-                    baseLine.LinePattern = LinePattern.Solid;
-
-                    // 两端锚点标记
-                    var m1 = plot.Add.Marker(x1, y1);
-                    m1.Shape = MarkerShape.FilledCircle;
-                    m1.Size = 4;
-                    m1.Color = lineColor;
-
-                    var m2 = plot.Add.Marker(x2, y2);
-                    m2.Shape = MarkerShape.FilledCircle;
-                    m2.Size = 4;
-                    m2.Color = lineColor;
-
-                    // 前向延伸虚线
-                    if (actualExtX > x2)
-                    {
-                        var extLine = plot.Add.Line(x2, y2, actualExtX, yExt);
-                        extLine.Color = lineColor.WithAlpha(170);
-                        extLine.LineWidth = 1.2f;
-                        extLine.LinePattern = LinePattern.Dashed;
-                    }
-
-                    // 延长线末端价格标签 (带通道归属序号标识)
-                    string tag = isRes ? $"{chTag}R: {yExt:F2}" : $"{chTag}S: {yExt:F2}";
-                    var txt = plot.Add.Text(tag, actualExtX, yExt);
-                    txt.LabelFontName = chineseFont;
-                    txt.LabelFontSize = 8.0f;
-                    txt.LabelBold = true;
-                    txt.LabelFontColor = lineColor;
-                    txt.LabelBackgroundColor = Color.FromHex("#0f172a").WithAlpha(0.90);
-                    txt.LabelBorderColor = lineColor;
-                    txt.LabelBorderWidth = 1f;
-                    txt.LabelAlignment = isRes ? Alignment.LowerLeft : Alignment.UpperLeft;
-                }
-            }
-
             // 5. 若有正在形成的 K 线，在其上方标出实时变动的形成态提示
             if (hasForming)
             {
@@ -812,6 +693,69 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                     txtSel.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.92);
                     txtSel.LabelBorderColor = Color.FromHex("#38bdf8");
                     txtSel.LabelBorderWidth = 1f;
+                }
+            }
+
+            // 5.6 绘制通道顶底交易信号黄色小十字架与多空提示标记 (严格打点于触发信号的实时 Tick 所属 K 线与成交价)
+            if (showChannelSignals && channelSignals != null && channelSignals.Count > 0)
+            {
+                // 计算纵向呼吸边距，确保多空文字标签与小十字架之间保有合适间隙，绝不遮盖小十字架与 K 线实体
+                double ySpan = (winMinPrice <= winMaxPrice && winMinPrice > 0)
+                    ? (double)(winMaxPrice - winMinPrice)
+                    : (double)(maxPrice > minPrice ? (maxPrice - minPrice) : 100);
+                double yPad = Math.Max(ySpan * 0.028, (double)minPrice * 0.0008);
+
+                // 🌟 绘制防重：同一根大周期 K 线仅展示一个最优信号（做空取最高价，做多取最低价），杜绝重叠显示
+                var signalsToRender = channelSignals
+                    .Where(s => s.MacroBarIndex >= 0 && s.MacroBarIndex < totalDisplayCount)
+                    .GroupBy(s => s.MacroBarIndex)
+                    .Select(g => g.Count() == 1 ? g.First() : (g.First().IsShort ? g.OrderByDescending(s => s.TriggerPrice).First() : g.OrderBy(s => s.TriggerPrice).First()))
+                    .ToList();
+
+                foreach (var sig in signalsToRender)
+                {
+                    double xPos = sig.MacroBarIndex;
+                    double yPos = (double)sig.TriggerPrice;
+
+                    // ① 黄色小十字架标记 (Cross，大小为 9，线条粗细 2.0f，醒目金黄，精准打在触发真实 Tick 的成交价位上)
+                    var crossMarker = plot.Add.Marker(xPos, yPos);
+                    crossMarker.Shape = MarkerShape.Cross;
+                    crossMarker.Size = 9;
+                    crossMarker.Color = Color.FromHex("#facc15");
+                    crossMarker.LineWidth = 2.0f;
+
+                    // ② 清晰指示做空 / 做多方向标签 (做空向上外置，做多向下外置，杜绝遮盖)
+                    bool isShort = sig.IsShort;
+                    string sigLabel = isShort ? "▼做空" : "▲做多";
+                    double yLabelPos = isShort ? (yPos + yPad) : (yPos - yPad);
+
+                    var txtSig = plot.Add.Text(sigLabel, xPos, yLabelPos);
+                    txtSig.LabelFontName = chineseFont;
+                    txtSig.LabelFontSize = 8.0f;
+                    txtSig.LabelBold = true;
+                    txtSig.LabelFontColor = isShort ? Color.FromHex("#f87171") : Color.FromHex("#4ade80");
+                    txtSig.LabelAlignment = isShort ? Alignment.LowerCenter : Alignment.UpperCenter;
+                    txtSig.LabelBackgroundColor = Color.FromHex("#0b0f19").WithAlpha(0.85);
+                    txtSig.LabelBorderColor = isShort ? Color.FromHex("#ef4444").WithAlpha(180) : Color.FromHex("#22c55e").WithAlpha(180);
+                    txtSig.LabelBorderWidth = 0.8f;
+                }
+            }
+
+            // 5.7 绘制多水平价格线 (可根据输入价格分布或固定步长等距分布)
+            if (showPriceLines && !string.IsNullOrWhiteSpace(customPriceLines))
+            {
+                decimal pMin = (winMinPrice <= winMaxPrice && winMinPrice > 0) ? winMinPrice : minPrice;
+                decimal pMax = (winMinPrice <= winMaxPrice && winMinPrice > 0) ? winMaxPrice : maxPrice;
+                if (pMin <= pMax && pMin > 0)
+                {
+                    var priceLevels = PeriodPlaybackSettings.ParsePriceLevels(customPriceLines, pMin, pMax);
+                    foreach (var price in priceLevels)
+                    {
+                        var hLine = plot.Add.HorizontalLine((double)price);
+                        hLine.Color = Color.FromHex("#38bdf8").WithAlpha(90); // 科技淡天蓝半透明
+                        hLine.LinePattern = LinePattern.Dashed;
+                        hLine.LineWidth = 1.0f;
+                    }
                 }
             }
 
