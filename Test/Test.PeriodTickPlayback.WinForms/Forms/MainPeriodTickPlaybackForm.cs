@@ -87,7 +87,9 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
         private CheckBox chkChannelSignals = null!;
         private CheckBox chkConsecutiveReversal = null!;
         private NumericUpDown numBullishBars = null!;
+        private NumericUpDown numMinTrendPct = null!;
         private NumericUpDown numReversalSubPeriod = null!;
+        private NumericUpDown numMaxReversalPct = null!;
         private CheckBox chkMacroPriceLines = null!;
         private Label lblPriceLines = null!;
         private TextBox txtPriceLines = null!;
@@ -586,11 +588,11 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 RefreshTickPlotDirectly();
             };
 
-            var lblBullishBars = CreateLabel("连K:", 1216, 66);
+            var lblBullishBars = CreateLabel("连K:", 1214, 66);
             numBullishBars = new NumericUpDown
             {
-                Location = new Point(1254, 63),
-                Width = 42,
+                Location = new Point(1250, 63),
+                Width = 38,
                 Minimum = 2,
                 Maximum = 20,
                 Value = Math.Clamp(_settings.ConsecutiveBullishBars, 2, 20),
@@ -605,11 +607,32 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 SaveSettingsFromUi();
             };
 
-            var lblReversalSubPeriod = CreateLabel("反转分:", 1302, 66);
+            var lblMinTrend = CreateLabel("幅度%:", 1292, 66);
+            numMinTrendPct = new NumericUpDown
+            {
+                Location = new Point(1336, 63),
+                Width = 46,
+                DecimalPlaces = 1,
+                Increment = 0.1m,
+                Minimum = 0.1m,
+                Maximum = 50.0m,
+                Value = Math.Clamp(_settings.MinConsecutiveTrendPct, 0.1m, 50.0m),
+                Font = new Font("Microsoft YaHei", 8.5F)
+            };
+            _toolTip.SetToolTip(numMinTrendPct, "连续 K 线确立形态所需的最低波段幅度百分比 (默认 1.0%，连阳按(最高价-起点开盘)/起点开盘，连阴按(起点开盘-最低价)/起点开盘计算，低于此幅度不激活反转形态)");
+            numMinTrendPct.ValueChanged += (s, e) =>
+            {
+                if (_reversalDetector != null) _reversalDetector.MinConsecutiveTrendPct = numMinTrendPct.Value;
+                _macroPlotNeedsRefresh = true;
+                _tickPlotNeedsRefresh = true;
+                SaveSettingsFromUi();
+            };
+
+            var lblReversalSubPeriod = CreateLabel("反转分:", 1386, 66);
             numReversalSubPeriod = new NumericUpDown
             {
-                Location = new Point(1354, 63),
-                Width = 42,
+                Location = new Point(1434, 63),
+                Width = 38,
                 Minimum = 1,
                 Maximum = 60,
                 Value = Math.Clamp(_settings.ReversalSubPeriodMinutes, 1, 60),
@@ -624,10 +647,31 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 SaveSettingsFromUi();
             };
 
+            var lblMaxReversal = CreateLabel("反转上限%:", 1476, 66);
+            numMaxReversalPct = new NumericUpDown
+            {
+                Location = new Point(1546, 63),
+                Width = 46,
+                DecimalPlaces = 1,
+                Increment = 0.1m,
+                Minimum = 0.1m,
+                Maximum = 20.0m,
+                Value = Math.Clamp(_settings.MaxReversalBarChangePct, 0.1m, 20.0m),
+                Font = new Font("Microsoft YaHei", 8.5F)
+            };
+            _toolTip.SetToolTip(numMaxReversalPct, "反转 K 线单根涨跌幅百分比上限 (默认 1.0%，超过或波段回撤超50%则跳过不进入观察期)");
+            numMaxReversalPct.ValueChanged += (s, e) =>
+            {
+                if (_reversalDetector != null) _reversalDetector.MaxReversalBarChangePct = numMaxReversalPct.Value;
+                _macroPlotNeedsRefresh = true;
+                _tickPlotNeedsRefresh = true;
+                SaveSettingsFromUi();
+            };
+
             chkMacroPriceLines = new CheckBox
             {
                 Text = "K线水平线",
-                Location = new Point(1408, 64),
+                Location = new Point(1598, 64),
                 AutoSize = true,
                 Checked = _settings.ShowMacroPriceLines,
                 ForeColor = Color.FromArgb(56, 189, 248), // 亮天蓝
@@ -643,12 +687,12 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 SaveSettingsFromUi();
             };
 
-            lblPriceLines = CreateLabel("水平线:", 1506, 66);
+            lblPriceLines = CreateLabel("水平线:", 1688, 66);
             lblPriceLines.ForeColor = Color.FromArgb(203, 213, 225);
 
             txtPriceLines = new TextBox
             {
-                Location = new Point(1554, 63),
+                Location = new Point(1736, 63),
                 Width = 96,
                 Text = _settings.CustomPriceLines,
                 Font = new Font("Consolas", 8.5F, FontStyle.Bold),
@@ -683,7 +727,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 lblProgOverall, prgOverall, lblProgBucket, prgBucket,
                 chkAngleLines, lblCustomAngles, txtCustomAngles,
                 chkChannelSignals,
-                chkConsecutiveReversal, lblBullishBars, numBullishBars, lblReversalSubPeriod, numReversalSubPeriod,
+                chkConsecutiveReversal, lblBullishBars, numBullishBars, lblMinTrend, numMinTrendPct, lblReversalSubPeriod, numReversalSubPeriod,
+                lblMaxReversal, numMaxReversalPct,
                 chkMacroPriceLines, lblPriceLines, txtPriceLines
             });
 
@@ -3451,11 +3496,14 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 if (chkChannelSignals != null) chkChannelSignals.Checked = _settings.ShowChannelSignals;
                 if (chkConsecutiveReversal != null) chkConsecutiveReversal.Checked = _settings.ShowConsecutiveReversalSignals;
                 if (numBullishBars != null) numBullishBars.Value = Math.Clamp(_settings.ConsecutiveBullishBars, numBullishBars.Minimum, numBullishBars.Maximum);
+                if (numMinTrendPct != null) numMinTrendPct.Value = Math.Clamp(_settings.MinConsecutiveTrendPct, numMinTrendPct.Minimum, numMinTrendPct.Maximum);
                 if (numReversalSubPeriod != null) numReversalSubPeriod.Value = Math.Clamp(_settings.ReversalSubPeriodMinutes, numReversalSubPeriod.Minimum, numReversalSubPeriod.Maximum);
+                if (numMaxReversalPct != null) numMaxReversalPct.Value = Math.Clamp(_settings.MaxReversalBarChangePct, numMaxReversalPct.Minimum, numMaxReversalPct.Maximum);
                 if (_reversalDetector != null)
                 {
                     _reversalDetector.IsEnabled = _settings.ShowConsecutiveReversalSignals;
                     _reversalDetector.ConsecutiveBullishBars = _settings.ConsecutiveBullishBars;
+                    _reversalDetector.MinConsecutiveTrendPct = _settings.MinConsecutiveTrendPct;
                     _reversalDetector.ReversalSubPeriodMinutes = _settings.ReversalSubPeriodMinutes;
                     _reversalDetector.HighTolerancePct = _settings.ReversalHighTolerancePct;
                     _reversalDetector.PullbackPct = _settings.ReversalPullbackPct;
@@ -3463,6 +3511,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                     _reversalDetector.DojiBodyRatioMax = _settings.DojiBodyRatioMax;
                     _reversalDetector.DojiMaxChangePct = _settings.DojiMaxChangePct;
                     _reversalDetector.ConsecutiveMaxDojiRatio = _settings.ConsecutiveMaxDojiRatio;
+                    _reversalDetector.MaxReversalBarChangePct = _settings.MaxReversalBarChangePct;
+                    _reversalDetector.MaxReversalRetracePct = _settings.MaxReversalRetracePct;
                 }
                 numConsecutiveBars.Value = Math.Clamp(_settings.ConsecutiveMinBars, 2, 50);
                 numConsecutivePct.Value = Math.Clamp(_settings.ConsecutiveMinPct, 0.1m, 50.0m);
@@ -3591,7 +3641,9 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
             if (chkChannelSignals != null) _settings.ShowChannelSignals = chkChannelSignals.Checked;
             if (chkConsecutiveReversal != null) _settings.ShowConsecutiveReversalSignals = chkConsecutiveReversal.Checked;
             if (numBullishBars != null) _settings.ConsecutiveBullishBars = (int)numBullishBars.Value;
+            if (numMinTrendPct != null) _settings.MinConsecutiveTrendPct = numMinTrendPct.Value;
             if (numReversalSubPeriod != null) _settings.ReversalSubPeriodMinutes = (int)numReversalSubPeriod.Value;
+            if (numMaxReversalPct != null) _settings.MaxReversalBarChangePct = numMaxReversalPct.Value;
             if (_reversalDetector != null)
             {
                 _reversalDetector.IsEnabled = _settings.ShowConsecutiveReversalSignals;
@@ -3601,6 +3653,8 @@ namespace Test.PeriodTickPlayback.WinForms.Forms
                 _reversalDetector.MaxObservationPeriods = _settings.MaxObservationPeriods;
                 _reversalDetector.DojiBodyRatioMax = _settings.DojiBodyRatioMax;
                 _reversalDetector.DojiMaxChangePct = _settings.DojiMaxChangePct;
+                _reversalDetector.MaxReversalBarChangePct = _settings.MaxReversalBarChangePct;
+                _reversalDetector.MaxReversalRetracePct = _settings.MaxReversalRetracePct;
                 _settings.ConsecutiveMaxDojiRatio = _reversalDetector.ConsecutiveMaxDojiRatio;
             }
             _settings.ConsecutiveMinBars = (int)numConsecutiveBars.Value;

@@ -89,6 +89,21 @@ namespace Test.PeriodTickPlayback.WinForms.Engine
         public decimal ConsecutiveMaxDojiRatio { get; set; } = 0.5m;
 
         /// <summary>
+        /// 反转 K 线单根最大涨跌幅百分比上限 (默认 1.0%，超过则判定反转K线太大跳过)
+        /// </summary>
+        public decimal MaxReversalBarChangePct { get; set; } = 1.0m;
+
+        /// <summary>
+        /// 反转 K 线相对连续波段回撤比例上限百分比 (默认 50.0%，超过则判定反转K线太大跳过)
+        /// </summary>
+        public decimal MaxReversalRetracePct { get; set; } = 50.0m;
+
+        /// <summary>
+        /// 连续大周期 K 线波段最低幅度百分比门槛 (默认 1.0%，连涨取 (最高价 - 起点开盘)/起点开盘 * 100%，连跌取 (起点开盘 - 最低价)/起点开盘 * 100%，低于此门槛不确立形态)
+        /// </summary>
+        public decimal MinConsecutiveTrendPct { get; set; } = 1.0m;
+
+        /// <summary>
         /// 触发信号后的顶点波段吸附优化窗口 (保留向后兼容)
         /// </summary>
         public long VertexRefineWindowMs { get; set; } = 30_000L;
@@ -240,8 +255,18 @@ namespace Test.PeriodTickPlayback.WinForms.Engine
             // 3. 必须有至少1根实体阳线支撑，且末根收盘必须高于首根开盘(整体为净上涨波段)
             bool isBullishAllDoji = bullishDojiBarCount >= n;
             bool isBullishMajorityDoji = (decimal)bullishDojiBarCount / n > ConsecutiveMaxDojiRatio;
+            decimal startOpen = completedBars[startIdx].Open;
+            if (isBullishAllDoji || isBullishMajorityDoji || solidBullishBarCount < 1 || completedBars[count - 1].Close <= startOpen)
+            {
+                isConsecutiveBullish = false;
+            }
 
-            if (isBullishAllDoji || isBullishMajorityDoji || solidBullishBarCount < 1 || completedBars[count - 1].Close <= completedBars[startIdx].Open)
+            decimal bullishTrendPct = (isConsecutiveBullish && startOpen > 0m && maxHigh > decimal.MinValue)
+                ? ((maxHigh - startOpen) / startOpen) * 100m
+                : 0m;
+
+            // 4. 🌟 最低波段幅度要求：连续上涨波段幅度必须达到门槛 (默认 1.0%，低于此门槛不确立形态)
+            if (isConsecutiveBullish && MinConsecutiveTrendPct > 0m && bullishTrendPct < MinConsecutiveTrendPct)
             {
                 isConsecutiveBullish = false;
             }
@@ -294,7 +319,17 @@ namespace Test.PeriodTickPlayback.WinForms.Engine
             bool isBearishAllDoji = bearishDojiBarCount >= n;
             bool isBearishMajorityDoji = (decimal)bearishDojiBarCount / n > ConsecutiveMaxDojiRatio;
 
-            if (isBearishAllDoji || isBearishMajorityDoji || solidBearishBarCount < 1 || completedBars[count - 1].Close >= completedBars[startIdx].Open)
+            if (isBearishAllDoji || isBearishMajorityDoji || solidBearishBarCount < 1 || completedBars[count - 1].Close >= startOpen)
+            {
+                isConsecutiveBearish = false;
+            }
+
+            decimal bearishTrendPct = (isConsecutiveBearish && startOpen > 0m && minLow < decimal.MaxValue)
+                ? ((startOpen - minLow) / startOpen) * 100m
+                : 0m;
+
+            // 4. 🌟 最低波段幅度要求：连续下跌波段幅度必须达到门槛 (默认 1.0%，低于此门槛不确立形态)
+            if (isConsecutiveBearish && MinConsecutiveTrendPct > 0m && bearishTrendPct < MinConsecutiveTrendPct)
             {
                 isConsecutiveBearish = false;
             }
@@ -326,6 +361,14 @@ namespace Test.PeriodTickPlayback.WinForms.Engine
             long subPeriodMs = (long)ReversalSubPeriodMinutes * 60 * 1000L;
             var direction = isConsecutiveBullish ? ConsecutiveReversalDirection.Short : ConsecutiveReversalDirection.Long;
             decimal benchmarkPrice = isConsecutiveBullish ? maxHigh : minLow;
+            decimal trendSpan = isConsecutiveBullish
+                ? (maxHigh - startOpen)
+                : (startOpen - minLow);
+            if (trendSpan <= 0m)
+            {
+                trendSpan = benchmarkPrice * 0.005m;
+            }
+            decimal trendPct = isConsecutiveBullish ? bullishTrendPct : bearishTrendPct;
 
             _currentContext = new ConsecutiveReversalContext
             {
@@ -335,6 +378,8 @@ namespace Test.PeriodTickPlayback.WinForms.Engine
                 MacroEndMs = macroEndMs,
                 ConsecutiveBarCount = n,
                 BenchmarkPrice = benchmarkPrice,
+                TrendSpan = trendSpan,
+                TrendPct = trendPct,
                 SubPeriodMs = subPeriodMs,
                 State = ConsecutiveReversalState.PendingSubPeriod1,
                 CurrentObservationPeriodIndex = 1,
@@ -347,13 +392,13 @@ namespace Test.PeriodTickPlayback.WinForms.Engine
             if (direction == ConsecutiveReversalDirection.Short)
             {
                 OnDetectorLog?.Invoke(
-                    $"[连阳形态确立] 连续上涨 {n} 根大周期K线达成 (实体阳线:{solidBullishBarCount}根, 休整十字星:{bullishDojiBarCount}根, Bar #{startIdx} ~ #{finalKline.BarIndex}，区间高点:{maxHigh:F2}) -> 等待第1个{ReversalSubPeriodMinutes}分钟周期结束确认反转(收阴)...",
+                    $"[连阳形态确立] 连续上涨 {n} 根大周期K线达成 (实体阳线:{solidBullishBarCount}根, 休整十字星:{bullishDojiBarCount}根, Bar #{startIdx} ~ #{finalKline.BarIndex}，波段幅度:{bullishTrendPct:F2}% (门槛:{MinConsecutiveTrendPct:F2}%), 区间高点:{maxHigh:F2}) -> 等待第1个{ReversalSubPeriodMinutes}分钟周期结束确认反转(收阴)...",
                     Color.FromArgb(56, 189, 248)); // 天蓝
             }
             else
             {
                 OnDetectorLog?.Invoke(
-                    $"[连阴形态确立] 连续下跌 {n} 根大周期K线达成 (实体阴线:{solidBearishBarCount}根, 休整十字星:{bearishDojiBarCount}根, Bar #{startIdx} ~ #{finalKline.BarIndex}，区间低点:{minLow:F2}) -> 等待第1个{ReversalSubPeriodMinutes}分钟周期结束确认反转(收阳)...",
+                    $"[连阴形态确立] 连续下跌 {n} 根大周期K线达成 (实体阴线:{solidBearishBarCount}根, 休整十字星:{bearishDojiBarCount}根, Bar #{startIdx} ~ #{finalKline.BarIndex}，波段幅度:{bearishTrendPct:F2}% (门槛:{MinConsecutiveTrendPct:F2}%), 区间低点:{minLow:F2}) -> 等待第1个{ReversalSubPeriodMinutes}分钟周期结束确认反转(收阳)...",
                     Color.FromArgb(244, 114, 182)); // 珊瑚粉
             }
         }
@@ -401,6 +446,30 @@ namespace Test.PeriodTickPlayback.WinForms.Engine
 
                 if (isReversalConfirmed)
                 {
+                    // 🌟 核心优化：反转 K 线太大则跳过 (双重限制：单根绝对涨跌幅 与 相对连续波段回撤比例)
+                    decimal reversalChangePct = Math.Abs(ctx.SubPeriod1.ChangePct);
+                    decimal reversalPoints = Math.Abs(ctx.SubPeriod1.Close - ctx.SubPeriod1.Open);
+                    decimal retracePct = ctx.TrendSpan > 0m ? (reversalPoints / ctx.TrendSpan) * 100m : 0m;
+
+                    bool isTooLargeByChange = MaxReversalBarChangePct > 0m && reversalChangePct > MaxReversalBarChangePct;
+                    bool isTooLargeByRetrace = MaxReversalRetracePct > 0m && retracePct > MaxReversalRetracePct;
+
+                    if (isTooLargeByChange || isTooLargeByRetrace)
+                    {
+                        ctx.State = ConsecutiveReversalState.Expired;
+                        string detail = isTooLargeByChange && isTooLargeByRetrace
+                            ? $"单根幅值 {reversalChangePct:F2}% (上限 {MaxReversalBarChangePct:F2}%) 且波段回撤 {retracePct:F1}% (上限 {MaxReversalRetracePct:F1}%)"
+                            : (isTooLargeByChange
+                                ? $"单根幅值 {reversalChangePct:F2}% 超过上限 {MaxReversalBarChangePct:F2}%"
+                                : $"波段回撤 {retracePct:F1}% 超过上限 {MaxReversalRetracePct:F1}%");
+
+                        string trendName = ctx.IsShort ? "上涨反转阴线" : "下跌反转阳线";
+                        OnDetectorLog?.Invoke(
+                            $"[形态跳过] {trendName}过大 ({detail})，反转剧烈不利于二次探顶/探底，跳过本轮观察。",
+                            Color.FromArgb(148, 163, 184));
+                        return;
+                    }
+
                     // 反转确立！正式进入第 1 轮观察期 (对应大周期结束后的第 2 个小周期)
                     ctx.State = ConsecutiveReversalState.Observing;
                     ctx.CurrentObservationPeriodIndex = 1;

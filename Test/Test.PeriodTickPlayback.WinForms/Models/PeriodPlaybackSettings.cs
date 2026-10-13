@@ -66,33 +66,14 @@ namespace Test.PeriodTickPlayback.WinForms.Models
         public decimal DojiBodyRatioMax { get; set; } = 0.25m; // 小十字星实体占全振幅比例上限 (默认 25%)
         public decimal DojiMaxChangePct { get; set; } = 0.15m; // 小十字星实体最大涨跌幅百分比 (默认 0.15%)
         public decimal ConsecutiveMaxDojiRatio { get; set; } = 0.5m; // 连续K线中十字星允许占的最大比例上限 (默认 50%，十字星不能占大部分)
+        public decimal MaxReversalBarChangePct { get; set; } = 1.0m; // 反转K线单根最大涨跌幅百分比上限 (默认 1.0%，超过则判定太大跳过)
+        public decimal MaxReversalRetracePct { get; set; } = 50.0m; // 反转K线相对连续波段回撤比例上限百分比 (默认 50.0%，超过则判定太大跳过)
+        public decimal MinConsecutiveTrendPct { get; set; } = 1.0m; // 连续K线确立形态所需的最低波段幅度百分比 (默认 1.0%，低于此门槛不确立形态)
 
         // 水平价格线配置
         public bool ShowMacroPriceLines { get; set; } = true; // K线窗口水平价格线开关 (默认开启)
         public bool ShowTickPriceLines { get; set; } = true; // 微观 Tick 窗口水平价格线开关 (默认开启)
         public string CustomPriceLines { get; set; } = "step: 100"; // 水平价格线配置 (支持具体价格如 60000, 62000 或步长如 step: 100 / 间隔 100)
-
-        // 图表背景颜色配置 (支持独立自定义)
-        public string MacroBackgroundColor { get; set; } = "#0b0f19"; // 大周期 K 线图表背景颜色 (默认极深黑蓝)
-        public string TickBackgroundColor { get; set; } = "#0b0f19";  // 微观 Tick 图表背景颜色 (默认极深黑蓝)
-
-        /// <summary>
-        /// 解析十六进制颜色字符串为 System.Drawing.Color，若失败则返回回退默认颜色
-        /// </summary>
-        public static System.Drawing.Color ParseColor(string? hex, System.Drawing.Color defaultColor)
-        {
-            if (string.IsNullOrWhiteSpace(hex)) return defaultColor;
-            try
-            {
-                string clean = hex.Trim();
-                if (!clean.StartsWith("#")) clean = "#" + clean;
-                return System.Drawing.ColorTranslator.FromHtml(clean);
-            }
-            catch
-            {
-                return defaultColor;
-            }
-        }
 
         /// <summary>
         /// 解析用户自定义价格水平线输入。

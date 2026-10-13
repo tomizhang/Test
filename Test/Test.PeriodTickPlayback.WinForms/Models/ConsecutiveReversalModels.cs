@@ -177,6 +177,16 @@ namespace Test.PeriodTickPlayback.WinForms.Models
         public decimal BenchmarkPrice { get; set; }
 
         /// <summary>
+        /// 连续大周期波段总价格跨度/点数 (上涨为 Phigh - Pstart, 下跌为 Pstart - Plow)
+        /// </summary>
+        public decimal TrendSpan { get; set; }
+
+        /// <summary>
+        /// 连续大周期波段极值净涨跌幅百分比 (上涨为 (Phigh - Pstart)/Pstart * 100%, 下跌为 (Pstart - Plow)/Pstart * 100%)
+        /// </summary>
+        public decimal TrendPct { get; set; }
+
+        /// <summary>
         /// 向后兼容属性：前高价格
         /// </summary>
         public decimal ConsecutiveHighPrice { get => BenchmarkPrice; set => BenchmarkPrice = value; }
