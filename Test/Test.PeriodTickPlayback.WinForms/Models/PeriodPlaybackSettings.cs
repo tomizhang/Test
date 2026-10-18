@@ -49,6 +49,22 @@ namespace Test.PeriodTickPlayback.WinForms.Models
         public bool ShowTickAngleLines { get; set; } = true; // 微观 Tick 窗口多角度趋势线开关 (默认开启)
         public bool ShowMacroRecentTrendLines { get; set; } = true; // 大周期 K 线图动态 300 根趋势线开关 (默认开启)
         public bool ShowTickRecentTrendLines { get; set; } = true;  // 微观 Tick 视窗动态 300 根趋势线开关 (默认开启)
+        public bool ShowMacroFixedPriceLines { get; set; } = true; // 大周期 K 线图固定价格水平线开关 (默认开启)
+        public bool ShowTickFixedPriceLines { get; set; } = true;  // 微观 Tick 视窗固定价格水平线开关 (默认开启)
+        public decimal FixedPriceStep { get; set; } = 100m;        // 固定价格分割步长 (默认 100 USDT)
+        public bool ShowFixedPriceLines { get => ShowMacroFixedPriceLines; set { ShowMacroFixedPriceLines = value; ShowTickFixedPriceLines = value; } }
+        public bool ShowMacroSpeedLine { get; set; } = true;       // 大周期 K 线图涨跌速度折线开关 (默认开启)
+        public bool ShowTickSpeedLine { get; set; } = true;        // 微观 Tick 窗口涨跌速度折线开关 (默认开启)
+        public bool ShowSpeedLine { get => ShowMacroSpeedLine; set { ShowMacroSpeedLine = value; ShowTickSpeedLine = value; } }
+        public bool ShowMacroDecisionZone { get; set; } = true;    // 大周期 K 线图连续上涨后决策区开关 (默认开启)
+        public bool ShowTickDecisionZone { get; set; } = true;     // 微观 Tick 窗口连续上涨后决策区开关 (默认开启)
+        public bool ShowDecisionZone { get => ShowMacroDecisionZone; set { ShowMacroDecisionZone = value; ShowTickDecisionZone = value; } }
+        public bool ShowMacroDoubleTop { get; set; } = true;       // 大周期 K 线图连续上涨后切线双顶高频信号开关 (默认开启)
+        public bool ShowTickDoubleTop { get; set; } = true;        // 微观 Tick 窗口连续上涨后切线双顶高频信号开关 (默认开启)
+        public bool ShowDoubleTop { get => ShowMacroDoubleTop; set { ShowMacroDoubleTop = value; ShowTickDoubleTop = value; } }
+        public int DoubleTopMinIntervalTicks { get; set; } = 12;   // 双顶/双底两峰之间最少 Tick 数量间隔 (默认 12 笔，兼顾敏锐捕捉真实形态与过滤微噪)
+        public int DoubleTopSubsequentBars { get; set; } = 3;     // 连续K线收盘且首根反转K线出现后，判定双顶/双底的后续K线根数 N (默认 3 根)
+        public decimal DoubleTopMinPricePct { get; set; } = 0.10m; // 双顶/双底峰谷最小价差幅度百分比 (默认 0.10%，过滤横盘微小抖动误判)
         public string CustomAngles { get; set; } = "25, 45, 65"; // 自定义趋势线角度列表 (逗号/分号/空格隔开)
         public bool ShowAngleLines { get => ShowMacroAngleLines; set => ShowMacroAngleLines = value; } // 向后兼容别名
         public bool VerboseLog { get; set; } = false; // 详细定型日志开关 (默认关闭，避免高频刷屏)

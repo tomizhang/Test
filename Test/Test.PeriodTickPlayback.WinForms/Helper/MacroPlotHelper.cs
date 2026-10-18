@@ -1,3 +1,4 @@
+using Common;
 using ScottPlot;
 using System;
 using System.Collections.Generic;
@@ -71,6 +72,18 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             IReadOnlyList<double>? customAngles = null,
             bool showRecentTrendLines = true,
             RecentSubPeriodTrendLineResult? recentTrendLineResult = null,
+            bool showFixedPriceLines = true,
+            decimal fixedPriceStep = 100m,
+            bool showSpeedLine = true,
+            bool showDecisionZone = true,
+            bool showDoubleTop = true,
+            int doubleTopMinIntervalTicks = 20,
+            int doubleTopSubsequentBars = 3,
+            decimal doubleTopMinPricePct = 0.10m,
+            IReadOnlyList<PeriodBucket>? allBuckets = null,
+            int? currentBucketIndex = null,
+            int? currentTickIndex = null,
+            TimeSpan? periodSpan = null,
             double canvasWidth = 1200,
             double canvasHeight = 450)
         {
@@ -78,6 +91,13 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
 
             AxisLimits oldLimits = plot.Axes.GetLimits();
             plot.Clear();
+
+            // 彻底清除历史残留的非标准坐标轴，确保仅保留 Left, Right, Bottom, Top 四个内建轴，杜绝多坐标轴堆叠挤压主图表！
+            var extraAxes = plot.Axes.GetAxes().Where(ax => ax != plot.Axes.Left && ax != plot.Axes.Right && ax != plot.Axes.Bottom && ax != plot.Axes.Top).ToList();
+            foreach (var ax in extraAxes)
+            {
+                plot.Axes.Remove(ax);
+            }
 
             string chineseFont = GetInstalledChineseFont();
             Fonts.Default = chineseFont;
@@ -87,8 +107,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             plot.DataBackground.Color = Color.FromHex("#0f172a");   // 主背景 Slate 900
 
             plot.Axes.Color(Color.FromHex("#94a3b8"));
-            plot.Grid.MajorLineColor = Color.FromHex("#1e293b").WithAlpha(180);
-            plot.Grid.MinorLineColor = Color.FromHex("#1e293b").WithAlpha(80);
+            plot.HideGrid();
 
             int completedCount = completedBars?.Count ?? 0;
             bool hasForming = formingBar != null && formingBar.TicksProcessed > 0;
@@ -216,6 +235,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             }
 
             // 4. 绘制成交量副图 (纯粹柱状成交量，依附于右侧 Y 轴)
+            ScottPlot.IYAxis? volAxis = null;
             if (showVolume && volumes.Count > 0)
             {
                 var volBars = new List<ScottPlot.Bar>(volumes.Count);
@@ -232,16 +252,69 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 }
 
                 var barPlot = plot.Add.Bars(volBars);
-                barPlot.Axes.YAxis = plot.Axes.Right; // 右轴独立映射成交量高度
-
-                plot.Axes.Right.Label.Text = "成交量 (Volume)";
-                plot.Axes.Right.Label.FontName = chineseFont;
-                plot.Axes.Right.Label.FontSize = 9.5f;
-                plot.Axes.Right.Label.ForeColor = Color.FromHex("#94a3b8");
-
-                // 将成交量限制在底部 25% 空间，绝不遮挡上方价格主图
                 double volLimitY = (maxVolume > 0 ? maxVolume : 1) * 3.8;
-                plot.Axes.SetLimitsY(0, volLimitY, plot.Axes.Right);
+
+                if (showSpeedLine)
+                {
+                    // 🌟 当开启速度折线时，成交量依附不可见轴 (IsVisible = false)，将右侧可见主轴完整让给速度折线，零边距挤压
+                    var ax = plot.Axes.AddRightAxis();
+                    if (ax is ScottPlot.AxisPanels.YAxisBase yb)
+                    {
+                        yb.IsVisible = false;
+                    }
+                    volAxis = ax;
+                    barPlot.Axes.YAxis = volAxis;
+                    plot.Axes.SetLimitsY(0, volLimitY, volAxis);
+                }
+                else
+                {
+                    // 未开启速度折线时，使用默认右轴展示成交量
+                    barPlot.Axes.YAxis = plot.Axes.Right;
+                    if (plot.Axes.Right is ScottPlot.AxisPanels.RightAxis ra)
+                    {
+                        ra.IsVisible = true;
+                        ra.LabelText = "成交量 (Volume)";
+                        ra.LabelFontName = chineseFont;
+                        ra.LabelFontSize = 9.5f;
+                        ra.LabelFontColor = Color.FromHex("#94a3b8");
+                        ra.Color(Color.FromHex("#94a3b8"));
+                    }
+                    plot.Axes.SetLimitsY(0, volLimitY, plot.Axes.Right);
+                }
+            }
+            else if (!showSpeedLine)
+            {
+                // 成交量和速度折线均未开启时，隐藏右轴
+                if (plot.Axes.Right is ScottPlot.AxisPanels.RightAxis ra)
+                {
+                    ra.IsVisible = false;
+                }
+            }
+
+            // 4.5 绘制 K 线涨跌速度折线图 (类似折线图，依附于内建右侧 Y 轴 plot.Axes.Right)
+            if (showSpeedLine && totalDisplayCount > 0)
+            {
+                var speedBars = new List<(double X, decimal Open, decimal Close)>(totalDisplayCount);
+                if (completedBars != null)
+                {
+                    for (int i = 0; i < completedBars.Count; i++)
+                    {
+                        speedBars.Add((i, completedBars[i].Open, completedBars[i].Close));
+                    }
+                }
+                if (hasForming)
+                {
+                    speedBars.Add((formingX, formingBar!.Open, formingBar.CurrentPrice));
+                }
+
+                TimeSpan macroPeriodSpan = periodSpan ?? TimeSpan.FromMinutes(30);
+                FixedPriceLineHelper.DrawSpeedLinePlot(
+                    plot,
+                    speedBars,
+                    macroPeriodSpan,
+                    fixedPriceStep,
+                    periodTitle,
+                    chineseFont);
             }
 
             // 预先计算当前视口 X/Y 轴范围与比例，供通道与多角度趋势线计算
@@ -298,14 +371,18 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
             if (LastSlope45 <= 0) LastSlope45 = fallbackSlope45;
 
             // 4.5 绘制连续上涨 / 连续下跌波段标记与多角度趋势线 (满足门槛：连续 N 根及以上且累计幅度 >= X%)
-            if ((showConsecutiveTrend || showAngleLines) && totalDisplayCount >= consecutiveMinBars)
+            IReadOnlyList<MacroConsecutiveTrendItem>? trends = null;
+            if ((showConsecutiveTrend || showAngleLines || showDecisionZone || showDoubleTop) && totalDisplayCount >= consecutiveMinBars)
             {
-                var trends = MacroConsecutiveTrendDetector.ScanTrends(
+                trends = MacroConsecutiveTrendDetector.ScanTrends(
                     completedBars,
                     formingBar,
                     consecutiveMinBars,
                     consecutiveMinPct);
+            }
 
+            if ((showConsecutiveTrend || showAngleLines) && trends != null && trends.Count > 0)
+            {
                 for (int tIdx = 0; tIdx < trends.Count; tIdx++)
                 {
                     var tr = trends[tIdx];
@@ -601,6 +678,226 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 }
             }
 
+            // 4.7 绘制“当多根连续上涨后进入决策区”矩形框 (按设置价格切线粒度切割，以停留时间展示颜色深度)
+            if (showDecisionZone && trends != null && trends.Count > 0)
+            {
+                var bullishTrends = trends.Where(t => t.IsBullish).ToList();
+                for (int bIdx = 0; bIdx < bullishTrends.Count; bIdx++)
+                {
+                    var tr = bullishTrends[bIdx];
+                    int dzStartBar = tr.EndIndex;
+                    int dzEndBar;
+                    if (bIdx < bullishTrends.Count - 1)
+                    {
+                        dzEndBar = Math.Max(dzStartBar + 1, bullishTrends[bIdx + 1].StartIndex);
+                    }
+                    else
+                    {
+                        dzEndBar = Math.Max(totalDisplayCount - 1, dzStartBar) + Math.Max(3, channelExtensionBars / 2);
+                    }
+
+                    // 收集决策区内的所有 Tick 数据
+                    var decisionTicks = new List<RawTick>();
+                    if (allBuckets != null && allBuckets.Count > 0)
+                    {
+                        int curBIdx = currentBucketIndex ?? (totalDisplayCount - 1);
+                        int curTIdx = currentTickIndex ?? int.MaxValue;
+                        int maxB = Math.Min(allBuckets.Count - 1, dzEndBar);
+
+                        for (int bi = dzStartBar; bi <= maxB; bi++)
+                        {
+                            if (bi < 0 || bi >= allBuckets.Count) continue;
+                            var b = allBuckets[bi];
+                            if (b.Ticks == null || b.Ticks.Count == 0) continue;
+
+                            if (bi < curBIdx)
+                            {
+                                decisionTicks.AddRange(b.Ticks);
+                            }
+                            else if (bi == curBIdx)
+                            {
+                                int takeCount = Math.Min(b.Ticks.Count, curTIdx);
+                                if (takeCount > 0)
+                                {
+                                    decisionTicks.AddRange(b.Ticks.Take(takeCount));
+                                }
+                            }
+                        }
+                    }
+
+                    if (decisionTicks.Count > 0)
+                    {
+                        var zones = DecisionZoneHelper.ComputeDecisionZones(
+                            decisionTicks,
+                            decisionTicks.Count,
+                            fixedPriceStep);
+
+                        DecisionZoneHelper.DrawDecisionZones(
+                            plot,
+                            zones,
+                            xStart: dzStartBar - 0.4,
+                            xEnd: dzEndBar + 0.4,
+                            chineseFont,
+                            isMacroChart: true);
+                    }
+                    else if (completedBars != null)
+                    {
+                        // 回退保护：当无原始 Tick 时根据 K 线生成微观离散统计
+                        var pseudoTicks = new List<RawTick>();
+                        int endK = Math.Min(completedBars.Count - 1, dzEndBar);
+                        for (int bi = dzStartBar; bi <= endK; bi++)
+                        {
+                            var cb = completedBars[bi];
+                            long t0 = cb.OpenTimeMs;
+                            long t1 = cb.CloseTimeMs > t0 ? cb.CloseTimeMs : t0 + 60_000;
+                            long step = Math.Max(1000, (t1 - t0) / 4);
+                            pseudoTicks.Add(new RawTick { Price = cb.Open, Time = t0, Qty = cb.Volume / 4 });
+                            pseudoTicks.Add(new RawTick { Price = cb.High, Time = t0 + step, Qty = cb.Volume / 4 });
+                            pseudoTicks.Add(new RawTick { Price = cb.Low, Time = t0 + step * 2, Qty = cb.Volume / 4 });
+                            pseudoTicks.Add(new RawTick { Price = cb.Close, Time = t1, Qty = cb.Volume / 4 });
+                        }
+                        if (formingBar != null && formingBar.CurrentPrice > 0)
+                        {
+                            long formTimeMs = (long)(formingBar.StartTime.ToUniversalTime() - DateTime.UnixEpoch).TotalMilliseconds;
+                            pseudoTicks.Add(new RawTick { Price = formingBar.CurrentPrice, Time = formTimeMs, Qty = 1 });
+                        }
+                        if (pseudoTicks.Count > 0)
+                        {
+                            var zones = DecisionZoneHelper.ComputeDecisionZones(
+                                pseudoTicks,
+                                pseudoTicks.Count,
+                                fixedPriceStep);
+
+                            DecisionZoneHelper.DrawDecisionZones(
+                                plot,
+                                zones,
+                                xStart: dzStartBar - 0.4,
+                                xEnd: dzEndBar + 0.4,
+                                chineseFont,
+                                isMacroChart: true);
+                        }
+                    }
+                }
+            }
+
+            // 4.7.5 绘制“连续K线后，价格切线里面出现的双顶（做空）/ 双底（做多）”高频信号
+            if (showDoubleTop && trends != null && trends.Count > 0)
+            {
+                var allPatternSignals = new List<TickDoubleTopSignal>();
+
+                for (int tIdx = 0; tIdx < trends.Count; tIdx++)
+                {
+                    var tr = trends[tIdx];
+
+                    // 🌟 核心新规则：连续K线收盘完成 + 出现首根反转K线 + 处于后续N根K线判定窗口
+                    var win = TickDoubleTopHelper.EvaluateTrendWindow(
+                        completedBars,
+                        formingBar,
+                        tr,
+                        doubleTopSubsequentBars,
+                        currentBucketIndex);
+
+                    if (win == null) continue; // 未满足连续K线收盘完成、出现首根反转K线及处于后续N根K线判定窗口
+
+                    bool isBull = tr.IsBullish;
+                    int dzStartBar = win.EvalStartBar;
+                    int dzEndBar = win.EvalEndBar;
+
+                    var decisionTicks = new List<RawTick>();
+                    if (allBuckets != null && allBuckets.Count > 0)
+                    {
+                        int curBIdx = currentBucketIndex ?? (totalDisplayCount - 1);
+                        int curTIdx = currentTickIndex ?? int.MaxValue;
+                        int maxB = Math.Min(Math.Min(allBuckets.Count - 1, dzEndBar), curBIdx);
+
+                        for (int bi = dzStartBar; bi <= maxB; bi++)
+                        {
+                            if (bi < 0 || bi >= allBuckets.Count) continue;
+                            var b = allBuckets[bi];
+                            if (b.Ticks == null || b.Ticks.Count == 0) continue;
+
+                            if (bi < curBIdx)
+                            {
+                                decisionTicks.AddRange(b.Ticks);
+                            }
+                            else if (bi == curBIdx)
+                            {
+                                int takeCount = Math.Min(b.Ticks.Count, curTIdx);
+                                if (takeCount > 0) decisionTicks.AddRange(b.Ticks.Take(takeCount));
+                            }
+                        }
+                    }
+
+                    if (decisionTicks.Count > 0)
+                    {
+                        // 连涨后检测双顶 (做空)；连跌后检测双底 (做多)
+                        var patternSignals = isBull
+                            ? TickDoubleTopHelper.DetectDoubleTops(decisionTicks, decisionTicks.Count, fixedPriceStep, 0, doubleTopMinIntervalTicks, doubleTopMinPricePct)
+                            : TickDoubleTopHelper.DetectDoubleBottoms(decisionTicks, decisionTicks.Count, fixedPriceStep, 0, doubleTopMinIntervalTicks, doubleTopMinPricePct);
+
+                        if (patternSignals.Count > 0)
+                        {
+                            DateTime revStartTime = (allBuckets != null && win.FirstReversalBar >= 0 && win.FirstReversalBar < allBuckets.Count)
+                                ? allBuckets[win.FirstReversalBar].StartTime
+                                : DateTime.MinValue;
+
+                            DateTime evalEndTime = (allBuckets != null && win.EvalEndBar >= 0 && win.EvalEndBar < allBuckets.Count)
+                                ? allBuckets[win.EvalEndBar].EndTime
+                                : DateTime.MaxValue;
+
+                            foreach (var sig in patternSignals)
+                            {
+                                if (revStartTime > DateTime.MinValue && sig.ConfirmTime < revStartTime.AddMilliseconds(-500))
+                                {
+                                    continue; // 判定点位必须在首根反转K线出现及后续N根K线判定窗口内！
+                                }
+                                if (evalEndTime < DateTime.MaxValue && sig.ConfirmTime > evalEndTime.AddMilliseconds(500))
+                                {
+                                    continue; // 判定点位必须在后续N根K线判定窗口结束前！
+                                }
+
+                                double dtX1 = MapTimeToMacroX(sig.Top1Time, completedBars, formingBar);
+                                double dtXNeck = MapTimeToMacroX(sig.NeckTime, completedBars, formingBar);
+                                double dtX2 = MapTimeToMacroX(sig.Top2Time, completedBars, formingBar);
+                                double dtXConfirm = MapTimeToMacroX(sig.ConfirmTime, completedBars, formingBar);
+
+                                sig.MacroX1 = dtX1;
+                                sig.MacroXNeck = dtXNeck;
+                                sig.MacroX2 = dtX2;
+                                sig.MacroXConfirm = dtXConfirm;
+
+                                allPatternSignals.Add(sig);
+                            }
+                        }
+                    }
+                }
+
+                if (allPatternSignals.Count > 1)
+                {
+                    // 跨走势去重保护
+                    var uniqueSignals = new List<TickDoubleTopSignal>();
+                    foreach (var sig in allPatternSignals)
+                    {
+                        if (!uniqueSignals.Any(u => u.PatternType == sig.PatternType && Math.Abs(u.ConfirmTimeMs - sig.ConfirmTimeMs) < 2000))
+                        {
+                            uniqueSignals.Add(sig);
+                        }
+                    }
+                    allPatternSignals = uniqueSignals;
+                }
+
+                if (allPatternSignals.Count > 0)
+                {
+                    TickDoubleTopHelper.DrawDoubleTopSignals(
+                        plot,
+                        allPatternSignals,
+                        subBuckets: null,
+                        chineseFont,
+                        isMacroChart: true,
+                        isRawTickChart: false);
+                }
+            }
+
             // 4.8 绘制基于最近 300 根小周期 K 线高低点的动态趋势线 (支持独立勾选控制与前向延伸)
             if (showRecentTrendLines && recentTrendLineResult != null && recentTrendLineResult.SelectedLines.Count > 0)
             {
@@ -815,6 +1112,17 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 }
             }
 
+            // 5.8 绘制按固定价格分割生成的水平参考线 (K 线窗口)
+            if (showFixedPriceLines && fixedPriceStep > 0 && totalDisplayCount > 0)
+            {
+                FixedPriceLineHelper.DrawFixedPriceLines(
+                    plot,
+                    minPrice,
+                    maxPrice,
+                    fixedPriceStep,
+                    oldLimits);
+            }
+
             // 6. 坐标轴范围与自适应视口
             if (totalDisplayCount > 0)
             {
@@ -830,7 +1138,7 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                         if (showVolume)
                         {
                             double volLimitY = (winMaxVolume > 0 ? winMaxVolume : 1) * 4.2;
-                            plot.Axes.SetLimitsY(0, volLimitY, plot.Axes.Right);
+                            plot.Axes.SetLimitsY(0, volLimitY, volAxis ?? plot.Axes.Right);
                         }
                     }
                 }
@@ -850,14 +1158,21 @@ namespace Test.PeriodTickPlayback.WinForms.Helper
                 }
             }
 
-            // 7. 纯净标题 (无任何额外 MA 等指标)
+            // 7. 纯净标题与坐标轴 (价格左轴与时间底轴保持纯净，不再拼接速度文本，杜绝文字膨胀挤压)
             string chartTypeName = displayType == MacroChartDisplayType.LineChart ? "收盘折线" : "K 线";
             plot.Title($"{coin} {periodTitle} {chartTypeName}走势图 (已定型: {completedCount} 根)", size: 12);
             plot.Axes.Title.Label.FontName = chineseFont;
             plot.Axes.Title.Label.ForeColor = Color.FromHex("#f1f5f9");
+
             plot.Axes.Left.Label.Text = "价格 (USDT)";
             plot.Axes.Left.Label.FontName = chineseFont;
             plot.Axes.Left.Label.FontSize = 9.5f;
+            plot.Axes.Left.Label.ForeColor = Color.FromHex("#38bdf8");
+
+            plot.Axes.Bottom.Label.Text = $"时间轴 [{periodTitle}]";
+            plot.Axes.Bottom.Label.FontName = chineseFont;
+            plot.Axes.Bottom.Label.FontSize = 9.5f;
+            plot.Axes.Bottom.Label.ForeColor = Color.FromHex("#38bdf8");
         }
 
         /// <summary>
